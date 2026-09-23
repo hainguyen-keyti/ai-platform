@@ -608,9 +608,13 @@ def main():
             "PROVIDER_MODE": "real" if args.real else "mock",
             "MEDIA_PATH": str(media_dir),
             "SESSIONS_PATH": str(sessions_dir),
-            # The forced provider error opens a cooldown; keep it short so the
-            # checks after it are not held behind a 30 second pause.
-            "COOLDOWN_BASE_SECONDS": "1",
+            # Mock: the forced provider error opens a cooldown; keep it short so
+            # the checks after it are not held behind a pause. Real: the gate
+            # must not fire turns faster than a person would. Running thirteen
+            # real turns back to back earned a 429 that bounced thread pages to
+            # the root and failed every second turn; pace it like the worker.
+            "COOLDOWN_BASE_SECONDS": "10" if args.real else "1",
+            "MIN_GAP_SECONDS": "6" if args.real else "0",
         }
         worker_health = "http://127.0.0.1:{}/health".format(worker_port)
         worker_proc, worker_log = start_service(

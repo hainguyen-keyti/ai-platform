@@ -31,6 +31,10 @@ NO_THREAD_GRACE = 30
 # is asked only when the page looks finished, and backs off on 429.
 SERVER_POLL_SECONDS = 3
 SERVER_POLL_MAX = 30
+# Opening a stored thread: how many tries and how long to wait between them
+# when the site bounces the thread because the backend is throttling.
+OPEN_ATTEMPTS = 3
+OPEN_RETRY_SECONDS = 15
 # How long the page must stay quiet and unchanged before the answer counts as
 # over. Two seconds was thin: a reply that runs several tools puts the stop
 # button away between them, and a pause there reads as an ending.
@@ -235,19 +239,29 @@ class ChatGPTProvider(BaseProvider):
         page = self._ensure_page()
         if thread_url:
             wanted = thread_url.rsplit("/c/", 1)[-1].split("?")[0].split("#")[0]
-            page.goto(thread_url, timeout=90000, wait_until="domcontentloaded")
-            ready = self._composer_ready(page, 45)
-            # A composer is not enough: the site can bounce a slow thread to the
-            # root page, where a composer is also waiting, in a brand new chat.
-            # The url has to be the thread that was asked for.
-            landed = self._thread_id(page)
-            self.last_open = {"wanted": wanted[:8], "landed": (landed or page.url)[:60],
-                              "composer": ready, "on_thread": landed == wanted}
-            if ready and landed == wanted:
-                return page
-            data = self._thread_nodes(page, wanted)
-            status = data.get("status") if data else None
-            if status != 404:
+            for attempt in range(OPEN_ATTEMPTS):
+                page.goto(thread_url, timeout=90000, wait_until="domcontentloaded")
+                ready = self._composer_ready(page, 45)
+                # A composer is not enough: the site can bounce a slow thread to
+                # the root page, where a composer is also waiting, in a brand
+                # new chat. The url has to be the thread that was asked for.
+                landed = self._thread_id(page)
+                self.last_open = {"wanted": wanted[:8], "landed": (landed or page.url)[:60],
+                                  "composer": ready, "on_thread": landed == wanted,
+                                  "attempt": attempt + 1}
+                if ready and landed == wanted:
+                    return page
+                data = self._thread_nodes(page, wanted)
+                status = data.get("status") if data else None
+                if status == 404:
+                    break  # gone for good; a fresh chat is the only option left
+                if status in (429, 500, 502, 503) and attempt + 1 < OPEN_ATTEMPTS:
+                    # Measured 2026-09-24: a throttled thread is bounced to the
+                    # root page with a 429 behind it. That passes; talking into
+                    # the wrong chat does not. Wait it out and try the thread again.
+                    self._phase("waiting for the provider")
+                    time.sleep(OPEN_RETRY_SECONDS * (2 ** attempt))
+                    continue
                 raise ProviderError(
                     "thread {} did not open: landed on {}, server status {}".format(
                         wanted[:8], (landed or page.url)[:60], status))
