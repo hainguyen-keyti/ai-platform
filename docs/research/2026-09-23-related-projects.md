@@ -187,6 +187,11 @@ follow-up suggestion chips that used to leak into replies.
 - 2026-09-24: with the thread page slow, `_open` fell back to a fresh chat and the model answered
   "Unknown" to a recall question it had just been told the answer to. Silent fallback removed: a
   fresh chat is started only when the server reports the thread as 404.
+- 2026-09-24: with the url check in place, the next gate named the miss itself: `thread ... did not
+  open: landed on https://chatgpt.com/, server status 429`. Thirteen real turns back to back
+  throttle the account and the site bounces a stored thread to the root page. A bounce with a 429
+  or 5xx behind it is retried with a growing wait; the real gate now leaves six seconds between
+  turns, so it measures the platform and not the provider's patience with the gate.
 - 2026-09-24, Temporary Chat rejected: after a message is sent the url stays
   `https://chatgpt.com/?temporary-chat=true` and never gains `/c/<id>`. No thread id means no
   thread to return to and no server view. The account-level memory setting remains the control.
