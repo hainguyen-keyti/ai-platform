@@ -14,6 +14,9 @@ UPLOAD_INPUT = "#upload-files"
 
 CHAT_TIMEOUT = 180
 IMAGE_TIMEOUT = 300
+# An assistant turn that is still empty a second after sending is not a finished
+# reply, it is one that has not started.
+START_FLOOR = 6
 
 FETCH_AS_DATA_URL = """
 async (url) => {
@@ -110,18 +113,35 @@ class ChatGPTProvider(BaseProvider):
 
     def _send(self, page, prompt: str):
         box = page.locator(TEXTAREA).first
-        box.click()
+        try:
+            box.click(timeout=10000)
+        except Exception:
+            box.focus()
         box.fill(prompt)
         page.wait_for_timeout(300)
+
+        # Enter rather than the send button: with an attachment in the composer
+        # the preview panel is painted over the button and swallows the click,
+        # which the button being visible and enabled does not reveal.
+        page.keyboard.press("Enter")
+        for _ in range(20):
+            page.wait_for_timeout(500)
+            if not (box.inner_text() or "").strip():
+                return
         button = page.locator(SEND_BUTTON).first
-        if button.count() and button.is_visible():
-            button.click()
-        else:
-            page.keyboard.press("Enter")
+        if button.count():
+            button.click(timeout=10000, force=True)
 
     def _await_reply(self, page, baseline: int, timeout: int) -> str:
-        """Wait for a new assistant turn to appear and stop changing."""
+        """Wait for a new assistant turn to appear and stop changing.
+
+        An image-only reply has no text at all, so "the text stopped changing"
+        is true one second after sending, before the model has started. The
+        floor below keeps that from being read as a finished reply; past it the
+        stop button is what decides.
+        """
         deadline = time.time() + timeout
+        floor = time.time() + START_FLOOR
         text = ""
         stable = 0
         while time.time() < deadline:
@@ -132,12 +152,22 @@ class ChatGPTProvider(BaseProvider):
             current = turns.last.inner_text()
             if current == text:
                 stable += 1
-                if stable >= 2 and page.locator(STOP_BUTTON).count() == 0:
+                if stable >= 2 and time.time() > floor and page.locator(STOP_BUTTON).count() == 0:
                     return text
             else:
                 text = current
                 stable = 0
         return text
+
+    def _text_so_far(self, page, baseline: int) -> str:
+        """Whatever the assistant has written by now, without waiting for it."""
+        turns = page.locator(ASSISTANT_TURN)
+        if turns.count() <= baseline:
+            return ""
+        try:
+            return turns.last.inner_text()
+        except Exception:
+            return ""
 
     def _save_images(self, page, prompt: str, deadline: float, seen_before):
         artifacts = []
@@ -180,13 +210,26 @@ class ChatGPTProvider(BaseProvider):
 
         started = time.time()
         self._send(page, prompt)
-        text = self._await_reply(page, baseline, timeout)
 
         media = []
         if want_images:
-            media = self._save_images(page, prompt, started + timeout, seen_before)
+            # The picture is the completion signal here. Waiting for the text
+            # reply first burned the whole budget every time, because an
+            # image-only answer never produces a turn to settle on.
+            media = self._save_images(page, prompt, time.time() + IMAGE_TIMEOUT, seen_before)
+            text = self._text_so_far(page, baseline)
             if not media:
-                return GenerationResult.failure("no image was produced before the timeout")
+                # Carry the reply and the elapsed time back: a refusal, a slow
+                # render and a wait that never ran look identical without them.
+                return GenerationResult(
+                    success=False,
+                    text=text,
+                    error="no image after {:.0f}s; reply was: {}".format(
+                        time.time() - started, (text or "(empty)")[:400]
+                    ),
+                )
+        else:
+            text = self._await_reply(page, baseline, timeout)
 
         if not text.strip() and not media:
             return GenerationResult.failure("empty reply from chatgpt")
