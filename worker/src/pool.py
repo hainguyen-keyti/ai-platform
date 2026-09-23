@@ -1,8 +1,14 @@
+import statistics
 import threading
+import time
+from collections import deque
+from datetime import datetime, timezone
 
 from src.config import settings
-from src.providers.base import GenerationResult
+from src.providers.base import GenerationResult, JobCancelled, ProviderError
 from src.providers.mock import MockProvider
+
+IMAGE_WINDOW_SECONDS = 3 * 3600
 
 
 def build_provider(name: str):
@@ -13,6 +19,59 @@ def build_provider(name: str):
 
         return ChatGPTProvider(settings.media_path, settings.sessions_path)
     raise ValueError("provider {} has no real implementation yet".format(name))
+
+
+class ProviderHealth:
+    """What one provider has been doing lately, and whether to leave it alone."""
+
+    def __init__(self):
+        self.consecutive_errors = 0
+        self.cooldown_until = 0.0
+        self.last_turn_at = 0.0
+        self.image_times = deque()
+        self.latencies = deque(maxlen=50)
+        self.last_provider_error = None
+
+    def note(self, result: GenerationResult, elapsed: float):
+        self.last_turn_at = time.time()
+        self.latencies.append(elapsed)
+        if result.error_kind in ("provider_error", "provider_timeout"):
+            # Every consecutive failure doubles the pause. Retrying into a wall
+            # is how a throttled account turns into a banned one.
+            self.consecutive_errors += 1
+            pause = min(settings.cooldown_base * 2 ** (self.consecutive_errors - 1),
+                        settings.cooldown_max)
+            self.cooldown_until = time.time() + pause
+            self.last_provider_error = result.error
+        elif result.success:
+            self.consecutive_errors = 0
+            for item in result.media:
+                if item.type == "image":
+                    self.image_times.append(time.time())
+
+    def images_in_window(self) -> int:
+        cutoff = time.time() - IMAGE_WINDOW_SECONDS
+        while self.image_times and self.image_times[0] < cutoff:
+            self.image_times.popleft()
+        return len(self.image_times)
+
+    def hold_seconds(self) -> float:
+        now = time.time()
+        wait = max(0.0, self.cooldown_until - now, self.last_turn_at + settings.min_gap - now)
+        if settings.image_budget and self.images_in_window() >= settings.image_budget:
+            wait = max(wait, self.image_times[0] + IMAGE_WINDOW_SECONDS - now)
+        return wait
+
+    def snapshot(self) -> dict:
+        p50 = statistics.median(self.latencies) if self.latencies else None
+        return {
+            "cooldown_until": (datetime.fromtimestamp(self.cooldown_until, timezone.utc).isoformat()
+                               if self.cooldown_until > time.time() else None),
+            "consecutive_errors": self.consecutive_errors,
+            "images_last_3h": self.images_in_window(),
+            "p50_latency_s": round(p50, 1) if p50 is not None else None,
+            "last_provider_error": self.last_provider_error,
+        }
 
 
 class BrowserPool:
@@ -26,6 +85,7 @@ class BrowserPool:
         self._providers = {}
         self._locks = {}
         self._errors = {}
+        self._health = {name: ProviderHealth() for name in settings.providers}
 
     def start(self):
         for name in settings.providers:
@@ -45,21 +105,33 @@ class BrowserPool:
                 pass
         self._providers.clear()
 
+    def hold_seconds(self) -> float:
+        """How long the runner should wait before claiming anything."""
+        return max([h.hold_seconds() for h in self._health.values()] or [0.0])
+
+    def note_result(self, provider_name: str, result: GenerationResult, elapsed: float):
+        health = self._health.get(provider_name)
+        if health:
+            health.note(result, elapsed)
+
     def execute(self, provider_name: str, feature: str, payload: dict,
-                thread_url: str = None) -> GenerationResult:
+                thread_url: str = None, phase_hook=None, stop_hook=None) -> GenerationResult:
         provider = self._providers.get(provider_name)
         if provider is None:
             return GenerationResult.failure(
                 "provider {} unavailable: {}".format(
                     provider_name, self._errors.get(provider_name, "not enabled on this worker")
-                )
+                ),
+                kind="provider_error",
             )
         if not provider.supports(feature):
             return GenerationResult.failure(
-                "provider {} does not support {}".format(provider_name, feature)
+                "provider {} does not support {}".format(provider_name, feature),
+                kind="worker_error",
             )
 
         with self._locks[provider_name]:
+            provider.bind(phase_hook, stop_hook)
             try:
                 if feature == "chat":
                     return provider.chat(
@@ -73,17 +145,26 @@ class BrowserPool:
                     return provider.generate_video_script(
                         payload.get("filename", ""), int(payload.get("duration", 5)), thread_url
                     )
+            except JobCancelled:
+                return GenerationResult.failure("cancelled while running", kind="cancelled")
+            except ProviderError as exc:
+                return GenerationResult.failure(str(exc), kind="provider_error")
             except Exception as exc:
-                return GenerationResult.failure("{}: {}".format(type(exc).__name__, exc))
-        return GenerationResult.failure("unknown feature {}".format(feature))
+                return GenerationResult.failure(
+                    "{}: {}".format(type(exc).__name__, exc), kind="worker_error")
+            finally:
+                provider.bind(None, None)
+        return GenerationResult.failure("unknown feature {}".format(feature), kind="worker_error")
 
     def status(self) -> dict:
         out = {}
         for name in settings.providers:
             provider = self._providers.get(name)
-            out[name] = {
+            entry = {
                 "ready": provider is not None,
                 "features": sorted(f.value for f in provider.supported_features) if provider else [],
                 "error": self._errors.get(name),
             }
+            entry.update(self._health[name].snapshot())
+            out[name] = entry
         return out

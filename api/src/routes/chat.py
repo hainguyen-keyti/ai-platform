@@ -1,10 +1,15 @@
 from fastapi import APIRouter, Depends
 
-from src.jobs import create_job, get_job
+from src.jobs import cancel_job, create_job, get_job
 from src.models import ChatRequest
 from src.security import current_user
 
 router = APIRouter(tags=["features"])
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel(job_id: str, user: dict = Depends(current_user)):
+    return cancel_job(user["id"], job_id)
 
 
 @router.post("/chat", status_code=202)

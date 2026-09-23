@@ -36,6 +36,11 @@ def init_db():
         for table, column, definition in (
             ("media", "message_id", "TEXT"),
             ("conversations", "provider_thread_url", "TEXT"),
+            ("jobs", "attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("jobs", "lease_expires_at", "TEXT"),
+            ("jobs", "cancel_requested", "INTEGER NOT NULL DEFAULT 0"),
+            ("jobs", "phase", "TEXT"),
+            ("jobs", "error_kind", "TEXT"),
         ):
             existing = {row["name"] for row in conn.execute("PRAGMA table_info({})".format(table))}
             if column not in existing:

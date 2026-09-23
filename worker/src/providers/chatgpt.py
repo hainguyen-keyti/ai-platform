@@ -4,7 +4,8 @@ import uuid
 from pathlib import PurePosixPath
 from typing import Optional
 
-from src.providers.base import BaseProvider, FeatureType, GenerationResult, MediaArtifact
+from src.providers.base import (BaseProvider, FeatureType, GenerationResult, MediaArtifact,
+                                ProviderError)
 
 HOME = "https://chatgpt.com/"
 TEXTAREA = "#prompt-textarea"
@@ -20,6 +21,10 @@ REPLY_TIMEOUT = 300
 # An assistant turn that is still empty a second after sending is not a finished
 # reply, it is one that has not started.
 START_FLOOR = 6
+# How long the page must stay quiet and unchanged before the answer counts as
+# over. Two seconds was thin: a reply that runs several tools puts the stop
+# button away between them, and a pause there reads as an ending.
+SETTLE_SECONDS = 6
 
 FETCH_AS_DATA_URL = """
 async (url) => {
@@ -139,7 +144,7 @@ class ChatGPTProvider(BaseProvider):
                 page.wait_for_timeout(500)
                 if page.locator(TEXTAREA).count() and page.locator(TEXTAREA).first.is_visible():
                     return page
-        raise RuntimeError("composer never appeared; the session is probably logged out")
+        raise ProviderError("composer never appeared; the session is probably logged out")
 
     def _send(self, page, prompt: str):
         box = page.locator(TEXTAREA).first
@@ -187,6 +192,9 @@ class ChatGPTProvider(BaseProvider):
 
         while time.time() < deadline:
             page.wait_for_timeout(1000)
+            # Once a second is the cancel checkpoint: a job the api has taken
+            # away stops here instead of running to the end for nobody.
+            self._check_stop()
 
             if page.locator(STOP_BUTTON).count():
                 stable = 0
@@ -196,6 +204,10 @@ class ChatGPTProvider(BaseProvider):
 
             current = self._reply_text(page, baseline)
             found = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
+            if current.strip() and not text.strip():
+                self._phase("reply started")
+            if found and not sources:
+                self._phase("picture appeared")
 
             # Nothing yet is not the same as nothing to come: an empty answer
             # never counts as settled, it just keeps the wait going.
@@ -205,7 +217,7 @@ class ChatGPTProvider(BaseProvider):
 
             if current == text and found == sources:
                 stable += 1
-                if stable >= 2:
+                if stable >= SETTLE_SECONDS:
                     break
             else:
                 text, sources = current, found
@@ -221,6 +233,7 @@ class ChatGPTProvider(BaseProvider):
                 with page.expect_download(timeout=120000) as caught:
                     page.locator("button.behavior-btn").filter(has_text=label).first.click()
                 download = caught.value
+                self._phase("file appeared")
                 # The name comes from the page, so it is untrusted: reduce it to
                 # a bare name and give it a unique prefix of our own.
                 offered = PurePosixPath(download.suggested_filename).name or "download"
@@ -279,7 +292,7 @@ class ChatGPTProvider(BaseProvider):
 
         if not text.strip() and not media:
             return GenerationResult(
-                success=False, thread_url=landed,
+                success=False, thread_url=landed, error_kind="provider_timeout",
                 error="chatgpt returned nothing after {:.0f}s".format(time.time() - started),
             )
         return GenerationResult(success=True, text=text, media=media, thread_url=landed)

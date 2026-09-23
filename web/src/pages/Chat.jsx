@@ -32,6 +32,8 @@ export default function Chat({ onQuotaSpent }) {
   const [provider, setProvider] = useState('chatgpt')
   const [input, setInput] = useState('')
   const [status, setStatus] = useState(null)
+  const [jobId, setJobId] = useState(null)
+  const [phase, setPhase] = useState(null)
   const [pendingHint, setPendingHint] = useState(null)
   const [error, setError] = useState(null)
   const [viewing, setViewing] = useState(null)
@@ -99,7 +101,8 @@ export default function Chat({ onQuotaSpent }) {
       // reload an already open conversation, so a follow-up message stayed
       // invisible until its job finished, which for a picture is minutes.
       setConversation(await api.conversation(created.conversation_id))
-      await waitForJob(created.job_id, setStatus)
+      setJobId(created.job_id)
+      await waitForJob(created.job_id, (s, p) => { setStatus(s); setPhase(p) })
       const fresh = await api.conversation(created.conversation_id)
       setConversation(fresh)
       refreshList()
@@ -110,7 +113,20 @@ export default function Chat({ onQuotaSpent }) {
       setError(err.message)
     } finally {
       setStatus(null)
+      setJobId(null)
+      setPhase(null)
       setPendingHint(null)
+    }
+  }
+
+  async function stopJob() {
+    if (!jobId) return
+    try {
+      // The api settles it at once and gives the credit back; the poll in
+      // runJob sees "cancelled" and unwinds on its own.
+      await api.cancelJob(jobId)
+    } catch (err) {
+      setError(err.message)
     }
   }
 
@@ -184,7 +200,7 @@ export default function Chat({ onQuotaSpent }) {
             )
           )}
 
-          {status && <TypingBubble hint={pendingHint} />}
+          {status && <TypingBubble hint={pendingHint} phase={phase} />}
         </div>
 
         <Lightbox url={viewing?.url} filename={viewing?.filename}
@@ -194,9 +210,16 @@ export default function Chat({ onQuotaSpent }) {
           <input value={input} onChange={(e) => setInput(e.target.value)}
             placeholder="Type a message, or ask for a picture..."
             className="flex-1 border rounded px-3 py-2 text-sm" />
-          <button disabled={!!status} className="bg-slate-900 text-white rounded px-4 text-sm disabled:opacity-50">
-            Send
-          </button>
+          {status ? (
+            <button type="button" onClick={stopJob}
+              className="rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700">
+              Stop
+            </button>
+          ) : (
+            <button type="submit" className="bg-slate-900 text-white rounded px-4 text-sm">
+              Send
+            </button>
+          )}
         </form>
       </section>
     </div>

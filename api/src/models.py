@@ -45,10 +45,23 @@ class WorkerMedia(BaseModel):
 
 class WorkerResult(BaseModel):
     status: str = Field(pattern="^(done|failed)$")
+    # The attempt this result belongs to. A result from an attempt that has since
+    # been reclaimed is refused, which is what stops a job settling twice.
+    attempt: int = Field(ge=1)
     text: str = ""
     media: list[WorkerMedia] = Field(default_factory=list)
     error: Optional[str] = None
+    error_kind: Optional[str] = Field(default=None, max_length=40)
     thread_url: Optional[str] = Field(default=None, max_length=500)
+
+
+class WorkerHeartbeat(BaseModel):
+    attempt: int = Field(ge=1)
+
+
+class WorkerProgress(BaseModel):
+    attempt: int = Field(ge=1)
+    phase: str = Field(min_length=1, max_length=40)
 
 
 class QuotaUpdate(BaseModel):

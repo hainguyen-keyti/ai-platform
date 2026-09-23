@@ -46,7 +46,16 @@ CHECKS = (
     "non image deliverable is kept",
     "non image deliverable is kept when asked in vietnamese",
     "a follow-up turn packages what the first one made",
+    "a job settles exactly once",
+    "a provider error fails the job and refunds",
+    "a stranded job is reclaimed",
+    "a running job can be cancelled",
+    "health shows code version and pacing",
 )
+
+# Phrases the mock provider reacts to, so failure modes can be exercised on purpose.
+SLOW_PHRASE = "take your time"
+BROKEN_PHRASE = "pretend the provider broke"
 
 THREAD_MARKER = re.compile(r"\[thread=([^\]]+)\]")
 
@@ -66,13 +75,15 @@ class Check:
         self.detail = detail
 
 
-def http(method, url, body=None, token=None, timeout=30):
+def http(method, url, body=None, token=None, timeout=30, headers=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("Authorization", "Bearer " + token)
+    for name, value in (headers or {}).items():
+        req.add_header(name, value)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode()
@@ -193,7 +204,7 @@ def tail(path, lines=15):
     return "\n".join("      | " + line for line in content[-lines:]) or "      | (empty)"
 
 
-def run_checks(api, media_dir, real, invite_code):
+def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, restart_worker):
     # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
     # first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
@@ -415,6 +426,111 @@ def run_checks(api, media_dir, real, invite_code):
         check_zip("a follow-up turn packages what the first one made",
                   "gói tấm hình vừa rồi lại thành một file zip cho tôi tải về", conv_pack)
 
+    # ---- reliability: quota conservation, leases, cancel, health ----
+
+    def quota_now():
+        return (http("GET", api + "/auth/me", token=token)[1] or {}).get("quota_remaining")
+
+    def job_state(job_id):
+        return http("GET", "{}/jobs/{}".format(api, job_id), token=token)[1] or {}
+
+    def wait_state(job_id, wanted, timeout):
+        deadline = time.time() + timeout
+        last = {}
+        while time.time() < deadline:
+            last = job_state(job_id)
+            if last.get("status") in wanted:
+                return last
+            time.sleep(0.4)
+        return last
+
+    def start_job(message):
+        status, body = http("POST", api + "/chat",
+                            {"provider": "chatgpt", "message": message}, token=token)
+        return body.get("job_id") if status == 202 and body else None
+
+    worker_headers = {"X-Worker-Token": worker_token}
+
+    # A result carrying the wrong attempt number must be refused outright, not
+    # merged, or a reclaimed job could be finished twice.
+    q0 = quota_now()
+    job_id = start_job(SLOW_PHRASE + ": ping")
+    seen = wait_state(job_id, ("running",), 10) if job_id else {}
+    forged_status, _ = http("POST", "{}/internal/jobs/{}/result".format(api, job_id),
+                            {"status": "done", "text": "forged by a stale attempt",
+                             "media": [], "attempt": 99},
+                            headers=worker_headers) if job_id else (0, None)
+    final = wait_state(job_id, ("done", "failed"), 40) if job_id else {}
+    text = (final.get("result") or {}).get("text") or ""
+    if (seen.get("status") == "running" and forged_status == 409
+            and final.get("status") == "done" and "forged" not in text
+            and quota_now() == q0 - 1):
+        c["a job settles exactly once"].passed(
+            "stale attempt refused with 409, real result kept, charged once")
+    else:
+        c["a job settles exactly once"].failed(
+            "seen running {} forged post {} final {} text {!r} quota {} -> {}".format(
+                seen.get("status"), forged_status, final.get("status"), text[:30], q0, quota_now()))
+
+    q0 = quota_now()
+    job_id = start_job(BROKEN_PHRASE + " for this one message")
+    final = wait_state(job_id, ("done", "failed"), 40) if job_id else {}
+    if (final.get("status") == "failed" and final.get("error_kind") == "provider_error"
+            and quota_now() == q0):
+        c["a provider error fails the job and refunds"].passed(
+            "failed as provider_error, credit returned")
+    else:
+        c["a provider error fails the job and refunds"].failed(
+            "status {} kind {} quota {} -> {} error {!r}".format(
+                final.get("status"), final.get("error_kind"), q0, quota_now(),
+                (final.get("error") or "")[:60]))
+
+    q0 = quota_now()
+    job_id = start_job(SLOW_PHRASE + ": survive a dead worker")
+    seen = wait_state(job_id, ("running",), 10) if job_id else {}
+    if seen.get("status") != "running":
+        c["a stranded job is reclaimed"].failed(
+            "job never observed running (status {}); is the slow phrase honoured?".format(
+                seen.get("status")))
+    else:
+        restarted = restart_worker()
+        final = wait_state(job_id, ("done", "failed"), 60)
+        if (restarted and final.get("status") == "done"
+                and (final.get("attempts") or 0) >= 2 and quota_now() == q0 - 1):
+            c["a stranded job is reclaimed"].passed(
+                "finished on attempt {} after the first worker was killed".format(final.get("attempts")))
+        else:
+            c["a stranded job is reclaimed"].failed(
+                "worker restarted {} final {} attempts {} quota {} -> {}".format(
+                    restarted, final.get("status"), final.get("attempts"), q0, quota_now()))
+
+    q0 = quota_now()
+    job_id = start_job(SLOW_PHRASE + ": cancel me")
+    seen = wait_state(job_id, ("running",), 10) if job_id else {}
+    cancel_status, _ = http("POST", "{}/jobs/{}/cancel".format(api, job_id), token=token) \
+        if job_id else (0, None)
+    final = wait_state(job_id, ("cancelled", "done", "failed"), 20) if job_id else {}
+    if (cancel_status == 200 and final.get("status") == "cancelled"
+            and not ((final.get("result") or {}).get("media")) and quota_now() == q0):
+        c["a running job can be cancelled"].passed(
+            "cancelled while {}, credit returned".format(seen.get("status")))
+    else:
+        c["a running job can be cancelled"].failed(
+            "cancel {} final {} quota {} -> {}".format(
+                cancel_status, final.get("status"), q0, quota_now()))
+
+    hstatus, health = http("GET", worker_health)
+    health = health or {}
+    provider_state = (health.get("providers") or {}).get("chatgpt") or {}
+    if (hstatus == 200 and health.get("code_sha")
+            and "cooldown_until" in provider_state and isinstance(health.get("pacing"), dict)):
+        c["health shows code version and pacing"].passed(
+            "sha {} pacing {}".format(str(health.get("code_sha"))[:8], sorted(health["pacing"])))
+    else:
+        c["health shows code version and pacing"].failed(
+            "status {} keys {} provider keys {}".format(
+                hstatus, sorted(health)[:8], sorted(provider_state)))
+
     return checks
 
 
@@ -455,6 +571,9 @@ def main():
                 "JWT_SECRET": "acceptance-jwt-secret",
                 "INVITE_CODE": invite_code,
                 "WORKER_TOKEN": worker_token,
+                # Short lease so a killed worker's job is reclaimed within the run.
+                "JOB_LEASE_SECONDS": "2",
+                "JOB_MAX_ATTEMPTS": "3",
             },
             workspace / "api.log",
         )
@@ -463,23 +582,37 @@ def main():
             boot_error = "api never became healthy ({})\n{}".format(detail, tail(workspace / "api.log"))
             raise RuntimeError(boot_error)
 
+        worker_env = {
+            "API_URL": api_base,
+            "WORKER_TOKEN": worker_token,
+            "PROVIDER_MODE": "real" if args.real else "mock",
+            "MEDIA_PATH": str(media_dir),
+            "SESSIONS_PATH": str(sessions_dir),
+            # The forced provider error opens a cooldown; keep it short so the
+            # checks after it are not held behind a 30 second pause.
+            "COOLDOWN_BASE_SECONDS": "1",
+        }
+        worker_health = "http://127.0.0.1:{}/health".format(worker_port)
         worker_proc, worker_log = start_service(
-            python, ROOT / "worker", worker_port,
-            {
-                "API_URL": api_base,
-                "WORKER_TOKEN": worker_token,
-                "PROVIDER_MODE": "real" if args.real else "mock",
-                "MEDIA_PATH": str(media_dir),
-                "SESSIONS_PATH": str(sessions_dir),
-            },
-            workspace / "worker.log",
-        )
-        ok, detail = wait_healthy("http://127.0.0.1:{}/health".format(worker_port), 40)
+            python, ROOT / "worker", worker_port, worker_env, workspace / "worker.log")
+        ok, detail = wait_healthy(worker_health, 40)
         if not ok:
             boot_error = "worker never became healthy ({})\n{}".format(detail, tail(workspace / "worker.log"))
             raise RuntimeError(boot_error)
 
-        checks = run_checks(api_base, media_dir, args.real, invite_code)
+        def restart_worker():
+            """Kill the worker mid-job so its lease can expire, then bring a fresh one up."""
+            nonlocal worker_proc, worker_log
+            if worker_proc.poll() is None:
+                worker_proc.kill()
+                worker_proc.wait(timeout=10)
+            worker_log.close()
+            worker_proc, worker_log = start_service(
+                python, ROOT / "worker", worker_port, worker_env, workspace / "worker-2.log")
+            return wait_healthy(worker_health, 40)[0]
+
+        checks = run_checks(api_base, media_dir, args.real, invite_code,
+                            worker_token, worker_health, restart_worker)
 
     except RuntimeError:
         pass

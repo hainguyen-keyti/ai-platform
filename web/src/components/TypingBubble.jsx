@@ -7,7 +7,7 @@ function format(seconds) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-export default function TypingBubble({ hint }) {
+export default function TypingBubble({ hint, phase }) {
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -32,6 +32,9 @@ export default function TypingBubble({ hint }) {
           {/* A real image job runs for minutes; three dots alone are
               indistinguishable from a hung request. */}
           <span className="text-xs tabular-nums text-slate-400">{format(elapsed)}</span>
+          {phase && phase !== 'claimed' && (
+            <span data-testid="typing-phase" className="text-xs text-slate-500">{phase}</span>
+          )}
         </div>
         {hint && elapsed >= HINT_AFTER_SECONDS && (
           <span className="text-xs text-slate-400">{hint}</span>

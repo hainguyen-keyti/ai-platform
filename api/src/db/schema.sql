@@ -52,19 +52,29 @@ CREATE TABLE IF NOT EXISTS media (
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- A claim takes a lease and bumps attempts. A worker that dies mid-job stops
+-- renewing, the lease runs out, and the next claim sweeps the row back to
+-- pending; a late result from the dead attempt is refused because its attempt
+-- number no longer matches. That is what keeps a credit from being charged,
+-- refunded or media attached twice.
 CREATE TABLE IF NOT EXISTS jobs (
-    id              TEXT PRIMARY KEY,
-    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
-    provider        TEXT NOT NULL,
-    feature         TEXT NOT NULL,
-    payload         TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',
-    result          TEXT,
-    error           TEXT,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    started_at      TEXT,
-    finished_at     TEXT
+    id               TEXT PRIMARY KEY,
+    user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id  TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+    provider         TEXT NOT NULL,
+    feature          TEXT NOT NULL,
+    payload          TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    lease_expires_at TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    phase            TEXT,
+    result           TEXT,
+    error            TEXT,
+    error_kind       TEXT,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    started_at       TEXT,
+    finished_at      TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_token       ON sessions(token);

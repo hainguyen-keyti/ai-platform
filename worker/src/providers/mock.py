@@ -11,6 +11,11 @@ from src.providers.base import BaseProvider, FeatureType, GenerationResult, Medi
 
 IMAGE_WORDS = ("image", "picture", "draw", "ảnh", "vẽ")
 FILE_WORDS = ("zip", "archive", "nén")
+# Phrases that make the mock misbehave on purpose, so the failure paths can be
+# exercised without a real provider.
+SLOW_PHRASE = "take your time"
+BROKEN_PHRASE = "pretend the provider broke"
+SLOW_SECONDS = 6.0
 
 
 def solid_png(width: int, height: int, rgb: tuple) -> bytes:
@@ -49,9 +54,14 @@ class MockProvider(BaseProvider):
     def start(self) -> None:
         return None
 
-    def _pace(self):
-        if settings.mock_delay > 0:
-            time.sleep(settings.mock_delay)
+    def _pace(self, seconds: Optional[float] = None):
+        """Sleep in small steps so a cancel lands within a quarter second."""
+        total = settings.mock_delay if seconds is None else seconds
+        deadline = time.time() + total
+        while time.time() < deadline:
+            self._check_stop()
+            time.sleep(min(0.25, max(0.0, deadline - time.time())))
+        self._check_stop()
 
     def _thread(self, thread_url: Optional[str]) -> str:
         # Reuse what the caller was given, otherwise open one. This is the whole
@@ -66,20 +76,29 @@ class MockProvider(BaseProvider):
 
     def chat(self, message: str, history: Optional[list] = None,
              thread_url: Optional[str] = None) -> GenerationResult:
-        self._pace()
-        thread = self._thread(thread_url)
         lowered = message.lower()
+        self._pace()
+        if SLOW_PHRASE in lowered:
+            self._pace(SLOW_SECONDS)
+        if BROKEN_PHRASE in lowered:
+            return GenerationResult.failure(
+                "mock provider showed its error banner", kind="provider_error")
+
+        thread = self._thread(thread_url)
+        self._phase("reply started")
 
         # The real provider answers with whatever the request calls for, in the
         # same chat turn. A mock that only ever replies in text cannot reach the
         # media paths at all.
         if any(word in lowered for word in FILE_WORDS):
+            self._phase("file appeared")
             return GenerationResult(
                 success=True, thread_url=thread,
                 text="mock archive for: {} [thread={}]".format(message.strip()[:120], thread),
                 media=[self._store(two_file_zip(), ".zip", "file", message)],
             )
         if any(word in lowered for word in IMAGE_WORDS):
+            self._phase("picture appeared")
             return GenerationResult(
                 success=True, thread_url=thread,
                 text="mock image for: {} [thread={}]".format(message.strip()[:120], thread),
@@ -95,6 +114,7 @@ class MockProvider(BaseProvider):
                        thread_url: Optional[str] = None) -> GenerationResult:
         self._pace()
         thread = self._thread(thread_url)
+        self._phase("picture appeared")
         return GenerationResult(
             success=True, thread_url=thread,
             text="mock image for: {}".format(prompt.strip()[:200]),
@@ -105,6 +125,7 @@ class MockProvider(BaseProvider):
                               thread_url: Optional[str] = None) -> GenerationResult:
         self._pace()
         thread = self._thread(thread_url)
+        self._phase("reply started")
         return GenerationResult(
             success=True, thread_url=thread,
             text=(

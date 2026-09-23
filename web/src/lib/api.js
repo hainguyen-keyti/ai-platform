@@ -49,6 +49,7 @@ export const api = {
   chat: (payload) => request('POST', '/chat', payload),
   videoScript: (payload) => request('POST', '/video/script', payload),
   job: (id) => request('GET', `/jobs/${id}`),
+  cancelJob: (id) => request('POST', `/jobs/${id}/cancel`),
   media: () => request('GET', '/media'),
   deleteMedia: (id) => request('DELETE', `/media/${id}`),
 }
@@ -64,9 +65,9 @@ export async function mediaBlobUrl(id) {
 export async function waitForJob(jobId, onTick) {
   for (;;) {
     const job = await api.job(jobId)
-    if (job.status === 'done') return job
+    if (job.status === 'done' || job.status === 'cancelled') return job
     if (job.status === 'failed') throw new Error(job.error || 'job failed')
-    if (onTick) onTick(job.status)
+    if (onTick) onTick(job.status, job.phase)
     await new Promise((resolve) => setTimeout(resolve, 1500))
   }
 }

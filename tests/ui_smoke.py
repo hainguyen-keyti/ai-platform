@@ -220,6 +220,24 @@ def main():
         record("reading history is not interrupted", top_after < 120,
                "scrollTop {} after a reply landed while scrolled up".format(round(top_after)))
 
+        # Waiting minutes with no way out was the top complaint the surveyed
+        # interfaces had all fixed: Send must become Stop while a job runs.
+        page.fill(COMPOSER, "cancel me please")
+        page.click("button:has-text('Send')")
+        page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
+        try:
+            page.click("button:has-text('Stop')", timeout=3000)
+            page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=2500)
+            page.wait_for_timeout(6000)
+            replied = page.locator("text=mock reply from chatgpt to: cancel me please").count()
+            record("stop cancels a running job", replied == 0,
+                   "bubble gone within 2.5s, {} reply bubble(s) appeared afterwards".format(replied))
+        except Exception as exc:
+            page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=60000)
+            record("stop cancels a running job", False,
+                   "{}: no Stop control, job ran to completion".format(type(exc).__name__))
+        shot(page, "07f-stop")
+
         # Auto-scroll can only be observed once the thread is taller than the
         # viewport, so push it over with one deliberately long message.
         page.fill(COMPOSER, "pad " * 400)

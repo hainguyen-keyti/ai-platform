@@ -11,6 +11,14 @@ class FeatureType(str, Enum):
     VIDEO_SCRIPT = "video_script"
 
 
+class JobCancelled(Exception):
+    """The job being worked on was cancelled or reclaimed; stop and do not report."""
+
+
+class ProviderError(Exception):
+    """The provider itself is unwell: logged out, throttled, showing an error banner."""
+
+
 @dataclass
 class MediaArtifact:
     filename: str
@@ -24,13 +32,16 @@ class GenerationResult:
     text: str = ""
     media: List[MediaArtifact] = field(default_factory=list)
     error: Optional[str] = None
+    # Why it failed, in a form the api and the pool can act on:
+    # provider_error, provider_timeout, cancelled, worker_error.
+    error_kind: Optional[str] = None
     # Where the provider ended up. Stored against the conversation so the next
     # turn lands in the same thread instead of starting from nothing.
     thread_url: Optional[str] = None
 
     @classmethod
-    def failure(cls, message: str) -> "GenerationResult":
-        return cls(success=False, error=message)
+    def failure(cls, message: str, kind: Optional[str] = None) -> "GenerationResult":
+        return cls(success=False, error=message, error_kind=kind)
 
 
 class BaseProvider(ABC):
@@ -48,6 +59,24 @@ class BaseProvider(ABC):
         self.sessions_path = Path(sessions_path)
         self.media_path.mkdir(parents=True, exist_ok=True)
         self.sessions_path.mkdir(parents=True, exist_ok=True)
+        self._phase_hook = None
+        self._stop_hook = None
+
+    def bind(self, phase_hook=None, stop_hook=None):
+        """Attach the current job's progress and cancellation channels."""
+        self._phase_hook = phase_hook
+        self._stop_hook = stop_hook
+
+    def _phase(self, name: str):
+        if self._phase_hook:
+            try:
+                self._phase_hook(name)
+            except Exception:
+                pass
+
+    def _check_stop(self):
+        if self._stop_hook and self._stop_hook():
+            raise JobCancelled()
 
     def supports(self, feature: str) -> bool:
         return feature in {f.value for f in self.supported_features}
