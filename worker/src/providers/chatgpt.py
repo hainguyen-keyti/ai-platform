@@ -182,6 +182,7 @@ class ChatGPTProvider(BaseProvider):
         self._page = None
         self._access_token = None
         self.last_settle = None
+        self.last_open = None
 
     def start(self) -> None:
         # The browser itself is created on first use: the sync driver is bound to
@@ -233,15 +234,23 @@ class ChatGPTProvider(BaseProvider):
         """
         page = self._ensure_page()
         if thread_url:
+            wanted = thread_url.rsplit("/c/", 1)[-1].split("?")[0].split("#")[0]
             page.goto(thread_url, timeout=90000, wait_until="domcontentloaded")
-            if self._composer_ready(page, 45):
+            ready = self._composer_ready(page, 45)
+            # A composer is not enough: the site can bounce a slow thread to the
+            # root page, where a composer is also waiting, in a brand new chat.
+            # The url has to be the thread that was asked for.
+            landed = self._thread_id(page)
+            self.last_open = {"wanted": wanted[:8], "landed": (landed or page.url)[:60],
+                              "composer": ready, "on_thread": landed == wanted}
+            if ready and landed == wanted:
                 return page
-            thread_id = self._thread_id(page) or thread_url.rsplit("/c/", 1)[-1]
-            data = self._thread_nodes(page, thread_id)
+            data = self._thread_nodes(page, wanted)
             status = data.get("status") if data else None
             if status != 404:
                 raise ProviderError(
-                    "thread {} did not open (server status {})".format(thread_id[:8], status))
+                    "thread {} did not open: landed on {}, server status {}".format(
+                        wanted[:8], (landed or page.url)[:60], status))
         page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
         if self._composer_ready(page, 45):
             return page

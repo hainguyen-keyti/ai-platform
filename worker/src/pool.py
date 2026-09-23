@@ -166,5 +166,10 @@ class BrowserPool:
                 "error": self._errors.get(name),
             }
             entry.update(self._health[name].snapshot())
+            # Diagnostics the provider chooses to expose: how the last turn was
+            # settled and whether the last thread open landed where it aimed.
+            for attr in ("last_settle", "last_open"):
+                if provider is not None and hasattr(provider, attr):
+                    entry[attr] = getattr(provider, attr)
             out[name] = entry
         return out
