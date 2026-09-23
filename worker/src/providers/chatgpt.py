@@ -12,13 +12,13 @@ STOP_BUTTON = '[data-testid="stop-button"]'
 ASSISTANT_TURN = '[data-message-author-role="assistant"]'
 UPLOAD_INPUT = "#upload-files"
 
-CHAT_TIMEOUT = 180
-IMAGE_TIMEOUT = 300
+# One ceiling for every request. A short answer still returns as soon as it
+# settles, so the generous bound only costs anything when a picture is actually
+# being drawn.
+REPLY_TIMEOUT = 300
 # An assistant turn that is still empty a second after sending is not a finished
 # reply, it is one that has not started.
 START_FLOOR = 6
-# How long to keep looking for a picture when a chat reply came back wordless.
-CHAT_IMAGE_GRACE = 90
 
 FETCH_AS_DATA_URL = """
 async (url) => {
@@ -32,10 +32,12 @@ async (url) => {
 }
 """
 
-# Document-wide on purpose. Scoping this to the assistant turn looks tidier but
-# missed every generated image in a real run: the result is not always rendered
-# inside that element. A reference image the user uploaded is excluded by
-# diffing against a snapshot taken before the prompt is sent, not by position.
+# Measured, because guessing here was wrong twice. A generated picture has no
+# [data-message-author-role] ancestor at all, which is why scoping the search to
+# the assistant turn once returned nothing. An attachment does sit in the user
+# turn, and it comes back with a fresh url and re-encoded bytes, so neither a
+# url snapshot nor a content hash recognises it. Position is what tells them
+# apart: skip the user turn, keep everything else.
 COLLECT_CANDIDATE_IMAGES = """
 () => {
     const out = [];
@@ -43,6 +45,8 @@ COLLECT_CANDIDATE_IMAGES = """
         const src = img.src || "";
         if (!src.includes("estuary") && !src.includes("oaiusercontent")) continue;
         if (img.naturalWidth < 256 || img.naturalHeight < 256) continue;
+        const turn = img.closest("[data-message-author-role]");
+        if (turn && turn.getAttribute("data-message-author-role") === "user") continue;
         if (!out.includes(src)) out.push(src);
     }
     return out;
@@ -134,35 +138,7 @@ class ChatGPTProvider(BaseProvider):
         if button.count():
             button.click(timeout=10000, force=True)
 
-    def _await_reply(self, page, baseline: int, timeout: int) -> str:
-        """Wait for a new assistant turn to appear and stop changing.
-
-        An image-only reply has no text at all, so "the text stopped changing"
-        is true one second after sending, before the model has started. The
-        floor below keeps that from being read as a finished reply; past it the
-        stop button is what decides.
-        """
-        deadline = time.time() + timeout
-        floor = time.time() + START_FLOOR
-        text = ""
-        stable = 0
-        while time.time() < deadline:
-            page.wait_for_timeout(1000)
-            turns = page.locator(ASSISTANT_TURN)
-            if turns.count() <= baseline:
-                continue
-            current = turns.last.inner_text()
-            if current == text:
-                stable += 1
-                if stable >= 2 and time.time() > floor and page.locator(STOP_BUTTON).count() == 0:
-                    return text
-            else:
-                text = current
-                stable = 0
-        return text
-
-    def _text_so_far(self, page, baseline: int) -> str:
-        """Whatever the assistant has written by now, without waiting for it."""
+    def _reply_text(self, page, baseline: int) -> str:
         turns = page.locator(ASSISTANT_TURN)
         if turns.count() <= baseline:
             return ""
@@ -171,15 +147,50 @@ class ChatGPTProvider(BaseProvider):
         except Exception:
             return ""
 
-    def _save_images(self, page, prompt: str, deadline: float, seen_before):
-        artifacts = []
-        sources = []
-        while time.time() < deadline:
-            sources = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
-            if sources:
-                break
-            page.wait_for_timeout(2000)
+    def _await_result(self, page, baseline: int, seen_before, prompt: str):
+        """Wait for the answer to settle, then take whatever it turned out to be.
 
+        One loop for every kind of request. Branching on what the caller asked
+        for was wrong twice: an image-only answer was read as finished before it
+        had started, and a picture asked for in plain chat was thrown away
+        because the chat path only looked for words.
+        """
+        deadline = time.time() + REPLY_TIMEOUT
+        floor = time.time() + START_FLOOR
+        text = ""
+        sources = []
+        stable = 0
+
+        while time.time() < deadline:
+            page.wait_for_timeout(1000)
+
+            if page.locator(STOP_BUTTON).count():
+                stable = 0
+                continue
+            if time.time() < floor:
+                continue
+
+            current = self._reply_text(page, baseline)
+            found = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
+
+            # Nothing yet is not the same as nothing to come: an empty answer
+            # never counts as settled, it just keeps the wait going.
+            if not current.strip() and not found:
+                stable = 0
+                continue
+
+            if current == text and found == sources:
+                stable += 1
+                if stable >= 2:
+                    break
+            else:
+                text, sources = current, found
+                stable = 0
+
+        return text, self._download(page, sources, prompt)
+
+    def _download(self, page, sources, prompt: str):
+        artifacts = []
         for source in sources:
             try:
                 data_url = page.evaluate(FETCH_AS_DATA_URL, source)
@@ -188,16 +199,17 @@ class ChatGPTProvider(BaseProvider):
             if not data_url or not data_url.startswith("data:"):
                 continue
             header, _, payload = data_url.partition(",")
+            blob = base64.b64decode(payload)
             suffix = ".png" if "png" in header else ".jpg"
             filename = "chatgpt-{}{}".format(uuid.uuid4().hex, suffix)
-            (self.media_path / filename).write_bytes(base64.b64decode(payload))
+            (self.media_path / filename).write_bytes(blob)
             artifacts.append(
                 MediaArtifact(filename=filename, type="image",
                               metadata={"prompt": prompt[:500], "source": "chatgpt"})
             )
         return artifacts
 
-    def _run(self, prompt: str, timeout: int, want_images: bool, upload: Optional[str] = None):
+    def _run(self, prompt: str, upload: Optional[str] = None):
         page = self._new_chat()
         baseline = page.locator(ASSISTANT_TURN).count()
 
@@ -209,37 +221,14 @@ class ChatGPTProvider(BaseProvider):
             page.wait_for_timeout(3000)
 
         seen_before = set(page.evaluate(SNAPSHOT_IMAGES))
-
         started = time.time()
         self._send(page, prompt)
-
-        media = []
-        if want_images:
-            # The picture is the completion signal here. Waiting for the text
-            # reply first burned the whole budget every time, because an
-            # image-only answer never produces a turn to settle on.
-            media = self._save_images(page, prompt, time.time() + IMAGE_TIMEOUT, seen_before)
-            text = self._text_so_far(page, baseline)
-            if not media:
-                # Carry the reply and the elapsed time back: a refusal, a slow
-                # render and a wait that never ran look identical without them.
-                return GenerationResult(
-                    success=False,
-                    text=text,
-                    error="no image after {:.0f}s; reply was: {}".format(
-                        time.time() - started, (text or "(empty)")[:400]
-                    ),
-                )
-        else:
-            text = self._await_reply(page, baseline, timeout)
-            if not text.strip():
-                # Asking for a picture without switching the UI into image mode
-                # is normal, and then the reply is a picture and no words.
-                # Throwing it away was reported as "empty reply from chatgpt".
-                media = self._save_images(page, prompt, time.time() + CHAT_IMAGE_GRACE, seen_before)
+        text, media = self._await_result(page, baseline, seen_before, prompt)
 
         if not text.strip() and not media:
-            return GenerationResult.failure("empty reply from chatgpt")
+            return GenerationResult.failure(
+                "chatgpt returned nothing after {:.0f}s".format(time.time() - started)
+            )
         return GenerationResult(success=True, text=text, media=media)
 
     def chat(self, message: str, history: Optional[list] = None) -> GenerationResult:
@@ -252,7 +241,7 @@ class ChatGPTProvider(BaseProvider):
                 + "\n\nReply to this next message only:\n"
                 + message
             )
-        return self._run(prompt, CHAT_TIMEOUT, want_images=False)
+        return self._run(prompt)
 
     def generate_image(self, prompt: str, reference_filename: Optional[str] = None) -> GenerationResult:
         instruction = "Generate an image: {}".format(prompt)
@@ -260,7 +249,7 @@ class ChatGPTProvider(BaseProvider):
             instruction = (
                 "Using the attached image as the character reference, generate a new image: {}"
             ).format(prompt)
-        return self._run(instruction, IMAGE_TIMEOUT, want_images=True, upload=reference_filename)
+        return self._run(instruction, upload=reference_filename)
 
     def generate_video_script(self, image_filename: str, duration: int = 5) -> GenerationResult:
         instruction = (
@@ -268,4 +257,4 @@ class ChatGPTProvider(BaseProvider):
             "Describe camera movement, character animation and ambient motion. "
             "Answer with a single paragraph under 150 words and nothing else."
         ).format(duration)
-        return self._run(instruction, CHAT_TIMEOUT, want_images=False, upload=image_filename)
+        return self._run(instruction, upload=image_filename)

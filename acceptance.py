@@ -161,7 +161,7 @@ def tail(path, lines=15):
 
 
 def run_checks(api, media_dir, real, invite_code):
-    # Must exceed the provider's own ceiling (IMAGE_TIMEOUT is 300s) plus the
+    # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
     # first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
     job_timeout = 420 if real else 30
