@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { mediaBlobUrl } from '../lib/api.js'
 
-export default function MediaImage({ id, className = '', alt = 'generated image' }) {
+export default function MediaImage({ id, className = '', alt = 'generated image', onOpen }) {
   const [url, setUrl] = useState(null)
   const [error, setError] = useState(null)
 
@@ -26,5 +26,14 @@ export default function MediaImage({ id, className = '', alt = 'generated image'
 
   if (error) return <div className="text-xs text-red-600">{error}</div>
   if (!url) return <div className={`animate-pulse bg-slate-200 rounded ${className}`} />
-  return <img src={url} alt={alt} className={`rounded ${className}`} />
+
+  return (
+    <img
+      src={url}
+      alt={alt}
+      data-testid="media-thumb"
+      onClick={onOpen ? () => onOpen(url) : undefined}
+      className={`rounded ${onOpen ? 'cursor-zoom-in' : ''} ${className}`}
+    />
+  )
 }

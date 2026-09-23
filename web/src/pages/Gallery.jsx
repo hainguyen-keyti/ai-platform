@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
 import MediaImage from '../components/MediaImage.jsx'
+import Lightbox from '../components/Lightbox.jsx'
 
 export default function Gallery() {
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [error, setError] = useState(null)
+  const [viewing, setViewing] = useState(null)
 
   useEffect(() => { load() }, [])
 
@@ -37,7 +39,8 @@ export default function Gallery() {
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {items.map((item) => (
           <div key={item.id} className="bg-white border rounded p-2 space-y-2">
-            <MediaImage id={item.id} className="w-full" />
+            <MediaImage id={item.id} className="w-full"
+              onOpen={(url) => setViewing({ url, filename: item.filename })} />
             <p className="text-xs text-slate-500 line-clamp-2">{item.prompt || item.filename}</p>
             <div className="flex justify-between text-xs text-slate-400">
               <span>{item.provider}</span>
@@ -48,6 +51,9 @@ export default function Gallery() {
           </div>
         ))}
       </div>
+
+      <Lightbox url={viewing?.url} filename={viewing?.filename}
+        onClose={() => setViewing(null)} />
     </div>
   )
 }

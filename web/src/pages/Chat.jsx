@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { api, waitForJob } from '../lib/api.js'
 import MediaImage from '../components/MediaImage.jsx'
 import TypingBubble from '../components/TypingBubble.jsx'
+import Lightbox from '../components/Lightbox.jsx'
 
 const PROVIDERS = ['chatgpt', 'grok', 'gemini']
 const SLOW_HINT = 'Still working. Asking for a picture takes the longest.'
@@ -16,6 +17,11 @@ export default function Chat({ onQuotaSpent }) {
   const [status, setStatus] = useState(null)
   const [pendingHint, setPendingHint] = useState(null)
   const [error, setError] = useState(null)
+  const [viewing, setViewing] = useState(null)
+
+  function open(url, item) {
+    setViewing({ url, filename: item.filename })
+  }
 
   const scrollRef = useRef(null)
   // Following the tail is the default, but someone who scrolled up to reread
@@ -123,21 +129,33 @@ export default function Chat({ onQuotaSpent }) {
           {!conversation && <p className="text-slate-400 text-sm">Start a new conversation.</p>}
 
           {conversation?.messages.map((m) => (
-            <div key={m.id} className={m.role === 'user' ? 'text-right' : ''}>
-              <div className={`inline-block max-w-2xl whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
-                m.role === 'user' ? 'bg-slate-900 text-white' : 'bg-white border'}`}>
-                {m.content}
-              </div>
+            <div key={m.id} className={`flex flex-col gap-2 ${
+              m.role === 'user' ? 'items-end' : 'items-start'}`}>
+              {m.content && (
+                <div className={`max-w-2xl whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+                  m.role === 'user' ? 'bg-slate-900 text-white' : 'bg-white border'}`}>
+                  {m.content}
+                </div>
+              )}
+              {m.media?.map((item) => (
+                <div key={item.id} className="w-64 rounded border bg-white p-2">
+                  <MediaImage id={item.id} className="w-full" onOpen={(url) => open(url, item)} />
+                  <button onClick={() => requestScript(item.id)} disabled={!!status}
+                    className="mt-2 w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
+                    Video script
+                  </button>
+                </div>
+              ))}
             </div>
           ))}
 
-          {conversation?.media?.length > 0 && (
+          {conversation?.orphan_media?.length > 0 && (
             <div className="grid grid-cols-2 gap-3 pt-2 md:grid-cols-3">
-              {conversation.media.map((item) => (
-                <div key={item.id} className="bg-white border rounded p-2 space-y-2">
-                  <MediaImage id={item.id} className="w-full" />
+              {conversation.orphan_media.map((item) => (
+                <div key={item.id} className="space-y-2 rounded border bg-white p-2">
+                  <MediaImage id={item.id} className="w-full" onOpen={(url) => open(url, item)} />
                   <button onClick={() => requestScript(item.id)} disabled={!!status}
-                    className="w-full text-xs border rounded py-1 hover:bg-slate-100 disabled:opacity-50">
+                    className="w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
                     Video script
                   </button>
                 </div>
@@ -147,6 +165,9 @@ export default function Chat({ onQuotaSpent }) {
 
           {status && <TypingBubble hint={pendingHint} />}
         </div>
+
+        <Lightbox url={viewing?.url} filename={viewing?.filename}
+          onClose={() => setViewing(null)} />
 
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)}

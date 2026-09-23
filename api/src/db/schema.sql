@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS media (
     id              TEXT PRIMARY KEY,
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+    message_id      TEXT REFERENCES messages(id) ON DELETE SET NULL,
     provider        TEXT NOT NULL,
     type            TEXT NOT NULL,
     prompt          TEXT,

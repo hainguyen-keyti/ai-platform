@@ -29,18 +29,29 @@ def get_conversation(conversation_id: str, user: dict = Depends(current_user)):
         )
         if not conv:
             raise HTTPException(status_code=404, detail="conversation not found")
-        conv["messages"] = many(
+        messages = many(
             conn,
             "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ?"
             " ORDER BY created_at, rowid",
             (conversation_id,),
         )
-        conv["media"] = many(
+        media = many(
             conn,
-            "SELECT id, type, filename, created_at FROM media WHERE conversation_id = ?"
-            " ORDER BY created_at, rowid",
+            "SELECT id, type, filename, message_id, created_at FROM media"
+            " WHERE conversation_id = ? ORDER BY created_at, rowid",
             (conversation_id,),
         )
+
+    by_message = {}
+    for item in media:
+        by_message.setdefault(item["message_id"], []).append(item)
+    for message in messages:
+        message["media"] = by_message.get(message["id"], [])
+
+    conv["messages"] = messages
+    # Anything generated before media carried a message id has nowhere to sit in
+    # the thread, so it keeps the old trailing strip rather than disappearing.
+    conv["orphan_media"] = by_message.get(None, [])
     return conv
 
 

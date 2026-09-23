@@ -130,6 +130,45 @@ def main():
         shot(page, "07-video-script")
         record("video script from an image", True, "script bubble rendered")
 
+        # Document order, not coordinates: the picture must sit where it was
+        # produced, with the later reply below it, rather than in a strip
+        # dumped at the end of the thread.
+        order = page.evaluate(
+            """() => {
+                const img = document.querySelector('[data-testid=media-thumb]');
+                const bubbles = document.querySelectorAll('[data-testid=message-scroll] .whitespace-pre-wrap');
+                const last = bubbles[bubbles.length - 1];
+                if (!img || !last) return null;
+                const following = img.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING;
+                return {following: !!following, tail: last.textContent.trim().slice(0, 40)};
+            }"""
+        )
+        record("media sits inline in the timeline", bool(order and order["following"]),
+               "last bubble {} the image: {}".format(
+                   "follows" if order and order["following"] else "precedes",
+                   (order or {}).get("tail", "?")))
+
+        page.click("[data-testid=media-thumb]")
+        page.wait_for_selector("[data-testid=lightbox]", timeout=10000)
+        page.wait_for_timeout(600)
+        shot(page, "07d-lightbox")
+        downloadable = page.evaluate(
+            """() => {
+                const a = document.querySelector('[data-testid=lightbox-download]');
+                const img = document.querySelector('[data-testid=lightbox] img');
+                return {
+                  hasDownload: !!(a && a.hasAttribute('download')),
+                  name: a ? a.getAttribute('download') : null,
+                  w: img ? img.naturalWidth : 0
+                };
+            }"""
+        )
+        record("media opens large and can be saved",
+               downloadable["hasDownload"] and downloadable["w"] > 0,
+               "{}x, download name {}".format(downloadable["w"], downloadable["name"]))
+        page.keyboard.press("Escape")
+        page.wait_for_selector("[data-testid=lightbox]", state="detached", timeout=5000)
+
         # Read the quota before the scroll checks below spend any more of it.
         quota_mid = quota_number(page)
 

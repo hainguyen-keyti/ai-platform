@@ -1,6 +1,9 @@
 services:
   api:
     build: ./api
+    # Reload in place, so an api change needs a restart at worst and never a
+    # rebuild. The image still defaults to the plain command for a real deploy.
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "3000", "--reload"]
     ports:
       - "3000:3000"
     environment:
@@ -10,6 +13,7 @@ services:
       INVITE_CODE: ${INVITE_CODE:?set INVITE_CODE in .env}
       WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
     volumes:
+      - ./api/src:/app/src
       - ./storage/db:/data/db
       - ./storage/media:/data/media
     restart: unless-stopped

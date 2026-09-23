@@ -137,15 +137,28 @@ def record_result(job_id, status, text, media, error):
                 conn.execute("COMMIT")
                 return json.loads(job["result"]) if job["result"] else {}
 
+            # The message comes first so its pictures can point at it. Without
+            # that link the gallery strip floats loose at the end of the thread
+            # instead of sitting where the answer was given.
+            message_id = None
+            if status == "done" and job["conversation_id"] and (text or media):
+                message_id = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, role, content)"
+                    " VALUES (?, ?, 'assistant', ?)",
+                    (message_id, job["conversation_id"], text or ""),
+                )
+
             for item in media or []:
                 media_id = uuid.uuid4().hex
                 conn.execute(
-                    "INSERT INTO media (id, user_id, conversation_id, provider, type, prompt,"
-                    " filename, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO media (id, user_id, conversation_id, message_id, provider, type,"
+                    " prompt, filename, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         media_id,
                         job["user_id"],
                         job["conversation_id"],
+                        message_id,
                         job["provider"],
                         item.get("type") or "image",
                         (json.loads(job["payload"]) or {}).get("prompt"),
@@ -154,13 +167,6 @@ def record_result(job_id, status, text, media, error):
                     ),
                 )
                 media_ids.append(media_id)
-
-            if status == "done" and text and job["conversation_id"]:
-                conn.execute(
-                    "INSERT INTO messages (id, conversation_id, role, content)"
-                    " VALUES (?, ?, 'assistant', ?)",
-                    (uuid.uuid4().hex, job["conversation_id"], text),
-                )
 
             result = {"text": text or "", "media": media_ids}
             conn.execute(

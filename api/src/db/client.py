@@ -30,6 +30,12 @@ def init_db():
     settings.media_path.mkdir(parents=True, exist_ok=True)
     with db() as conn:
         conn.executescript(SCHEMA_FILE.read_text())
+        # CREATE TABLE IF NOT EXISTS cannot widen a table that already exists,
+        # and the alternative is asking anyone already running this to throw
+        # their conversations away.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(media)")}
+        if "message_id" not in columns:
+            conn.execute("ALTER TABLE media ADD COLUMN message_id TEXT")
 
 
 def one(conn, sql, params=()):
