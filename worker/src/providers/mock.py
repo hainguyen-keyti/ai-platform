@@ -1,8 +1,10 @@
 import struct
+import time
 import uuid
 import zlib
 from typing import Optional
 
+from src.config import settings
 from src.providers.base import BaseProvider, FeatureType, GenerationResult, MediaArtifact
 
 
@@ -34,13 +36,19 @@ class MockProvider(BaseProvider):
     def start(self) -> None:
         return None
 
+    def _pace(self):
+        if settings.mock_delay > 0:
+            time.sleep(settings.mock_delay)
+
     def chat(self, message: str, history: Optional[list] = None) -> GenerationResult:
+        self._pace()
         return GenerationResult(
             success=True,
             text="mock reply from {} to: {}".format(self.name, message.strip()[:200]),
         )
 
     def generate_image(self, prompt: str, reference_filename: Optional[str] = None) -> GenerationResult:
+        self._pace()
         filename = "mock-{}.png".format(uuid.uuid4().hex)
         (self.media_path / filename).write_bytes(solid_png(64, 64, (220, 60, 60)))
         return GenerationResult(
@@ -51,6 +59,7 @@ class MockProvider(BaseProvider):
         )
 
     def generate_video_script(self, image_filename: str, duration: int = 5) -> GenerationResult:
+        self._pace()
         return GenerationResult(
             success=True,
             text=(

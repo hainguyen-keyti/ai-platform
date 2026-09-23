@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, waitForJob } from '../lib/api.js'
 import MediaImage from '../components/MediaImage.jsx'
+import TypingBubble from '../components/TypingBubble.jsx'
 
 const PROVIDERS = ['chatgpt', 'grok', 'gemini']
+const IMAGE_HINT = 'Image jobs usually take 2 to 5 minutes.'
+const STICK_THRESHOLD_PX = 80
 
 export default function Chat({ onQuotaSpent }) {
   const [conversations, setConversations] = useState([])
@@ -12,13 +15,33 @@ export default function Chat({ onQuotaSpent }) {
   const [mode, setMode] = useState('chat')
   const [input, setInput] = useState('')
   const [status, setStatus] = useState(null)
+  const [pendingHint, setPendingHint] = useState(null)
   const [error, setError] = useState(null)
+
+  const scrollRef = useRef(null)
+  // Following the tail is the default, but someone who scrolled up to reread
+  // history must not be yanked back down when a reply lands.
+  const stickToBottom = useRef(true)
 
   useEffect(() => { refreshList() }, [])
   useEffect(() => {
+    stickToBottom.current = true
     if (!activeId) { setConversation(null); return }
     api.conversation(activeId).then(setConversation).catch((e) => setError(e.message))
   }, [activeId])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !stickToBottom.current) return
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }, [conversation, status])
+
+  function trackScroll() {
+    const el = scrollRef.current
+    if (!el) return
+    stickToBottom.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX
+  }
 
   async function refreshList() {
     try {
@@ -29,9 +52,12 @@ export default function Chat({ onQuotaSpent }) {
     }
   }
 
-  async function runJob(starter) {
+  async function runJob(starter, hint = null) {
     setError(null)
     setStatus('queued')
+    setPendingHint(hint)
+    // Sending is an explicit request to watch the tail again.
+    stickToBottom.current = true
     try {
       const created = await starter()
       setActiveId(created.conversation_id)
@@ -46,6 +72,7 @@ export default function Chat({ onQuotaSpent }) {
       setError(err.message)
     } finally {
       setStatus(null)
+      setPendingHint(null)
     }
   }
 
@@ -55,10 +82,12 @@ export default function Chat({ onQuotaSpent }) {
     if (!text || status) return
     setInput('')
     const payload = { provider, conversation_id: activeId }
-    runJob(() =>
-      mode === 'image'
-        ? api.image({ ...payload, prompt: text })
-        : api.chat({ ...payload, message: text })
+    runJob(
+      () =>
+        mode === 'image'
+          ? api.image({ ...payload, prompt: text })
+          : api.chat({ ...payload, message: text }),
+      mode === 'image' ? IMAGE_HINT : null
     )
   }
 
@@ -100,11 +129,11 @@ export default function Chat({ onQuotaSpent }) {
               </button>
             ))}
           </div>
-          {status && <span className="text-sm text-amber-600">job {status}...</span>}
           {error && <span className="text-sm text-red-600">{error}</span>}
         </header>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
+        <div ref={scrollRef} onScroll={trackScroll} data-testid="message-scroll"
+          className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
           {!conversation && <p className="text-slate-400 text-sm">Start a new conversation.</p>}
 
           {conversation?.messages.map((m) => (
@@ -129,6 +158,8 @@ export default function Chat({ onQuotaSpent }) {
               ))}
             </div>
           )}
+
+          {status && <TypingBubble hint={pendingHint} />}
         </div>
 
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">

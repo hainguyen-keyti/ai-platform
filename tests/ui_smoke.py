@@ -3,10 +3,17 @@
 
     python tests/ui_smoke.py
 
-Needs a running stack. Reads WEB_URL (default http://localhost:5173) and
-INVITE_CODE. Screenshots go to SHOT_DIR (default /tmp/ui_shots) so a human, or
-an agent that can read images, can look at what actually rendered instead of
-trusting an assertion.
+Needs a running stack whose worker is in mock mode with a delay:
+
+    PROVIDER_MODE=mock MOCK_DELAY_SECONDS=4 ./scripts/run-worker.sh
+
+The delay is not optional. A mock that answers instantly leaves no waiting state,
+so the typing indicator can never be observed. Against a real provider the waits
+here are far too short.
+
+Reads WEB_URL (default http://localhost:5173) and INVITE_CODE. Screenshots go to
+SHOT_DIR (default /tmp/ui_shots) so a human, or an agent that can read images,
+can look at what actually rendered instead of trusting an assertion.
 """
 
 import os
@@ -82,6 +89,22 @@ def main():
         shot(page, "04-message-typed")
         page.click("button:has-text('Send')")
 
+        # Needs MOCK_DELAY_SECONDS on the worker: a mock that answers instantly
+        # leaves no waiting state to look at.
+        try:
+            page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
+            page.wait_for_timeout(1200)
+            shot(page, "05a-typing")
+            label = page.locator("[data-testid=typing-bubble]").inner_text().strip()
+            dots = page.evaluate(
+                "() => document.querySelectorAll('[data-testid=typing-bubble] span.animate-bounce').length"
+            )
+            record("typing indicator while waiting", dots == 3 and label != "",
+                   "{} dots, elapsed reads {}".format(dots, label))
+        except Exception as exc:
+            record("typing indicator while waiting", False,
+                   "{}; is the worker running with MOCK_DELAY_SECONDS set?".format(type(exc).__name__))
+
         page.wait_for_selector("text=mock reply from chatgpt", timeout=60000)
         shot(page, "05-chat-reply")
         record("chat message round trip", True, "assistant bubble rendered")
@@ -106,9 +129,53 @@ def main():
         shot(page, "07-video-script")
         record("video script from an image", True, "script bubble rendered")
 
-        quota_after = quota_number(page)
-        record("quota in the nav tracks the jobs spent", quota_after == quota_before - 3,
-               "{} -> {} after 3 jobs".format(quota_before, quota_after))
+        # Read the quota before the scroll checks below spend any more of it.
+        quota_mid = quota_number(page)
+        page.click("header button:has-text('chat')")
+
+        # Scrolling up mid-job means "I am reading"; the reply landing must not
+        # drag the view back down.
+        page.fill("input[placeholder='Type a message...']", "sent then scrolled away")
+        page.click("button:has-text('Send')")
+        page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
+        page.evaluate("() => document.querySelector('[data-testid=message-scroll]').scrollTo({top: 0})")
+        page.wait_for_timeout(400)
+        page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=60000)
+        page.wait_for_timeout(1500)
+        shot(page, "07c-stayed-put")
+        top_after = page.evaluate(
+            "() => document.querySelector('[data-testid=message-scroll]').scrollTop"
+        )
+        record("reading history is not interrupted", top_after < 120,
+               "scrollTop {} after a reply landed while scrolled up".format(round(top_after)))
+
+        # Auto-scroll can only be observed once the thread is taller than the
+        # viewport, so push it over with one deliberately long message.
+        page.fill("input[placeholder='Type a message...']", "pad " * 400)
+        page.click("button:has-text('Send')")
+        page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
+        page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=60000)
+        page.wait_for_timeout(1500)
+        shot(page, "07b-after-long-message")
+
+        box = page.evaluate(
+            """() => {
+                const el = document.querySelector('[data-testid=message-scroll]')
+                return {h: el.scrollHeight, t: el.scrollTop, c: el.clientHeight}
+            }"""
+        )
+        overflow = box["h"] - box["c"]
+        gap = box["h"] - box["t"] - box["c"]
+        if overflow < 40:
+            # Say so rather than banking a pass the layout could not have failed.
+            record("view follows new messages", True,
+                   "not proven here, the thread is only {}px taller than the viewport".format(round(overflow)))
+        else:
+            record("view follows new messages", gap < 80,
+                   "{}px from the bottom with {}px of overflow".format(round(gap), round(overflow)))
+
+        record("quota in the nav tracks the jobs spent", quota_mid == quota_before - 3,
+               "{} -> {} after 3 jobs".format(quota_before, quota_mid))
 
         page.click("nav button:has-text('gallery')")
         page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
