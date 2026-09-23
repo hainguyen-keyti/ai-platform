@@ -1,0 +1,5 @@
+# Installed into the existing cloakbrowser venv by scripts/run-worker.sh.
+# cloakbrowser itself is already present there and is intentionally not pinned here.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1

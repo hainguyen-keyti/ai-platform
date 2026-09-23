@@ -1,0 +1,25 @@
+# Runtime state (db, media, browser sessions)
+storage/
+
+# Secrets
+.env
+
+# Legacy scratch output from the CLI experiments
+images/
+page.html
+screenshot_*.png
+verify.png
+generated_*.png
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store

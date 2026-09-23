@@ -1,0 +1,28 @@
+services:
+  api:
+    build: ./api
+    ports:
+      - "3000:3000"
+    environment:
+      DB_PATH: /data/db/app.db
+      MEDIA_PATH: /data/media
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      INVITE_CODE: ${INVITE_CODE:?set INVITE_CODE in .env}
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
+    volumes:
+      - ./storage/db:/data/db
+      - ./storage/media:/data/media
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:3000
+    volumes:
+      - ./web/src:/app/src
+      - ./web/index.html:/app/index.html
+    depends_on:
+      - api
+    restart: unless-stopped
