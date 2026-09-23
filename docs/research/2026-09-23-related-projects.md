@@ -148,6 +148,49 @@ uploads, RAG, agents, MCP, SSO, token-multiplier pricing, per-user API keys, pro
 | 7 | Second account for the gate only, then account pool with affinity and cooldown | M | Only after 0 is settled and a second subscription exists |
 | 8 | patchright as fallback driver | M | Insurance against the free CloakBrowser binary ageing |
 
+## Measurements taken after this note, 2026-09-23
+
+Probes against the real provider, from inside our own page, no guessing:
+
+- `/backend-api/conversation/<id>`: 404 with cookies alone, 200 with the `accessToken` from
+  `/api/auth/session` as a Bearer header. Top level carries `current_node`, `is_temporary_chat`,
+  `memory_scope`. Each `mapping` node has `message.status`, `message.end_turn`,
+  `message.content.content_type`, `message.content.parts`.
+- A plain text turn is one assistant node: `status finished_successfully`, `end_turn true`.
+- A file turn is four nodes: user text; assistant `content_type: code` with `end_turn: false` and
+  recipient `python`; tool `execution_output` whose text names the file (`Created /mnt/data/hello.zip`);
+  assistant text with `end_turn: true`. Waiting for the last assistant node with `end_turn` is
+  therefore correct across tool use.
+- The file button fires `/backend-api/conversation/<id>/interpreter/download?message_id=<final
+  assistant node>&sandbox_path=<path>` (422 without `sandbox_path`), which resolves to an estuary
+  url with `fn=<name>&cd=attachment`. The sandbox path is in the tool node's output text.
+
+Adopted: the provider now settles a turn on the server's word and falls back to watching the page
+only when the server view is unavailable. Text is taken from `parts`, which also drops the
+follow-up suggestion chips that used to leak into replies.
+
+- 2026-09-24: the download endpoint's body is `{status: "success", download_url, file_name,
+  mime_type, metadata.file_id}`. Files are now fetched from it directly, using the sandbox path
+  named in the tool output and the final assistant message id; the labelled button is only a
+  fallback.
+- 2026-09-24: a brand new thread answers 404 on its first read for a moment; treating that as
+  "unavailable" sent every new-thread turn down the DOM fallback. It is "not yet": keep polling
+  within the deadline, give up only after 30 unreadable ticks.
+- 2026-09-24: taking every sandbox path named anywhere in the turn over-collects. A zip of two
+  text files came back as three downloads, the two members included, both empty. The model names
+  what it hands over in its final message (`sandbox:/mnt/data/two_text_files.zip`); the tool output
+  names every scratch file it wrote. Prefer the final message.
+- 2026-09-24: polling `/backend-api/conversation/<id>` every 1.5s through a full gate produced
+  `429` on that endpoint, and thread pages then loaded too slowly for the composer to appear. The
+  page's stop button is the cheap busy signal; the server is now asked only when the page looks
+  finished, with exponential backoff on 429 (3s doubling to 30s).
+- 2026-09-24: with the thread page slow, `_open` fell back to a fresh chat and the model answered
+  "Unknown" to a recall question it had just been told the answer to. Silent fallback removed: a
+  fresh chat is started only when the server reports the thread as 404.
+- 2026-09-24, Temporary Chat rejected: after a message is sent the url stays
+  `https://chatgpt.com/?temporary-chat=true` and never gains `/c/<id>`. No thread id means no
+  thread to return to and no server view. The account-level memory setting remains the control.
+
 ## Business logic worth noting
 
 The independent gateway vendors consolidated in 2026 (Portkey, Helicone, OpenRouter acquired,

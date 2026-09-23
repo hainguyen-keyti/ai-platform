@@ -64,6 +64,7 @@ class Check:
     def __init__(self, name):
         self.name = name
         self.ok = False
+        self.skipped = False
         self.detail = "not reached"
 
     def passed(self, detail=""):
@@ -72,6 +73,13 @@ class Check:
 
     def failed(self, detail):
         self.ok = False
+        self.detail = detail
+
+    def skip(self, detail):
+        # A check that cannot be exercised in this mode says so, out loud, and
+        # is counted neither as a pass nor a failure.
+        self.ok = False
+        self.skipped = True
         self.detail = detail
 
 
@@ -460,7 +468,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
                             {"status": "done", "text": "forged by a stale attempt",
                              "media": [], "attempt": 99},
                             headers=worker_headers) if job_id else (0, None)
-    final = wait_state(job_id, ("done", "failed"), 40) if job_id else {}
+    final = wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
     text = (final.get("result") or {}).get("text") or ""
     if (seen.get("status") == "running" and forged_status == 409
             and final.get("status") == "done" and "forged" not in text
@@ -472,23 +480,35 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
             "seen running {} forged post {} final {} text {!r} quota {} -> {}".format(
                 seen.get("status"), forged_status, final.get("status"), text[:30], q0, quota_now()))
 
+    # The two checks below inject faults: a provider that breaks on command and
+    # a worker killed mid-job. Only the mock breaks on command, and killing the
+    # browser worker mid-turn burns a real turn to prove a provider-agnostic
+    # lease. In real mode they are skipped, and say so.
     q0 = quota_now()
-    job_id = start_job(BROKEN_PHRASE + " for this one message")
-    final = wait_state(job_id, ("done", "failed"), 40) if job_id else {}
-    if (final.get("status") == "failed" and final.get("error_kind") == "provider_error"
-            and quota_now() == q0):
-        c["a provider error fails the job and refunds"].passed(
-            "failed as provider_error, credit returned")
+    if real:
+        c["a provider error fails the job and refunds"].skip(
+            "needs a provider that fails on command; covered in mock mode")
+        final = {}
     else:
-        c["a provider error fails the job and refunds"].failed(
-            "status {} kind {} quota {} -> {} error {!r}".format(
-                final.get("status"), final.get("error_kind"), q0, quota_now(),
-                (final.get("error") or "")[:60]))
+        job_id = start_job(BROKEN_PHRASE + " for this one message")
+        final = wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
+        if (final.get("status") == "failed" and final.get("error_kind") == "provider_error"
+                and quota_now() == q0):
+            c["a provider error fails the job and refunds"].passed(
+                "failed as provider_error, credit returned")
+        else:
+            c["a provider error fails the job and refunds"].failed(
+                "status {} kind {} quota {} -> {} error {!r}".format(
+                    final.get("status"), final.get("error_kind"), q0, quota_now(),
+                    (final.get("error") or "")[:60]))
 
     q0 = quota_now()
-    job_id = start_job(SLOW_PHRASE + ": survive a dead worker")
+    job_id = None if real else start_job(SLOW_PHRASE + ": survive a dead worker")
     seen = wait_state(job_id, ("running",), 10) if job_id else {}
-    if seen.get("status") != "running":
+    if real:
+        c["a stranded job is reclaimed"].skip(
+            "kills the worker mid-turn; the lease is provider-agnostic and covered in mock mode")
+    elif seen.get("status") != "running":
         c["a stranded job is reclaimed"].failed(
             "job never observed running (status {}); is the slow phrase honoured?".format(
                 seen.get("status")))
@@ -634,10 +654,16 @@ def main():
     print("mode: {}".format("real providers" if args.real else "mock providers"))
     print()
     for c in checks:
-        print("[{}] {}  {}".format("PASS" if c.ok else "FAIL", c.name.ljust(width), c.detail))
+        tag = "SKIP" if c.skipped else ("PASS" if c.ok else "FAIL")
+        print("[{}] {}  {}".format(tag, c.name.ljust(width), c.detail))
     passed = sum(1 for c in checks if c.ok)
+    skipped = sum(1 for c in checks if c.skipped)
+    counted = len(checks) - skipped
     print("=" * (width + 12))
-    print("{}/{} PASSED".format(passed, len(checks)))
+    if skipped:
+        print("{}/{} PASSED, {} skipped in this mode".format(passed, counted, skipped))
+    else:
+        print("{}/{} PASSED".format(passed, counted))
     if boot_error:
         print()
         print("boot error:")
@@ -648,7 +674,7 @@ def main():
     else:
         shutil.rmtree(workspace, ignore_errors=True)
 
-    return 0 if passed == len(checks) else 1
+    return 0 if passed == counted else 1
 
 
 if __name__ == "__main__":
