@@ -44,6 +44,8 @@ CHECKS = (
     "thread reused within a conversation",
     "threads never cross conversations",
     "non image deliverable is kept",
+    "non image deliverable is kept when asked in vietnamese",
+    "a follow-up turn packages what the first one made",
 )
 
 THREAD_MARKER = re.compile(r"\[thread=([^\]]+)\]")
@@ -369,27 +371,49 @@ def run_checks(api, media_dir, real, invite_code):
                 "conversation one {} conversation two {} {}".format(
                     t1 or "no thread reported", t3 or "no thread reported", err_c or ""))
 
-    zipped, err_z, _ = chat_once("build me a zip file holding a.txt and b.txt")
-    zip_ids = ((zipped or {}).get("result") or {}).get("media") or []
-    if not zip_ids:
-        c["non image deliverable is kept"].failed(err_z or "no media came back for a zip request")
+    def check_zip(check_name, message, conversation_id=None):
+        done, err, _ = chat_once(message, conversation_id)
+        result = (done or {}).get("result") or {}
+        # A file can arrive alongside a picture, so look for the one that is a file.
+        for media_id in result.get("media") or []:
+            mstatus, meta = http("GET", "{}/media/{}".format(api, media_id), token=token)
+            if mstatus != 200 or (meta or {}).get("type") == "image":
+                continue
+            fstatus, blob = http_bytes("{}/media/{}/file".format(api, media_id), token)
+            if fstatus == 200 and blob[:2] == b"PK":
+                try:
+                    names = zipfile.ZipFile(io.BytesIO(blob)).namelist()
+                except zipfile.BadZipFile:
+                    names = []
+                if names:
+                    c[check_name].passed("{} bytes, type {}, entries {}".format(
+                        len(blob), meta.get("type"), names[:4]))
+                    return
+            c[check_name].failed("media {} fetched {} first bytes {!r}".format(
+                meta.get("type"), fstatus, blob[:4] if isinstance(blob, bytes) else blob))
+            return
+        c[check_name].failed(
+            err or "nothing but pictures came back: {}".format(
+                (result.get("text") or "")[:120] or "no reply"))
+
+    check_zip("non image deliverable is kept",
+              "build me a zip file holding a.txt and b.txt")
+    # The same request in the language the user actually types in. The button
+    # ChatGPT offers is labelled in that language, and matching on the English
+    # word let a real request through unnoticed.
+    check_zip("non image deliverable is kept when asked in vietnamese",
+              "Tạo cho tôi một file zip chứa hai file text tên a.txt và b.txt")
+
+    # The journey a real user took, which passed every check above while being
+    # broken: make something, then in the same conversation ask for it packaged.
+    # Its download button was labelled neither in English nor with a file name.
+    drawn, draw_err, conv_pack = chat_once("vẽ cho tôi một hình vuông màu xanh")
+    if not conv_pack:
+        c["a follow-up turn packages what the first one made"].failed(
+            draw_err or "the first turn produced no conversation")
     else:
-        mstatus, meta = http("GET", "{}/media/{}".format(api, zip_ids[0]), token=token)
-        fstatus, blob = http_bytes("{}/media/{}/file".format(api, zip_ids[0]), token)
-        names = []
-        if fstatus == 200 and blob[:2] == b"PK":
-            try:
-                names = zipfile.ZipFile(io.BytesIO(blob)).namelist()
-            except zipfile.BadZipFile:
-                names = []
-        if names == ["a.txt", "b.txt"]:
-            c["non image deliverable is kept"].passed(
-                "{} bytes, type {}, entries {}".format(len(blob), (meta or {}).get("type"), names))
-        else:
-            c["non image deliverable is kept"].failed(
-                "meta {} fetch {} first bytes {!r} entries {}".format(
-                    (meta or {}).get("type") if mstatus == 200 else mstatus,
-                    fstatus, blob[:4] if isinstance(blob, bytes) else blob, names))
+        check_zip("a follow-up turn packages what the first one made",
+                  "gói tấm hình vừa rồi lại thành một file zip cho tôi tải về", conv_pack)
 
     return checks
 

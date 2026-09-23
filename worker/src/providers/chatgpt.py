@@ -61,10 +61,17 @@ SNAPSHOT_IMAGES = """
 # A file ChatGPT builds is offered by a button, not a link: there is no href to
 # read, and the bytes live behind the same session-bound endpoint as pictures.
 # Clicking it and catching the browser download is the only way in.
+#
+# Matched by shape, not by wording. The label is written in whatever language
+# the question was asked in, and it is not always the file name: measured cases
+# include "Download two_text_files.zip", "Tải file a_b.zip" and plain
+# "Tải file ZIP tại đây". What stayed constant across every measurement is the
+# behavior-btn class inside an assistant turn.
 SNAPSHOT_DOWNLOADS = """
-() => Array.from(document.querySelectorAll("button"))
+() => Array.from(document.querySelectorAll("button.behavior-btn"))
+        .filter((b) => b.closest('[data-message-author-role="assistant"]'))
         .map((b) => (b.textContent || "").trim())
-        .filter((t) => /^Download\\s+\\S/.test(t))
+        .filter((t) => t.length > 0 && t.length < 200)
 """
 
 
@@ -212,7 +219,7 @@ class ChatGPTProvider(BaseProvider):
         for label in [l for l in page.evaluate(SNAPSHOT_DOWNLOADS) if l not in seen_downloads]:
             try:
                 with page.expect_download(timeout=120000) as caught:
-                    page.locator("button").filter(has_text=label).first.click()
+                    page.locator("button.behavior-btn").filter(has_text=label).first.click()
                 download = caught.value
                 # The name comes from the page, so it is untrusted: reduce it to
                 # a bare name and give it a unique prefix of our own.
