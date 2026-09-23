@@ -17,6 +17,8 @@ IMAGE_TIMEOUT = 300
 # An assistant turn that is still empty a second after sending is not a finished
 # reply, it is one that has not started.
 START_FLOOR = 6
+# How long to keep looking for a picture when a chat reply came back wordless.
+CHAT_IMAGE_GRACE = 90
 
 FETCH_AS_DATA_URL = """
 async (url) => {
@@ -230,6 +232,11 @@ class ChatGPTProvider(BaseProvider):
                 )
         else:
             text = self._await_reply(page, baseline, timeout)
+            if not text.strip():
+                # Asking for a picture without switching the UI into image mode
+                # is normal, and then the reply is a picture and no words.
+                # Throwing it away was reported as "empty reply from chatgpt".
+                media = self._save_images(page, prompt, time.time() + CHAT_IMAGE_GRACE, seen_before)
 
         if not text.strip() and not media:
             return GenerationResult.failure("empty reply from chatgpt")
