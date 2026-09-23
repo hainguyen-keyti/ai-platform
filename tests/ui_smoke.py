@@ -26,6 +26,8 @@ import cloakbrowser
 WEB_URL = os.environ.get("WEB_URL", "http://localhost:5173")
 INVITE_CODE = os.environ.get("INVITE_CODE", "")
 SHOT_DIR = Path(os.environ.get("SHOT_DIR", "/tmp/ui_shots"))
+# Prefix match so a reworded placeholder does not break every step at once.
+COMPOSER = "input[placeholder^='Type a message']"
 
 steps = []
 
@@ -85,7 +87,7 @@ def main():
         record("nav shows identity and quota", email.split("@")[0] in page.content(),
                "{} left".format(quota_before))
 
-        page.fill("input[placeholder='Type a message...']", "hello from the ui smoke test")
+        page.fill(COMPOSER, "hello from the ui smoke test")
         shot(page, "04-message-typed")
         page.click("button:has-text('Send')")
 
@@ -109,8 +111,7 @@ def main():
         shot(page, "05-chat-reply")
         record("chat message round trip", True, "assistant bubble rendered")
 
-        page.click("header button:has-text('image')")
-        page.fill("input[placeholder='Describe the image...']", "a red square")
+        page.fill(COMPOSER, "generate an image of a red square")
         page.click("button:has-text('Send')")
         page.wait_for_selector("button:has-text('Video script')", timeout=90000)
         page.wait_for_timeout(2000)
@@ -131,11 +132,10 @@ def main():
 
         # Read the quota before the scroll checks below spend any more of it.
         quota_mid = quota_number(page)
-        page.click("header button:has-text('chat')")
 
         # Scrolling up mid-job means "I am reading"; the reply landing must not
         # drag the view back down.
-        page.fill("input[placeholder='Type a message...']", "sent then scrolled away")
+        page.fill(COMPOSER, "sent then scrolled away")
         page.click("button:has-text('Send')")
         page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
         page.evaluate("() => document.querySelector('[data-testid=message-scroll]').scrollTo({top: 0})")
@@ -151,7 +151,7 @@ def main():
 
         # Auto-scroll can only be observed once the thread is taller than the
         # viewport, so push it over with one deliberately long message.
-        page.fill("input[placeholder='Type a message...']", "pad " * 400)
+        page.fill(COMPOSER, "pad " * 400)
         page.click("button:has-text('Send')")
         page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
         page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=60000)

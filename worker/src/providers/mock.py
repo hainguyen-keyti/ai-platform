@@ -42,6 +42,11 @@ class MockProvider(BaseProvider):
 
     def chat(self, message: str, history: Optional[list] = None) -> GenerationResult:
         self._pace()
+        # The real provider answers a request for a picture with a picture, no
+        # matter which words the user used to ask. A mock that always replies in
+        # text cannot cover that path at all.
+        if any(word in message.lower() for word in ("image", "picture", "draw", "ảnh", "vẽ")):
+            return self.generate_image(message)
         return GenerationResult(
             success=True,
             text="mock reply from {} to: {}".format(self.name, message.strip()[:200]),

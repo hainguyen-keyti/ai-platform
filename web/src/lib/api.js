@@ -47,7 +47,6 @@ export const api = {
   conversation: (id) => request('GET', `/conversations/${id}`),
   deleteConversation: (id) => request('DELETE', `/conversations/${id}`),
   chat: (payload) => request('POST', '/chat', payload),
-  image: (payload) => request('POST', '/image/generate', payload),
   videoScript: (payload) => request('POST', '/video/script', payload),
   job: (id) => request('GET', `/jobs/${id}`),
   media: () => request('GET', '/media'),

@@ -4,7 +4,7 @@ import MediaImage from '../components/MediaImage.jsx'
 import TypingBubble from '../components/TypingBubble.jsx'
 
 const PROVIDERS = ['chatgpt', 'grok', 'gemini']
-const IMAGE_HINT = 'Image jobs usually take 2 to 5 minutes.'
+const SLOW_HINT = 'Still working. Asking for a picture takes the longest.'
 const STICK_THRESHOLD_PX = 80
 
 export default function Chat({ onQuotaSpent }) {
@@ -12,7 +12,6 @@ export default function Chat({ onQuotaSpent }) {
   const [activeId, setActiveId] = useState(null)
   const [conversation, setConversation] = useState(null)
   const [provider, setProvider] = useState('chatgpt')
-  const [mode, setMode] = useState('chat')
   const [input, setInput] = useState('')
   const [status, setStatus] = useState(null)
   const [pendingHint, setPendingHint] = useState(null)
@@ -81,14 +80,9 @@ export default function Chat({ onQuotaSpent }) {
     const text = input.trim()
     if (!text || status) return
     setInput('')
-    const payload = { provider, conversation_id: activeId }
-    runJob(
-      () =>
-        mode === 'image'
-          ? api.image({ ...payload, prompt: text })
-          : api.chat({ ...payload, message: text }),
-      mode === 'image' ? IMAGE_HINT : null
-    )
+    // One way in. The provider returns whatever the reply turned out to be, so
+    // asking the user to declare "this one is a picture" bought nothing.
+    runJob(() => api.chat({ provider, conversation_id: activeId, message: text }), SLOW_HINT)
   }
 
   function requestScript(mediaId) {
@@ -121,14 +115,6 @@ export default function Chat({ onQuotaSpent }) {
             className="border rounded px-2 py-1 text-sm">
             {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
-          <div className="flex text-sm rounded overflow-hidden border">
-            {['chat', 'image'].map((m) => (
-              <button key={m} onClick={() => setMode(m)}
-                className={`px-3 py-1 ${mode === m ? 'bg-slate-900 text-white' : 'bg-white'}`}>
-                {m}
-              </button>
-            ))}
-          </div>
           {error && <span className="text-sm text-red-600">{error}</span>}
         </header>
 
@@ -164,7 +150,7 @@ export default function Chat({ onQuotaSpent }) {
 
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)}
-            placeholder={mode === 'image' ? 'Describe the image...' : 'Type a message...'}
+            placeholder="Type a message, or ask for a picture..."
             className="flex-1 border rounded px-3 py-2 text-sm" />
           <button disabled={!!status} className="bg-slate-900 text-white rounded px-4 text-sm disabled:opacity-50">
             Send
