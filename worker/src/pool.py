@@ -45,7 +45,8 @@ class BrowserPool:
                 pass
         self._providers.clear()
 
-    def execute(self, provider_name: str, feature: str, payload: dict) -> GenerationResult:
+    def execute(self, provider_name: str, feature: str, payload: dict,
+                thread_url: str = None) -> GenerationResult:
         provider = self._providers.get(provider_name)
         if provider is None:
             return GenerationResult.failure(
@@ -61,14 +62,16 @@ class BrowserPool:
         with self._locks[provider_name]:
             try:
                 if feature == "chat":
-                    return provider.chat(payload.get("message", ""), payload.get("history"))
+                    return provider.chat(
+                        payload.get("message", ""), payload.get("history"), thread_url
+                    )
                 if feature == "image":
                     return provider.generate_image(
-                        payload.get("prompt", ""), payload.get("reference_filename")
+                        payload.get("prompt", ""), payload.get("reference_filename"), thread_url
                     )
                 if feature == "video_script":
                     return provider.generate_video_script(
-                        payload.get("filename", ""), int(payload.get("duration", 5))
+                        payload.get("filename", ""), int(payload.get("duration", 5)), thread_url
                     )
             except Exception as exc:
                 return GenerationResult.failure("{}: {}".format(type(exc).__name__, exc))

@@ -16,13 +16,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- provider_thread_url is where this conversation lives on the provider's own
+-- site. One thread per conversation is what lets a later turn build on an
+-- earlier one; it is never shared, because a conversation has one owner.
 CREATE TABLE IF NOT EXISTS conversations (
-    id         TEXT PRIMARY KEY,
-    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    provider   TEXT NOT NULL,
-    title      TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    id                  TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    provider            TEXT NOT NULL,
+    title               TEXT,
+    provider_thread_url TEXT,
+    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS messages (

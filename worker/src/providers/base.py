@@ -24,6 +24,9 @@ class GenerationResult:
     text: str = ""
     media: List[MediaArtifact] = field(default_factory=list)
     error: Optional[str] = None
+    # Where the provider ended up. Stored against the conversation so the next
+    # turn lands in the same thread instead of starting from nothing.
+    thread_url: Optional[str] = None
 
     @classmethod
     def failure(cls, message: str) -> "GenerationResult":
@@ -54,15 +57,18 @@ class BaseProvider(ABC):
         """Open the session. Raises if the provider cannot be used."""
 
     @abstractmethod
-    def chat(self, message: str, history: Optional[list] = None) -> GenerationResult:
+    def chat(self, message: str, history: Optional[list] = None,
+             thread_url: Optional[str] = None) -> GenerationResult:
         ...
 
     @abstractmethod
-    def generate_image(self, prompt: str, reference_filename: Optional[str] = None) -> GenerationResult:
+    def generate_image(self, prompt: str, reference_filename: Optional[str] = None,
+                       thread_url: Optional[str] = None) -> GenerationResult:
         ...
 
     @abstractmethod
-    def generate_video_script(self, image_filename: str, duration: int = 5) -> GenerationResult:
+    def generate_video_script(self, image_filename: str, duration: int = 5,
+                              thread_url: Optional[str] = None) -> GenerationResult:
         ...
 
     def stop(self) -> None:

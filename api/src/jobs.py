@@ -107,8 +107,10 @@ def claim_next_job():
         try:
             row = one(
                 conn,
-                "SELECT id, provider, feature, payload FROM jobs"
-                " WHERE status = 'pending' ORDER BY created_at, rowid LIMIT 1",
+                "SELECT j.id, j.provider, j.feature, j.payload,"
+                " c.provider_thread_url AS thread_url"
+                " FROM jobs j LEFT JOIN conversations c ON c.id = j.conversation_id"
+                " WHERE j.status = 'pending' ORDER BY j.created_at, j.rowid LIMIT 1",
             )
             if row:
                 conn.execute(
@@ -125,7 +127,7 @@ def claim_next_job():
     return row
 
 
-def record_result(job_id, status, text, media, error):
+def record_result(job_id, status, text, media, error, thread_url=None):
     media_ids = []
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -136,6 +138,14 @@ def record_result(job_id, status, text, media, error):
             if job["status"] in ("done", "failed"):
                 conn.execute("COMMIT")
                 return json.loads(job["result"]) if job["result"] else {}
+
+            # Remember where the provider put this conversation so the next turn
+            # lands in the same place and can build on this one.
+            if thread_url and job["conversation_id"]:
+                conn.execute(
+                    "UPDATE conversations SET provider_thread_url = ? WHERE id = ?",
+                    (thread_url, job["conversation_id"]),
+                )
 
             # The message comes first so its pictures can point at it. Without
             # that link the gallery strip floats loose at the end of the thread

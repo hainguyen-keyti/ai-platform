@@ -15,8 +15,10 @@ launched with the cloakbrowser venv.
 """
 
 import argparse
+import io
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -25,9 +27,26 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+CHECKS = (
+    "api health",
+    "register (invite code)",
+    "login returns jwt",
+    "auth rejects bad token",
+    "chat job completes",
+    "image job produces file",
+    "video script job returns text",
+    "media listing scoped to user",
+    "thread reused within a conversation",
+    "threads never cross conversations",
+    "non image deliverable is kept",
+)
+
+THREAD_MARKER = re.compile(r"\[thread=([^\]]+)\]")
 
 
 class Check:
@@ -65,6 +84,18 @@ def http(method, url, body=None, token=None, timeout=30):
         return exc.code, parsed
     except Exception as exc:
         return 0, "{}: {}".format(type(exc).__name__, exc)
+
+
+def http_bytes(url, token, timeout=30):
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+    except Exception as exc:
+        return 0, "{}: {}".format(type(exc).__name__, exc).encode()
 
 
 def free_port():
@@ -165,16 +196,7 @@ def run_checks(api, media_dir, real, invite_code):
     # first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
     job_timeout = 420 if real else 30
-    checks = [Check(n) for n in (
-        "api health",
-        "register (invite code)",
-        "login returns jwt",
-        "auth rejects bad token",
-        "chat job completes",
-        "image job produces file",
-        "video script job returns text",
-        "media listing scoped to user",
-    )]
+    checks = [Check(n) for n in CHECKS]
     c = dict(zip([x.name for x in checks], checks))
     stamp = str(int(time.time() * 1000))
     # A plain domain: email-validator rejects reserved suffixes such as .local.
@@ -289,6 +311,86 @@ def run_checks(api, media_dir, real, invite_code):
         c["media listing scoped to user"].failed(
             "owner {} other {} cross fetch {}".format(mine_total, their_total, leak))
 
+    def chat_once(message, conversation_id=None):
+        status, body = http("POST", api + "/chat",
+                            {"provider": "chatgpt", "message": message,
+                             "conversation_id": conversation_id}, token=token)
+        if status != 202 or not (body or {}).get("job_id"):
+            return None, "status {} body {}".format(status, body), None
+        job, err = poll_job(api, body["job_id"], token, job_timeout)
+        return job, err, body["conversation_id"]
+
+    def thread_of(job):
+        found = THREAD_MARKER.search(((job or {}).get("result") or {}).get("text") or "")
+        return found.group(1) if found else None
+
+    if real:
+        # Against the real provider the thread is a chatgpt.com url the client
+        # never sees, so continuity is measured the only way that matters: does
+        # the model still know what it was told a turn ago.
+        secret = "teal-{}".format(stamp[-5:])
+        _, err_a, conv = chat_once(
+            "Remember this word for later: {}. Reply with just: ok".format(secret))
+        back, err_b, _ = chat_once(
+            "What word did I ask you to remember? Reply with that word and nothing else.", conv)
+        recalled = ((back or {}).get("result") or {}).get("text") or ""
+        if secret in recalled:
+            c["thread reused within a conversation"].passed("the model recalled {}".format(secret))
+        else:
+            c["thread reused within a conversation"].failed(
+                "asked for {}, got {!r} {}".format(secret, recalled[:80], err_a or err_b or ""))
+
+        fresh, err_c, _ = chat_once(
+            "What word did I ask you to remember? Reply with that word and nothing else.")
+        leaked = ((fresh or {}).get("result") or {}).get("text") or ""
+        if secret not in leaked:
+            c["threads never cross conversations"].passed(
+                "a new conversation does not know {}".format(secret))
+        else:
+            c["threads never cross conversations"].failed(
+                "a new conversation knew {}: {!r} {}".format(secret, leaked[:80], err_c or ""))
+    else:
+        first, err_a, conv = chat_once("first turn, opening a thread")
+        second, err_b, _ = chat_once("second turn, same thread", conv) if conv else (None, err_a, None)
+        t1, t2 = thread_of(first), thread_of(second)
+        if t1 and t2 and t1 == t2:
+            c["thread reused within a conversation"].passed("both turns on {}".format(t1[:28]))
+        else:
+            c["thread reused within a conversation"].failed(
+                "first {} second {} {}".format(t1 or "no thread reported",
+                                               t2 or "no thread reported", err_a or err_b or ""))
+
+        other, err_c, _ = chat_once("a turn that belongs to a different conversation")
+        t3 = thread_of(other)
+        if t1 and t3 and t1 != t3:
+            c["threads never cross conversations"].passed("{} and {}".format(t1[:16], t3[:16]))
+        else:
+            c["threads never cross conversations"].failed(
+                "conversation one {} conversation two {} {}".format(
+                    t1 or "no thread reported", t3 or "no thread reported", err_c or ""))
+
+    zipped, err_z, _ = chat_once("build me a zip file holding a.txt and b.txt")
+    zip_ids = ((zipped or {}).get("result") or {}).get("media") or []
+    if not zip_ids:
+        c["non image deliverable is kept"].failed(err_z or "no media came back for a zip request")
+    else:
+        mstatus, meta = http("GET", "{}/media/{}".format(api, zip_ids[0]), token=token)
+        fstatus, blob = http_bytes("{}/media/{}/file".format(api, zip_ids[0]), token)
+        names = []
+        if fstatus == 200 and blob[:2] == b"PK":
+            try:
+                names = zipfile.ZipFile(io.BytesIO(blob)).namelist()
+            except zipfile.BadZipFile:
+                names = []
+        if names == ["a.txt", "b.txt"]:
+            c["non image deliverable is kept"].passed(
+                "{} bytes, type {}, entries {}".format(len(blob), (meta or {}).get("type"), names))
+        else:
+            c["non image deliverable is kept"].failed(
+                "meta {} fetch {} first bytes {!r} entries {}".format(
+                    (meta or {}).get("type") if mstatus == 200 else mstatus,
+                    fstatus, blob[:4] if isinstance(blob, bytes) else blob, names))
+
     return checks
 
 
@@ -364,11 +466,8 @@ def main():
         stop(api_proc, api_log)
 
     if not checks:
-        names = ("api health", "register (invite code)", "login returns jwt", "auth rejects bad token",
-                 "chat job completes", "image job produces file", "video script job returns text",
-                 "media listing scoped to user")
         checks = []
-        for n in names:
+        for n in CHECKS:
             ch = Check(n)
             ch.failed("stack did not start")
             checks.append(ch)

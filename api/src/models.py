@@ -48,6 +48,7 @@ class WorkerResult(BaseModel):
     text: str = ""
     media: list[WorkerMedia] = Field(default_factory=list)
     error: Optional[str] = None
+    thread_url: Optional[str] = Field(default=None, max_length=500)
 
 
 class QuotaUpdate(BaseModel):

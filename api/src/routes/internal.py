@@ -23,4 +23,5 @@ def submit_result(job_id: str, body: WorkerResult, _: bool = Depends(require_wor
         text=body.text,
         media=[m.model_dump() for m in body.media],
         error=body.error,
+        thread_url=body.thread_url,
     )

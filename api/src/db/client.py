@@ -33,9 +33,13 @@ def init_db():
         # CREATE TABLE IF NOT EXISTS cannot widen a table that already exists,
         # and the alternative is asking anyone already running this to throw
         # their conversations away.
-        columns = {row["name"] for row in conn.execute("PRAGMA table_info(media)")}
-        if "message_id" not in columns:
-            conn.execute("ALTER TABLE media ADD COLUMN message_id TEXT")
+        for table, column, definition in (
+            ("media", "message_id", "TEXT"),
+            ("conversations", "provider_thread_url", "TEXT"),
+        ):
+            existing = {row["name"] for row in conn.execute("PRAGMA table_info({})".format(table))}
+            if column not in existing:
+                conn.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, column, definition))
 
 
 def one(conn, sql, params=()):

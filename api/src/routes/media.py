@@ -10,7 +10,17 @@ from src.security import current_user
 
 router = APIRouter(prefix="/media", tags=["media"])
 
-CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+CONTENT_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".zip": "application/zip",
+    ".pdf": "application/pdf",
+    ".txt": "text/plain",
+    ".json": "application/json",
+    ".csv": "text/csv",
+}
 
 
 def _public(row):

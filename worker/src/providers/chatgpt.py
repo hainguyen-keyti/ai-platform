@@ -1,6 +1,7 @@
 import base64
 import time
 import uuid
+from pathlib import PurePosixPath
 from typing import Optional
 
 from src.providers.base import BaseProvider, FeatureType, GenerationResult, MediaArtifact
@@ -57,6 +58,15 @@ SNAPSHOT_IMAGES = """
 () => Array.from(document.querySelectorAll("img"), (img) => img.src || "")
 """
 
+# A file ChatGPT builds is offered by a button, not a link: there is no href to
+# read, and the bytes live behind the same session-bound endpoint as pictures.
+# Clicking it and catching the browser download is the only way in.
+SNAPSHOT_DOWNLOADS = """
+() => Array.from(document.querySelectorAll("button"))
+        .map((b) => (b.textContent || "").trim())
+        .filter((t) => /^Download\\s+\\S/.test(t))
+"""
+
 
 class ChatGPTProvider(BaseProvider):
     """Drives a logged-in chatgpt.com session through cloakbrowser.
@@ -107,14 +117,21 @@ class ChatGPTProvider(BaseProvider):
         self._page = self._context.new_page()
         return self._page
 
-    def _new_chat(self):
+    def _open(self, thread_url: Optional[str] = None):
+        """Open the conversation's own thread, or a new one if there is none.
+
+        A stored thread can be gone: deleted in the ChatGPT interface, or
+        belonging to an account that no longer has it. Falling back to a fresh
+        chat loses the history but keeps the request working.
+        """
         page = self._ensure_page()
-        page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
-        deadline = time.time() + 45
-        while time.time() < deadline:
-            page.wait_for_timeout(500)
-            if page.locator(TEXTAREA).count() and page.locator(TEXTAREA).first.is_visible():
-                return page
+        for target in ([thread_url] if thread_url else []) + [HOME]:
+            page.goto(target, timeout=90000, wait_until="domcontentloaded")
+            deadline = time.time() + 45
+            while time.time() < deadline:
+                page.wait_for_timeout(500)
+                if page.locator(TEXTAREA).count() and page.locator(TEXTAREA).first.is_visible():
+                    return page
         raise RuntimeError("composer never appeared; the session is probably logged out")
 
     def _send(self, page, prompt: str):
@@ -147,7 +164,7 @@ class ChatGPTProvider(BaseProvider):
         except Exception:
             return ""
 
-    def _await_result(self, page, baseline: int, seen_before, prompt: str):
+    def _await_result(self, page, baseline: int, seen_before, prompt: str, seen_downloads):
         """Wait for the answer to settle, then take whatever it turned out to be.
 
         One loop for every kind of request. Branching on what the caller asked
@@ -187,7 +204,30 @@ class ChatGPTProvider(BaseProvider):
                 text, sources = current, found
                 stable = 0
 
-        return text, self._download(page, sources, prompt)
+        return text, self._download(page, sources, prompt) + self._save_files(
+            page, seen_downloads, prompt)
+
+    def _save_files(self, page, seen_downloads, prompt: str):
+        artifacts = []
+        for label in [l for l in page.evaluate(SNAPSHOT_DOWNLOADS) if l not in seen_downloads]:
+            try:
+                with page.expect_download(timeout=120000) as caught:
+                    page.locator("button").filter(has_text=label).first.click()
+                download = caught.value
+                # The name comes from the page, so it is untrusted: reduce it to
+                # a bare name and give it a unique prefix of our own.
+                offered = PurePosixPath(download.suggested_filename).name or "download"
+                filename = "chatgpt-{}-{}".format(uuid.uuid4().hex[:8], offered)
+                target = self.media_path / filename
+                download.save_as(str(target))
+            except Exception:
+                continue
+            artifacts.append(
+                MediaArtifact(filename=filename, type="file",
+                              metadata={"name": offered, "size": target.stat().st_size,
+                                        "prompt": prompt[:500], "source": "chatgpt"})
+            )
+        return artifacts
 
     def _download(self, page, sources, prompt: str):
         artifacts = []
@@ -209,8 +249,8 @@ class ChatGPTProvider(BaseProvider):
             )
         return artifacts
 
-    def _run(self, prompt: str, upload: Optional[str] = None):
-        page = self._new_chat()
+    def _run(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
+        page = self._open(thread_url)
         baseline = page.locator(ASSISTANT_TURN).count()
 
         if upload:
@@ -221,19 +261,28 @@ class ChatGPTProvider(BaseProvider):
             page.wait_for_timeout(3000)
 
         seen_before = set(page.evaluate(SNAPSHOT_IMAGES))
+        seen_downloads = set(page.evaluate(SNAPSHOT_DOWNLOADS))
         started = time.time()
         self._send(page, prompt)
-        text, media = self._await_result(page, baseline, seen_before, prompt)
+        text, media = self._await_result(page, baseline, seen_before, prompt, seen_downloads)
+
+        # Read the address only once the turn is over: a brand new chat is still
+        # on the root url until the first message has been sent.
+        landed = page.url if "/c/" in page.url else None
 
         if not text.strip() and not media:
-            return GenerationResult.failure(
-                "chatgpt returned nothing after {:.0f}s".format(time.time() - started)
+            return GenerationResult(
+                success=False, thread_url=landed,
+                error="chatgpt returned nothing after {:.0f}s".format(time.time() - started),
             )
-        return GenerationResult(success=True, text=text, media=media)
+        return GenerationResult(success=True, text=text, media=media, thread_url=landed)
 
-    def chat(self, message: str, history: Optional[list] = None) -> GenerationResult:
+    def chat(self, message: str, history: Optional[list] = None,
+             thread_url: Optional[str] = None) -> GenerationResult:
         prompt = message
-        if history:
+        # With a thread the model already has the history in front of it;
+        # replaying our copy would show it everything twice.
+        if history and not thread_url:
             lines = ["{}: {}".format(turn["role"], turn["content"]) for turn in history]
             prompt = (
                 "Here is our conversation so far.\n\n"
@@ -241,20 +290,22 @@ class ChatGPTProvider(BaseProvider):
                 + "\n\nReply to this next message only:\n"
                 + message
             )
-        return self._run(prompt)
+        return self._run(prompt, thread_url=thread_url)
 
-    def generate_image(self, prompt: str, reference_filename: Optional[str] = None) -> GenerationResult:
+    def generate_image(self, prompt: str, reference_filename: Optional[str] = None,
+                       thread_url: Optional[str] = None) -> GenerationResult:
         instruction = "Generate an image: {}".format(prompt)
         if reference_filename:
             instruction = (
                 "Using the attached image as the character reference, generate a new image: {}"
             ).format(prompt)
-        return self._run(instruction, upload=reference_filename)
+        return self._run(instruction, upload=reference_filename, thread_url=thread_url)
 
-    def generate_video_script(self, image_filename: str, duration: int = 5) -> GenerationResult:
+    def generate_video_script(self, image_filename: str, duration: int = 5,
+                              thread_url: Optional[str] = None) -> GenerationResult:
         instruction = (
             "Write a Wan 2.2 video prompt of {} seconds for the attached image. "
             "Describe camera movement, character animation and ambient motion. "
             "Answer with a single paragraph under 150 words and nothing else."
         ).format(duration)
-        return self._run(instruction, upload=image_filename)
+        return self._run(instruction, upload=image_filename, thread_url=thread_url)

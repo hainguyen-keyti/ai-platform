@@ -169,8 +169,26 @@ def main():
         page.keyboard.press("Escape")
         page.wait_for_selector("[data-testid=lightbox]", state="detached", timeout=5000)
 
-        # Read the quota before the scroll checks below spend any more of it.
+        # Read the quota before the checks below spend any more of it.
         quota_mid = quota_number(page)
+
+        page.fill(COMPOSER, "make me a zip file with my notes in it")
+        page.click("button:has-text('Send')")
+        page.wait_for_selector("[data-testid=file-card]", timeout=90000)
+        page.wait_for_timeout(800)
+        shot(page, "07e-file-card")
+        card = page.evaluate(
+            """() => {
+                const el = document.querySelector('[data-testid=file-card]');
+                const btn = el && el.querySelector('[data-testid=file-download]');
+                const broken = Array.from(document.images).some(i => i.naturalWidth === 0);
+                return {text: el ? el.textContent.trim().slice(0, 60) : null,
+                        hasButton: !!btn, brokenImage: broken};
+            }"""
+        )
+        record("a non image arrives as a file, not a broken picture",
+               card["hasButton"] and not card["brokenImage"],
+               "card reads {!r}, download button {}".format(card["text"], card["hasButton"]))
 
         # Scrolling up mid-job means "I am reading"; the reply landing must not
         # drag the view back down.

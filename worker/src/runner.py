@@ -51,7 +51,9 @@ class Runner(threading.Thread):
         return response.json()
 
     def _handle(self, client, job):
-        result = self.pool.execute(job["provider"], job["feature"], job.get("payload") or {})
+        result = self.pool.execute(
+            job["provider"], job["feature"], job.get("payload") or {}, job.get("thread_url")
+        )
         body = {
             "status": "done" if result.success else "failed",
             "text": result.text,
@@ -60,6 +62,7 @@ class Runner(threading.Thread):
                 for m in result.media
             ],
             "error": result.error,
+            "thread_url": result.thread_url,
         }
         response = client.post("/internal/jobs/{}/result".format(job["id"]), json=body)
         response.raise_for_status()

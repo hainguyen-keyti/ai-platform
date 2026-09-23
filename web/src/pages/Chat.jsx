@@ -3,12 +3,17 @@ import { api, waitForJob } from '../lib/api.js'
 import MediaImage from '../components/MediaImage.jsx'
 import TypingBubble from '../components/TypingBubble.jsx'
 import Lightbox from '../components/Lightbox.jsx'
+import FileCard from '../components/FileCard.jsx'
 
 const PROVIDERS = ['chatgpt', 'grok', 'gemini']
 const SLOW_HINT = 'Still working. Asking for a picture takes the longest.'
 const STICK_THRESHOLD_PX = 80
 
 function MediaCard({ item, busy, onOpen, onScript }) {
+  // Whatever came back is shown as what it is. Only a picture can be previewed
+  // or turned into a video script.
+  if (item.type !== 'image') return <FileCard item={item} />
+
   return (
     <div className="w-64 rounded border bg-white p-2">
       <MediaImage id={item.id} className="w-full" onOpen={(url) => onOpen(url, item)} />

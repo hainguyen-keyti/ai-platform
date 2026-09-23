@@ -1,11 +1,16 @@
+import io
 import struct
 import time
 import uuid
+import zipfile
 import zlib
 from typing import Optional
 
 from src.config import settings
 from src.providers.base import BaseProvider, FeatureType, GenerationResult, MediaArtifact
+
+IMAGE_WORDS = ("image", "picture", "draw", "ảnh", "vẽ")
+FILE_WORDS = ("zip", "archive", "nén")
 
 
 def solid_png(width: int, height: int, rgb: tuple) -> bytes:
@@ -24,6 +29,14 @@ def solid_png(width: int, height: int, rgb: tuple) -> bytes:
     )
 
 
+def two_file_zip() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("a.txt", "first file\n")
+        archive.writestr("b.txt", "second file\n")
+    return buffer.getvalue()
+
+
 class MockProvider(BaseProvider):
     """Stands in for a real service so the rest of the stack can be exercised."""
 
@@ -40,33 +53,60 @@ class MockProvider(BaseProvider):
         if settings.mock_delay > 0:
             time.sleep(settings.mock_delay)
 
-    def chat(self, message: str, history: Optional[list] = None) -> GenerationResult:
+    def _thread(self, thread_url: Optional[str]) -> str:
+        # Reuse what the caller was given, otherwise open one. This is the whole
+        # behaviour under test: same conversation, same thread.
+        return thread_url or "mock-thread-{}".format(uuid.uuid4().hex[:12])
+
+    def _store(self, blob: bytes, suffix: str, kind: str, prompt: str) -> MediaArtifact:
+        filename = "mock-{}{}".format(uuid.uuid4().hex, suffix)
+        (self.media_path / filename).write_bytes(blob)
+        return MediaArtifact(filename=filename, type=kind,
+                             metadata={"prompt": prompt[:200], "size": len(blob), "mock": True})
+
+    def chat(self, message: str, history: Optional[list] = None,
+             thread_url: Optional[str] = None) -> GenerationResult:
         self._pace()
-        # The real provider answers a request for a picture with a picture, no
-        # matter which words the user used to ask. A mock that always replies in
-        # text cannot cover that path at all.
-        if any(word in message.lower() for word in ("image", "picture", "draw", "ảnh", "vẽ")):
-            return self.generate_image(message)
+        thread = self._thread(thread_url)
+        lowered = message.lower()
+
+        # The real provider answers with whatever the request calls for, in the
+        # same chat turn. A mock that only ever replies in text cannot reach the
+        # media paths at all.
+        if any(word in lowered for word in FILE_WORDS):
+            return GenerationResult(
+                success=True, thread_url=thread,
+                text="mock archive for: {} [thread={}]".format(message.strip()[:120], thread),
+                media=[self._store(two_file_zip(), ".zip", "file", message)],
+            )
+        if any(word in lowered for word in IMAGE_WORDS):
+            return GenerationResult(
+                success=True, thread_url=thread,
+                text="mock image for: {} [thread={}]".format(message.strip()[:120], thread),
+                media=[self._store(solid_png(64, 64, (220, 60, 60)), ".png", "image", message)],
+            )
         return GenerationResult(
-            success=True,
-            text="mock reply from {} to: {}".format(self.name, message.strip()[:200]),
+            success=True, thread_url=thread,
+            text="mock reply from {} to: {} [thread={}]".format(
+                self.name, message.strip()[:160], thread),
         )
 
-    def generate_image(self, prompt: str, reference_filename: Optional[str] = None) -> GenerationResult:
+    def generate_image(self, prompt: str, reference_filename: Optional[str] = None,
+                       thread_url: Optional[str] = None) -> GenerationResult:
         self._pace()
-        filename = "mock-{}.png".format(uuid.uuid4().hex)
-        (self.media_path / filename).write_bytes(solid_png(64, 64, (220, 60, 60)))
+        thread = self._thread(thread_url)
         return GenerationResult(
-            success=True,
+            success=True, thread_url=thread,
             text="mock image for: {}".format(prompt.strip()[:200]),
-            media=[MediaArtifact(filename=filename, type="image",
-                                 metadata={"width": 64, "height": 64, "mock": True})],
+            media=[self._store(solid_png(64, 64, (220, 60, 60)), ".png", "image", prompt)],
         )
 
-    def generate_video_script(self, image_filename: str, duration: int = 5) -> GenerationResult:
+    def generate_video_script(self, image_filename: str, duration: int = 5,
+                              thread_url: Optional[str] = None) -> GenerationResult:
         self._pace()
+        thread = self._thread(thread_url)
         return GenerationResult(
-            success=True,
+            success=True, thread_url=thread,
             text=(
                 "mock {}-second script for {}: slow dolly in, subtle character motion, "
                 "ambient background movement, consistent lighting.".format(duration, image_filename)
