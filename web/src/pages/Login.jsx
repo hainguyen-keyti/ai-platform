@@ -60,7 +60,8 @@ export default function Login({ onSignedIn }) {
 
         {error && <div className="text-sm text-red-600">{error}</div>}
 
-        <button disabled={busy} className="w-full bg-slate-900 text-white rounded py-2 disabled:opacity-50">
+        <button type="submit" disabled={busy}
+          className="w-full bg-slate-900 text-white rounded py-2 disabled:opacity-50">
           {busy ? 'working...' : mode === 'login' ? 'Sign in' : 'Create account'}
         </button>
       </form>

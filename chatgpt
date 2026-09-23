@@ -1,3 +1,0 @@
-#!/bin/bash
-# ChatGPT CLI wrapper
-~/cloakbrowser-env/bin/python ~/Sources/RE/chatgpt/chatgpt_cloak.py "$@"

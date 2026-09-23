@@ -38,7 +38,9 @@ export default function App() {
         <button onClick={signOut} className="text-slate-500 hover:underline">sign out</button>
       </nav>
       <main className="flex-1 min-h-0">
-        {view === 'chat' ? <Chat /> : <Gallery />}
+        {view === 'chat'
+          ? <Chat onQuotaSpent={() => api.me().then(setUser).catch(() => {})} />
+          : <Gallery />}
       </main>
     </div>
   )

@@ -21,8 +21,12 @@ services:
     environment:
       VITE_API_URL: http://localhost:3000
     volumes:
-      - ./web/src:/app/src
-      - ./web/index.html:/app/index.html
+      # The whole directory, not single files: replacing a file on the host
+      # swaps its inode and a single-file bind mount keeps serving the old one.
+      # The anonymous volume keeps the container's own node_modules, which are
+      # built for linux, from being shadowed by the host's.
+      - ./web:/app
+      - /app/node_modules
     depends_on:
       - api
     restart: unless-stopped

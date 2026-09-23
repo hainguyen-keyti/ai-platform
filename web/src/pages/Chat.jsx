@@ -4,7 +4,7 @@ import MediaImage from '../components/MediaImage.jsx'
 
 const PROVIDERS = ['chatgpt', 'grok', 'gemini']
 
-export default function Chat() {
+export default function Chat({ onQuotaSpent }) {
   const [conversations, setConversations] = useState([])
   const [activeId, setActiveId] = useState(null)
   const [conversation, setConversation] = useState(null)
@@ -39,6 +39,9 @@ export default function Chat() {
       const fresh = await api.conversation(created.conversation_id)
       setConversation(fresh)
       refreshList()
+      // Every job costs a credit, so the number in the nav is stale the moment
+      // one finishes.
+      if (onQuotaSpent) onQuotaSpent()
     } catch (err) {
       setError(err.message)
     } finally {
