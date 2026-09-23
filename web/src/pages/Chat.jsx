@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api, waitForJob } from '../lib/api.js'
 import MediaImage from '../components/MediaImage.jsx'
 import TypingBubble from '../components/TypingBubble.jsx'
@@ -7,6 +7,18 @@ import Lightbox from '../components/Lightbox.jsx'
 const PROVIDERS = ['chatgpt', 'grok', 'gemini']
 const SLOW_HINT = 'Still working. Asking for a picture takes the longest.'
 const STICK_THRESHOLD_PX = 80
+
+function MediaCard({ item, busy, onOpen, onScript }) {
+  return (
+    <div className="w-64 rounded border bg-white p-2">
+      <MediaImage id={item.id} className="w-full" onOpen={(url) => onOpen(url, item)} />
+      <button onClick={() => onScript(item.id)} disabled={busy}
+        className="mt-2 w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
+        Video script
+      </button>
+    </div>
+  )
+}
 
 export default function Chat({ onQuotaSpent }) {
   const [conversations, setConversations] = useState([])
@@ -41,6 +53,18 @@ export default function Chat({ onQuotaSpent }) {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [conversation, status])
 
+  // Media from before media carried a message id has no bubble to sit under.
+  // Pinning it after the messages put old pictures below newer replies, so it
+  // is merged into the same list and ordered by time like everything else.
+  const timeline = useMemo(() => {
+    if (!conversation) return []
+    const items = conversation.messages.map((m) => ({ kind: 'message', at: m.created_at, id: m.id, message: m }))
+    for (const item of conversation.orphan_media || []) {
+      items.push({ kind: 'media', at: item.created_at, id: item.id, media: item })
+    }
+    return items.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+  }, [conversation])
+
   function trackScroll() {
     const el = scrollRef.current
     if (!el) return
@@ -66,6 +90,10 @@ export default function Chat({ onQuotaSpent }) {
     try {
       const created = await starter()
       setActiveId(created.conversation_id)
+      // Show what was just said straight away. Setting the id alone does not
+      // reload an already open conversation, so a follow-up message stayed
+      // invisible until its job finished, which for a picture is minutes.
+      setConversation(await api.conversation(created.conversation_id))
       await waitForJob(created.job_id, setStatus)
       const fresh = await api.conversation(created.conversation_id)
       setConversation(fresh)
@@ -128,39 +156,27 @@ export default function Chat({ onQuotaSpent }) {
           className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
           {!conversation && <p className="text-slate-400 text-sm">Start a new conversation.</p>}
 
-          {conversation?.messages.map((m) => (
-            <div key={m.id} className={`flex flex-col gap-2 ${
-              m.role === 'user' ? 'items-end' : 'items-start'}`}>
-              {m.content && (
-                <div className={`max-w-2xl whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
-                  m.role === 'user' ? 'bg-slate-900 text-white' : 'bg-white border'}`}>
-                  {m.content}
-                </div>
-              )}
-              {m.media?.map((item) => (
-                <div key={item.id} className="w-64 rounded border bg-white p-2">
-                  <MediaImage id={item.id} className="w-full" onOpen={(url) => open(url, item)} />
-                  <button onClick={() => requestScript(item.id)} disabled={!!status}
-                    className="mt-2 w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
-                    Video script
-                  </button>
-                </div>
-              ))}
-            </div>
-          ))}
-
-          {conversation?.orphan_media?.length > 0 && (
-            <div className="grid grid-cols-2 gap-3 pt-2 md:grid-cols-3">
-              {conversation.orphan_media.map((item) => (
-                <div key={item.id} className="space-y-2 rounded border bg-white p-2">
-                  <MediaImage id={item.id} className="w-full" onOpen={(url) => open(url, item)} />
-                  <button onClick={() => requestScript(item.id)} disabled={!!status}
-                    className="w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
-                    Video script
-                  </button>
-                </div>
-              ))}
-            </div>
+          {timeline.map((entry) =>
+            entry.kind === 'media' ? (
+              <div key={entry.id} className="flex flex-col items-start gap-2">
+                <MediaCard item={entry.media} busy={!!status}
+                  onOpen={open} onScript={requestScript} />
+              </div>
+            ) : (
+              <div key={entry.id} className={`flex flex-col gap-2 ${
+                entry.message.role === 'user' ? 'items-end' : 'items-start'}`}>
+                {entry.message.content && (
+                  <div className={`max-w-2xl whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+                    entry.message.role === 'user' ? 'bg-slate-900 text-white' : 'bg-white border'}`}>
+                    {entry.message.content}
+                  </div>
+                )}
+                {entry.message.media?.map((item) => (
+                  <MediaCard key={item.id} item={item} busy={!!status}
+                    onOpen={open} onScript={requestScript} />
+                ))}
+              </div>
+            )
           )}
 
           {status && <TypingBubble hint={pendingHint} />}

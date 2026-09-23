@@ -177,6 +177,20 @@ def main():
         page.fill(COMPOSER, "sent then scrolled away")
         page.click("button:has-text('Send')")
         page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
+
+        # A follow-up in an already open conversation, which is the case that
+        # broke: setting the same conversation id again reloads nothing, so the
+        # message stayed invisible until its job finished. The window is short
+        # on purpose. The job cannot finish inside it, so seeing the text here
+        # can only mean it was shown without waiting for the answer.
+        try:
+            page.wait_for_selector("text=sent then scrolled away", timeout=3000)
+            record("your message shows before the reply arrives", True,
+                   "on screen within 3s, job still running")
+        except Exception:
+            record("your message shows before the reply arrives", False,
+                   "not on screen after 3s, still waiting on the job")
+
         page.evaluate("() => document.querySelector('[data-testid=message-scroll]').scrollTo({top: 0})")
         page.wait_for_timeout(400)
         page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=60000)
