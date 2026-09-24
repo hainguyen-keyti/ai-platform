@@ -18,6 +18,10 @@ def build_provider(name: str):
         from src.providers.chatgpt import ChatGPTProvider
 
         return ChatGPTProvider(settings.media_path, settings.sessions_path)
+    if name == "grok":
+        from src.providers.grok import GrokProvider
+
+        return GrokProvider(settings.media_path, settings.sessions_path)
     raise ValueError("provider {} has no real implementation yet".format(name))
 
 
