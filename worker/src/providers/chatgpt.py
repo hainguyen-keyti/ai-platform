@@ -40,6 +40,9 @@ OPEN_RETRY_SECONDS = 15
 # over. Two seconds was thin: a reply that runs several tools puts the stop
 # button away between them, and a pause there reads as an ending.
 SETTLE_SECONDS = 6
+# After a cancel, how long to wait for a freshly sent turn's thread address so
+# the thread can be reported; the address normally shows within seconds.
+CANCEL_THREAD_WAIT = 15
 
 FETCH_AS_DATA_URL = """
 async (url) => {
@@ -707,8 +710,14 @@ class ChatGPTProvider(BaseProvider):
                     page, self._thread_id(page) or "", fresh, prompt, {upload} if upload else set())
                 media += files or self._save_files(page, seen_downloads, prompt)
         except JobCancelled:
-            # The message is already on the site; remember where, so the thread
-            # is not lost to the shared account's Library.
+            # The message is already on the site, so a thread exists or is
+            # about to: wait for its address (measured: a few seconds after
+            # sending) so the api can keep or remove it instead of losing it to
+            # the shared account's Library.
+            waited = 0.0
+            while not self._thread_id(page) and waited < CANCEL_THREAD_WAIT:
+                page.wait_for_timeout(500)
+                waited += 0.5
             if self._thread_id(page):
                 self.last_cancelled_thread = page.url
             raise
