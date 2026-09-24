@@ -49,6 +49,8 @@ CHECKS = (
     "a follow-up turn packages what the first one made",
     "a conversation's media downloads as one zip",
     "deleting a conversation removes its media files and the provider thread",
+    "deleting a conversation cancels its running job and refunds",
+    "a tombstone is handed out once per attempt",
     "a job settles exactly once",
     "a provider error fails the job and refunds",
     "a stranded job is reclaimed",
@@ -536,43 +538,6 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         _, health = http("GET", worker_health)
         return (health or {}).get("threads_deleted") or 0
 
-    # Deleting a conversation takes its media with it, on disk and in the api,
-    # and hands the provider thread to the worker to remove from the shared
-    # account's Library. It never touches the credit balance.
-    if conv_pack:
-        cstatus, cbody = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)
-        items = [x for m in (cbody or {}).get("messages") or [] for x in (m.get("media") or [])] \
-            + list((cbody or {}).get("orphan_media") or [])
-        media_ids = [x["id"] for x in items]
-        filenames = [x["filename"] for x in items]
-        deleted_before = threads_deleted()
-        q_before = quota_now()
-        dstatus, _ = http("DELETE", "{}/conversations/{}".format(api, conv_pack), token=token)
-        conv_gone = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)[0] == 404
-        media_gone = all(http("GET", "{}/media/{}".format(api, m), token=token)[0] == 404 for m in media_ids)
-        files_gone = not any((Path(media_dir) / f).exists() for f in filenames)
-        deadline = time.time() + 30
-        deleted_after = deleted_before
-        while time.time() < deadline and deleted_after < deleted_before + 1:
-            time.sleep(1)
-            deleted_after = threads_deleted()
-        if (dstatus == 204 and conv_gone and media_gone and files_gone and media_ids
-                and quota_now() == q_before and deleted_after >= deleted_before + 1):
-            c["deleting a conversation removes its media files and the provider thread"].passed(
-                "204; {} media rows and files gone; provider threads deleted {} -> {}; quota unchanged".format(
-                    len(media_ids), deleted_before, deleted_after))
-        else:
-            c["deleting a conversation removes its media files and the provider thread"].failed(
-                "delete {}, conversation gone {}, {} media gone {}, files gone {}, quota {} -> {}, "
-                "threads deleted {} -> {}".format(dstatus, conv_gone, len(media_ids), media_gone,
-                                                  files_gone, q_before, quota_now(), deleted_before,
-                                                  deleted_after))
-    else:
-        c["deleting a conversation removes its media files and the provider thread"].failed(
-            "no conversation to delete")
-
-    # ---- reliability: quota conservation, leases, cancel, health ----
-
     def job_state(job_id):
         return http("GET", "{}/jobs/{}".format(api, job_id), token=token)[1] or {}
 
@@ -590,6 +555,92 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         status, body = http("POST", api + "/chat",
                             {"provider": "chatgpt", "message": message}, token=token)
         return body.get("job_id") if status == 202 and body else None
+
+    # Deleting a conversation takes its media with it, on disk and in the api,
+    # and hands the provider thread to the worker to remove from the shared
+    # account's Library. It never touches the credit balance.
+    if conv_pack:
+        cstatus, cbody = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)
+        items = [x for m in (cbody or {}).get("messages") or [] for x in (m.get("media") or [])] \
+            + list((cbody or {}).get("orphan_media") or [])
+        media_ids = [x["id"] for x in items]
+        filenames = [x["filename"] for x in items]
+        deleted_before = threads_deleted()
+        q_before = quota_now()
+        # Someone else's DELETE must bounce and change nothing before the owner's own.
+        foreign_delete, _ = http("DELETE", "{}/conversations/{}".format(api, conv_pack), token=btoken) \
+            if btoken else (0, None)
+        still_mine = (http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)[0] == 200
+                      and all(http("GET", "{}/media/{}".format(api, m), token=token)[0] == 200
+                              for m in media_ids))
+        dstatus, _ = http("DELETE", "{}/conversations/{}".format(api, conv_pack), token=token)
+        conv_gone = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)[0] == 404
+        media_gone = all(http("GET", "{}/media/{}".format(api, m), token=token)[0] == 404 for m in media_ids)
+        files_gone = not any((Path(media_dir) / f).exists() for f in filenames)
+        deadline = time.time() + 30
+        deleted_after = deleted_before
+        while time.time() < deadline and deleted_after < deleted_before + 1:
+            time.sleep(1)
+            deleted_after = threads_deleted()
+        if (foreign_delete == 404 and still_mine and dstatus == 204 and conv_gone and media_gone
+                and files_gone and media_ids and quota_now() == q_before
+                and deleted_after >= deleted_before + 1):
+            c["deleting a conversation removes its media files and the provider thread"].passed(
+                "other user 404 and nothing moved; owner 204; {} media rows and files gone; "
+                "provider threads deleted {} -> {}; quota unchanged".format(
+                    len(media_ids), deleted_before, deleted_after))
+        else:
+            c["deleting a conversation removes its media files and the provider thread"].failed(
+                "other user {} still mine {}, delete {}, conversation gone {}, {} media gone {}, "
+                "files gone {}, quota {} -> {}, threads deleted {} -> {}".format(
+                    foreign_delete, still_mine, dstatus, conv_gone, len(media_ids), media_gone,
+                    files_gone, q_before, quota_now(), deleted_before, deleted_after))
+    else:
+        c["deleting a conversation removes its media files and the provider thread"].failed(
+            "no conversation to delete")
+
+    # Deleting a conversation whose job is still running ends the job and gives
+    # the credit back; the worker's late result is refused, so nothing of the
+    # deleted conversation is written afterwards.
+    q0 = quota_now()
+    status, body = http("POST", api + "/chat",
+                        {"provider": "chatgpt", "message": SLOW_PHRASE + ": delete me while running"},
+                        token=token)
+    doomed_job = (body or {}).get("job_id") if status == 202 else None
+    doomed_conv = (body or {}).get("conversation_id") if status == 202 else None
+    seen = wait_state(doomed_job, ("running", "done", "failed"), 20) if doomed_job else {}
+    dstatus, _ = http("DELETE", "{}/conversations/{}".format(api, doomed_conv), token=token) \
+        if doomed_conv else (0, None)
+    final = wait_state(doomed_job, ("cancelled", "done", "failed"), job_timeout) if doomed_job else {}
+    time.sleep(1.5)
+    if (seen.get("status") == "running" and dstatus == 204 and final.get("status") == "cancelled"
+            and not ((final.get("result") or {}).get("media")) and quota_now() == q0):
+        c["deleting a conversation cancels its running job and refunds"].passed(
+            "job cancelled by the delete, credit returned, no media written")
+    else:
+        c["deleting a conversation cancels its running job and refunds"].failed(
+            "seen {} delete {} final {} media {} quota {} -> {}".format(
+                seen.get("status"), dstatus, final.get("status"),
+                (final.get("result") or {}).get("media"), q0, quota_now()))
+
+    # The tombstone queue's promises, checked on a throwaway database rather than
+    # through a racing worker: once per attempt, settled stays settled, a failed
+    # attempt waits, three misses end it.
+    try:
+        stones = subprocess.run([python, str(ROOT / "tests" / "test_tombstones.py")],
+                                capture_output=True, text=True, cwd=str(ROOT), timeout=120)
+        code, output = stones.returncode, (stones.stdout or "") + (stones.stderr or "")
+    except subprocess.TimeoutExpired:
+        code, output = -1, "timed out after 120s"
+    lines = [l for l in output.splitlines() if l.strip()]
+    summary = next((l for l in reversed(lines) if "PASSED" in l), "")
+    if code == 0 and summary.startswith("5/5"):
+        c["a tombstone is handed out once per attempt"].passed(summary)
+    else:
+        c["a tombstone is handed out once per attempt"].failed(
+            "exit {} {}".format(code, (summary or (lines[-1] if lines else ""))[:110]))
+
+    # ---- reliability: quota conservation, leases, cancel, health ----
 
     worker_headers = {"X-Worker-Token": worker_token}
 
@@ -676,20 +727,26 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
     # A day passes (the api is restarted with its clock moved forward): the
     # balance comes back to the cap once, does not stack on a second look, and a
     # job afterwards spends from the refilled cap.
+    # The cap is the user's own quota_daily, read back rather than assumed, so a
+    # DEFAULT_QUOTA in the caller's shell cannot fail this for the wrong reason.
+    # A run that crosses 00:00 UTC refills once on its own; that would show here.
+    me = http("GET", api + "/auth/me", token=token)[1] or {}
+    cap = me.get("quota_daily")
     q_spent = quota_now()
     restarted = restart_api({"CLOCK_OFFSET_SECONDS": "86400"})
     q_first, q_second = quota_now(), quota_now()
     job_id = start_job("a plain turn after the day changed")
     wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
     q_after_job, q_again = quota_now(), quota_now()
-    if (restarted and q_spent is not None and q_spent < 100 and q_first == 100 and q_second == 100
-            and q_after_job == 99 and q_again == 99):
+    if (restarted and cap and q_spent is not None and q_spent < cap and q_first == cap
+            and q_second == cap and q_after_job == cap - 1 and q_again == cap - 1):
         c["quota refills once a day up to the cap"].passed(
-            "{} -> 100 after the day changed, held at 100, 99 after one job".format(q_spent))
+            "{} -> {} after the day changed, held at {}, {} after one job".format(
+                q_spent, cap, cap, cap - 1))
     else:
         c["quota refills once a day up to the cap"].failed(
-            "api restarted {}, quota {} -> {} then {}, after a job {} then {}".format(
-                restarted, q_spent, q_first, q_second, q_after_job, q_again))
+            "api restarted {}, cap {}, quota {} -> {} then {}, after a job {} then {}".format(
+                restarted, cap, q_spent, q_first, q_second, q_after_job, q_again))
 
     # The first account owns the instance and sees who spent what; usage is read
     # from the jobs that already record every charge and refund.

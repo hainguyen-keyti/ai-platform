@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from src.db.client import db, many, one
 from src.models import QuotaUpdate
 from src.security import current_user, require_admin
+from src.tombstones import MAX_ATTEMPTS
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -44,11 +45,22 @@ def usage(days: int = Query(default=30, ge=1, le=365), user: dict = Depends(curr
             " AND created_at >= datetime('now', ?) GROUP BY user_id",
             (window,),
         )}
+        # Threads of deleted conversations the worker still has to remove, and
+        # the ones it gave up on; the only place either number is visible.
+        stones = one(
+            conn,
+            "SELECT SUM(CASE WHEN deleted_at IS NULL AND attempts < ? THEN 1 ELSE 0 END) AS pending,"
+            " SUM(CASE WHEN deleted_at IS NULL AND attempts >= ? THEN 1 ELSE 0 END) AS dead"
+            " FROM thread_tombstones",
+            (MAX_ATTEMPTS, MAX_ATTEMPTS),
+        ) or {}
     for row in rows:
+        # Pictures still kept, not pictures ever made: deleting a conversation lowers it.
         row["images"] = images.get(row["id"], 0)
         for key in ("done", "failed", "cancelled", "open"):
             row[key] = row[key] or 0
-    return {"days": days, "items": rows}
+    return {"days": days, "items": rows,
+            "thread_deletions": {"pending": stones.get("pending") or 0, "dead": stones.get("dead") or 0}}
 
 
 @router.put("/users/{user_id}/quota")

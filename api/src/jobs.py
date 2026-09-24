@@ -24,6 +24,29 @@ def _refund(conn, user_id):
     )
 
 
+def cancel_open_jobs(conn, conversation_id):
+    """Inside the caller's transaction: end every live job of a conversation, refunding each once.
+
+    Used when the conversation itself is deleted. The worker learns through its
+    next heartbeat that the job is no longer its to finish, and its late result
+    is refused, so nothing of the deleted conversation is written afterwards.
+    """
+    live = many(
+        conn,
+        "SELECT id, user_id FROM jobs WHERE conversation_id = ? AND status NOT IN ('done', 'failed', 'cancelled')",
+        (conversation_id,),
+    )
+    for job in live:
+        conn.execute(
+            "UPDATE jobs SET status = 'cancelled', cancel_requested = 1, error = ?,"
+            " error_kind = 'cancelled', lease_expires_at = NULL, phase = NULL,"
+            " finished_at = datetime('now') WHERE id = ?",
+            ("the conversation was deleted while the job was live", job["id"]),
+        )
+        _refund(conn, job["user_id"])
+    return len(live)
+
+
 def _resolve_media(conn, user_id, media_id):
     row = one(conn, "SELECT * FROM media WHERE id = ? AND user_id = ?", (media_id, user_id))
     if not row:

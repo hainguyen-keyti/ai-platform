@@ -12,14 +12,17 @@ const STICK_THRESHOLD_PX = 80
 const BASE_TITLE = document.title
 
 // A link the model writes to its own sandbox points nowhere a browser can go;
-// the file itself is already a card under the text. Everything else keeps
-// react-markdown's own url rules.
-function keepSandbox(url) {
-  return url.startsWith('sandbox:') ? url : defaultUrlTransform(url)
+// the file itself is already a card under the text. Only link targets are let
+// through so the component below can turn them into text; image sources and
+// everything else keep react-markdown's own url rules.
+function keepSandbox(url, key) {
+  return key === 'href' && url.startsWith('sandbox:') ? url : defaultUrlTransform(url)
 }
 
 const markdownParts = {
-  a: ({ href, children }) => ((href || '').startsWith('sandbox:')
+  // An empty href is what react-markdown leaves of a javascript: or other
+  // disallowed target; a link to nowhere is shown as plain text too.
+  a: ({ href, children }) => (!href || href.startsWith('sandbox:')
     ? <span>{children}</span>
     : <a href={href} target="_blank" rel="noopener noreferrer" className="underline">{children}</a>),
 }

@@ -56,6 +56,12 @@ def claim_tombstone():
 
 
 def settle_tombstone(stone_id: str, ok: bool, error):
+    """Mark the thread gone, or record the failure.
+
+    A failed attempt keeps its claim, stamped now, so the reclaim window is a
+    rest between attempts: a logged-out session cannot burn through every
+    pending tombstone in one idle minute.
+    """
     with db() as conn:
         if ok:
             changed = conn.execute(
@@ -65,7 +71,7 @@ def settle_tombstone(stone_id: str, ok: bool, error):
             ).rowcount
         else:
             changed = conn.execute(
-                "UPDATE thread_tombstones SET claimed_at = NULL, error = ?"
+                "UPDATE thread_tombstones SET claimed_at = datetime('now'), error = ?"
                 " WHERE id = ? AND deleted_at IS NULL",
                 ((error or "")[:500], stone_id),
             ).rowcount

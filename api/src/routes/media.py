@@ -47,7 +47,7 @@ def _owned(user_id, media_id):
 def _safe_path(filename):
     # The name comes from the worker; refuse anything that is not a bare file name.
     name = PurePosixPath(filename).name
-    if not name or name != filename:
+    if not name or name != filename or name in (".", ".."):
         raise HTTPException(status_code=400, detail="bad media filename")
     return settings.media_path / name
 

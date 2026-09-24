@@ -7,6 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from src.db.client import db, many, one
+from src.jobs import cancel_open_jobs
 from src.models import ConversationUpdate
 from src.routes.media import _safe_path
 from src.security import current_user
@@ -92,10 +93,13 @@ def get_conversation(conversation_id: str, user: dict = Depends(current_user)):
 @router.patch("/{conversation_id}")
 def rename_conversation(conversation_id: str, body: ConversationUpdate,
                         user: dict = Depends(current_user)):
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(status_code=422, detail="title must not be blank")
     with db() as conn:
         changed = conn.execute(
             "UPDATE conversations SET title = ? WHERE id = ? AND user_id = ?",
-            (body.title.strip(), conversation_id, user["id"]),
+            (title, conversation_id, user["id"]),
         ).rowcount
         if changed != 1:
             raise HTTPException(status_code=404, detail="conversation not found")
@@ -171,7 +175,8 @@ def delete_conversation(conversation_id: str, user: dict = Depends(current_user)
     """Remove the conversation, its messages and media, and note its provider thread.
 
     Rows go in one transaction; files go after it, so a failed unlink can never
-    leave a row pointing at nothing. The credit balance is not touched.
+    leave a row pointing at nothing. A job still live in the conversation is
+    cancelled and refunded, the one way the balance moves here.
     """
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -191,6 +196,7 @@ def delete_conversation(conversation_id: str, user: dict = Depends(current_user)
             )]
             conn.execute("DELETE FROM media WHERE conversation_id = ? AND user_id = ?",
                          (conversation_id, user["id"]))
+            cancel_open_jobs(conn, conversation_id)
             conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
             if conv["provider_thread_url"]:
                 leave_tombstone(conn, conv["provider"], conv["provider_thread_url"])
@@ -204,6 +210,6 @@ def delete_conversation(conversation_id: str, user: dict = Depends(current_user)
     for name in filenames:
         try:
             _safe_path(name).unlink(missing_ok=True)
-        except HTTPException:
+        except (HTTPException, OSError):
             continue
     return Response(status_code=204)

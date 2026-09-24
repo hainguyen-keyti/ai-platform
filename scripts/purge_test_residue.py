@@ -14,10 +14,14 @@ storage/sessions, so stop the host worker first. This is the owner's action to r
 """
 
 import json
+import re
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+# Ids go into request paths; anything that is not a plain id is refused up front.
+ID_SHAPE = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))
@@ -40,6 +44,9 @@ def main():
     plan = json.loads(Path(paths[0]).read_text())
     threads = [str(x) for x in plan.get("threads") or []]
     memories = [str(x) for x in plan.get("memories") or []]
+    odd = [x for x in threads + memories if not ID_SHAPE.match(x)]
+    if odd:
+        sys.exit("refusing: {} id(s) are not plain ids, for example {!r}".format(len(odd), odd[0][:40]))
     print("{} threads, {} memories".format(len(threads), len(memories)))
     if "--yes" not in sys.argv:
         print("dry run: no request made; add --yes to delete them")
