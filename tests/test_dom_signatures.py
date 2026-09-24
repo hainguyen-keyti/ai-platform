@@ -6,7 +6,7 @@
 The fixtures under tests/fixtures/ are snippets saved from the real site by
 tests/provider_probe.py. The error banner must be recognised in its own fixture
 and not in an ordinary reply, so a detector that matches everything, or nothing,
-fails here without a real failure to provoke.
+fails here without a real failure to provoke. Prints N/3 PASSED.
 """
 
 import sys
@@ -16,9 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(ROOT / "worker"))
 
+# One positive case and two negatives: the assistant turn alone, and the whole
+# main area of a healthy page with composer and all, so a detector that fires
+# on something ordinary is caught here.
 CASES = (
     ("chatgpt_error_banner.html", True),
     ("chatgpt_reply.html", False),
+    ("chatgpt_main_reply.html", False),
 )
 
 results = []

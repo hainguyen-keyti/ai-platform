@@ -443,26 +443,39 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
     # Everything a conversation produced is already on our disk, so packaging it
     # is the platform's job, not a request to the model (measured: one turn asking
     # for ten pictures and a zip produced a zip in 1 of 4 runs).
+    def zip_names(url):
+        status, blob = http_bytes(url, token)
+        if status == 200 and isinstance(blob, bytes) and blob[:2] == b"PK":
+            try:
+                return status, zipfile.ZipFile(io.BytesIO(blob)).namelist()
+            except zipfile.BadZipFile:
+                return status, []
+        return status, []
+
     if conv_pack:
         cstatus, cbody = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)
-        held = sum(len(m.get("media") or []) for m in (cbody or {}).get("messages") or []) \
+        messages = (cbody or {}).get("messages") or []
+        held = sum(len(m.get("media") or []) for m in messages) \
             + len((cbody or {}).get("orphan_media") or [])
-        zstatus, zblob = http_bytes("{}/conversations/{}/media.zip".format(api, conv_pack), token)
-        names = []
-        if zstatus == 200 and isinstance(zblob, bytes) and zblob[:2] == b"PK":
-            try:
-                names = zipfile.ZipFile(io.BytesIO(zblob)).namelist()
-            except zipfile.BadZipFile:
-                names = []
-        other, _ = http_bytes("{}/conversations/{}/media.zip".format(api, conv_pack), btoken) \
-            if btoken else (0, b"")
-        if held >= 2 and len(names) == held and other == 404:
+        zip_url = "{}/conversations/{}/media.zip".format(api, conv_pack)
+        zstatus, names = zip_names(zip_url)
+        other, _ = http_bytes(zip_url, btoken) if btoken else (0, b"")
+        # One message's worth: the turn that produced the file, and nothing else.
+        with_file = [m for m in messages
+                     if any(x.get("type") == "file" for x in m.get("media") or [])]
+        mstatus, mnames = zip_names("{}?message_id={}".format(zip_url, with_file[-1]["id"])) \
+            if with_file else (0, [])
+        unknown, _ = http_bytes("{}?message_id={}".format(zip_url, "0" * 32), token)
+        if (held >= 2 and len(names) == held and other == 404 and with_file
+                and len(mnames) == len(with_file[-1]["media"]) and unknown == 404):
             c["a conversation's media downloads as one zip"].passed(
-                "{} media, {} entries {}, other user {}".format(held, len(names), names[:3], other))
+                "{} media, {} entries {}, one message {} entr{}, unknown message 404, other user 404".format(
+                    held, len(names), names[:3], len(mnames), "y" if len(mnames) == 1 else "ies"))
         else:
             c["a conversation's media downloads as one zip"].failed(
-                "conversation holds {} media, zip {} with {} entries {}, other user {}".format(
-                    held, zstatus, len(names), names[:3], other))
+                "conversation holds {} media, zip {} with {} entries {}, other user {}, "
+                "one message {} with {} entries, unknown message {}".format(
+                    held, zstatus, len(names), names[:3], other, mstatus, len(mnames), unknown))
     else:
         c["a conversation's media downloads as one zip"].failed("no conversation to package")
 
@@ -626,7 +639,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         capture_output=True, text=True, cwd=str(ROOT))
     lines = [l for l in ((signature.stdout or "") + (signature.stderr or "")).splitlines() if l.strip()]
     summary = next((l for l in reversed(lines) if "PASSED" in l), "")
-    if signature.returncode == 0 and summary.startswith("2/2"):
+    if signature.returncode == 0 and summary.startswith("3/3"):
         c["the provider's error banner is recognised by shape"].passed(summary)
     else:
         c["the provider's error banner is recognised by shape"].failed(

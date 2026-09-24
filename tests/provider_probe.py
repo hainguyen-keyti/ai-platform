@@ -2,6 +2,7 @@
 """Measure the ChatGPT behaviours the worker depends on, against the real site.
 
     ~/cloakbrowser-env/bin/python tests/provider_probe.py [all|send|dom-settle|memory|banner|cleanup]
+    ~/cloakbrowser-env/bin/python tests/provider_probe.py send,cleanup    # comma-separated, in this order
     ~/cloakbrowser-env/bin/python tests/provider_probe.py memory-toggle   # by name only
 
 Each probe prints what it saw; nothing here asserts a wish. The output is copied
@@ -189,8 +190,8 @@ def probe_send(p):
     result = p.provider._run(PROMPT)
     page.remove_listener("request", on_request)
     p.thread_id = p.provider._thread_id(page)
-    say("send: result", "success={} settle={} {:.0f}s text={!r} thread={}".format(
-        result.success, p.provider.last_settle, time.time() - started,
+    say("send: result", "success={} settle={} memory={} {:.0f}s text={!r} thread={}".format(
+        result.success, p.provider.last_settle, p.provider.memory, time.time() - started,
         (result.text or "")[:40], (p.thread_id or "none")[:8]))
     seen = []
     for entry in requests:
@@ -209,6 +210,11 @@ def probe_send(p):
         save_fixture("chatgpt_reply.html", html)
     else:
         say("fixture", "chatgpt_reply.html not written: no article or conversation-turn element")
+    # The whole healthy page as well, composer included, so a detector that
+    # fires on something ordinary outside the turn is caught by the fixtures.
+    main_html = page.evaluate("() => (document.querySelector('main') || {}).outerHTML || ''")
+    if main_html:
+        save_fixture("chatgpt_main_reply.html", main_html)
 
 
 def probe_dom_settle(p):
@@ -288,10 +294,12 @@ def probe_memory(p):
         got = page.evaluate(FETCH_JSON, [path, token, "GET", None])
         body = got.get("json")
         keys = sorted(body.keys())[:14] if isinstance(body, dict) else type(body).__name__
+        # Flags only. Stored memories are user text and are counted, never printed.
         related = {k: v for k, v in walk(body) if "memor" in k.lower()
-                   and isinstance(v, (bool, int, str, float, type(None)))}
-        say("memory: GET " + path.split("?")[0], "status {} keys {} memory-related {}".format(
-            got["status"], keys, json.dumps(related, ensure_ascii=False)[:300]))
+                   and not k.startswith("memories[") and isinstance(v, (bool, int, float, type(None)))}
+        stored = len(body.get("memories") or []) if isinstance(body, dict) else 0
+        say("memory: GET " + path.split("?")[0], "status {} keys {} flags {} stored memories {}".format(
+            got["status"], keys, json.dumps(related, ensure_ascii=False)[:300], stored))
     got = page.evaluate(FETCH_JSON, ["/backend-api/settings/user", token, "GET", None])
     values = ((got.get("json") or {}).get("settings") or {}) if isinstance(got.get("json"), dict) else {}
     say("memory: settings/user switch keys", "status {} {}".format(
@@ -366,29 +374,36 @@ def probe_memory_toggle(p):
     page.on("request", lambda r: requests.append((r.method, r.url.split("chatgpt.com", 1)[-1][:120]))
             if r.method != "GET" and "backend-api" in r.url else None)
     dialogs_before = len(page.evaluate(DIALOGS))
-    page.locator("[role=switch]").nth(switch["index"]).click(timeout=10000)
-    page.wait_for_timeout(2500)
-    for entry in requests:
-        say("memory-toggle: request after switching on", "{} {}".format(*entry))
-    if len(page.evaluate(DIALOGS)) > dialogs_before:
-        say("memory-toggle", "a confirmation dialog appeared; nothing in it is clicked. Switch now: {}".format(
-            json.dumps(memory_switch())))
-        return
-    say("memory-toggle: switch after", json.dumps(memory_switch(), ensure_ascii=False))
-    page.wait_for_timeout(1500)
-    say("memory-toggle: json changed while on", json.dumps(changed(before, snapshot()), default=str)[:800])
-    requests.clear()
-    page.locator("[role=switch]").nth(switch["index"]).click(timeout=10000)
-    page.wait_for_timeout(2500)
-    for entry in requests:
-        say("memory-toggle: request after switching off", "{} {}".format(*entry))
-    final = memory_switch()
-    say("memory-toggle: switch final", json.dumps(final, ensure_ascii=False))
-    page.wait_for_timeout(1500)
-    say("memory-toggle: json changed off vs original", json.dumps(changed(before, snapshot()), default=str)[:400])
-    if not final or final["checked"] != "false":
-        say("memory-toggle", "WARNING: the switch did not read off at the end; check Settings, Personalization by hand")
-    page.keyboard.press("Escape")
+    try:
+        page.locator("[role=switch]").nth(switch["index"]).click(timeout=10000)
+        page.wait_for_timeout(2500)
+        for entry in requests:
+            say("memory-toggle: request after switching on", "{} {}".format(*entry))
+        if len(page.evaluate(DIALOGS)) > dialogs_before:
+            say("memory-toggle", "a confirmation dialog appeared; nothing in it is clicked")
+        else:
+            say("memory-toggle: switch after", json.dumps(memory_switch(), ensure_ascii=False))
+            page.wait_for_timeout(1500)
+            say("memory-toggle: json changed while on",
+                json.dumps(changed(before, snapshot()), default=str)[:800])
+    finally:
+        # Whatever happened above, the switch goes back to off before leaving.
+        requests.clear()
+        current = memory_switch()
+        if current and current["checked"] == "true":
+            page.locator("[role=switch]").nth(current["index"]).click(timeout=10000)
+            page.wait_for_timeout(2500)
+            for entry in requests:
+                say("memory-toggle: request after switching off", "{} {}".format(*entry))
+        final = memory_switch()
+        say("memory-toggle: switch final", json.dumps(final, ensure_ascii=False))
+        page.wait_for_timeout(1500)
+        say("memory-toggle: json changed off vs original",
+            json.dumps(changed(before, snapshot()), default=str)[:400])
+        if not final or final["checked"] != "false":
+            say("memory-toggle", "WARNING: the switch did not read off at the end; "
+                                 "check Settings, Personalization by hand")
+        page.keyboard.press("Escape")
 
 
 def probe_banner(p):
@@ -423,7 +438,7 @@ def probe_banner(p):
             save_fixture("chatgpt_error_banner.html", snippet)
         else:
             say("fixture", "chatgpt_error_banner.html not written: nothing error-like appeared")
-        main_html = page.evaluate("() => (document.querySelector('main') || {}).outerHTML || ''")
+        main_html = sanitize(page.evaluate("() => (document.querySelector('main') || {}).outerHTML || ''"))
         Path("/tmp/chatgpt_banner_main.html").write_text(main_html)
         say("banner: whole main saved", "/tmp/chatgpt_banner_main.html, {} chars, for inspection only".format(
             len(main_html)))
@@ -461,14 +476,16 @@ NOT_IN_ALL = {"memory-toggle"}
 
 
 def main():
-    wanted = sys.argv[1] if len(sys.argv) > 1 else "all"
+    wanted = (sys.argv[1] if len(sys.argv) > 1 else "all").split(",")
     names = [n for n, _ in PROBES]
-    if wanted != "all" and wanted not in names:
-        sys.exit("unknown probe {}; one of {}".format(wanted, ", ".join(["all"] + names)))
+    for w in wanted:
+        if w != "all" and w not in names:
+            sys.exit("unknown probe {}; one of {}, comma-separated".format(w, ", ".join(["all"] + names)))
+    chosen = [n for n in names if n in wanted or ("all" in wanted and n not in NOT_IN_ALL)]
     p = Probe()
     try:
         for name, fn in PROBES:
-            if wanted != name and (wanted != "all" or name in NOT_IN_ALL):
+            if name not in chosen:
                 continue
             say(name, "starting")
             try:
@@ -478,10 +495,9 @@ def main():
                 say(name, "PROBE CRASHED {}: {}".format(type(exc).__name__, str(exc)[:300]))
     finally:
         p.close()
-    ran = [n for n, _ in PROBES if wanted == n or (wanted == "all" and n not in NOT_IN_ALL)]
     print("=" * 50)
     print("{} probe(s) ran, {} crashed{}".format(
-        len(ran), len(crashed), ": " + ", ".join(crashed) if crashed else ""))
+        len(chosen), len(crashed), ": " + ", ".join(crashed) if crashed else ""))
     return 1 if crashed else 0
 
 

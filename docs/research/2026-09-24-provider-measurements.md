@@ -41,9 +41,9 @@ tool-using replies were not timed here.
 ## Where the memory switch lives
 
 `memory`: no JSON read before the toggle showed a memory flag by name. `/backend-api/settings/user`
-carried only an onboarding timestamp; `/backend-api/memories` lists saved memories (one from
-2026-09-23, "pineapple-777", still stored) with `memory_num_tokens 1348` and `memory_max_tokens
-5000000`, but no on/off state; `/backend-api/accounts/check/v4-2023-04-27`, `/backend-api/me`,
+carried only an onboarding timestamp; `/backend-api/memories` lists the saved memories themselves
+(user text; the probe now prints only their count, which was 10, all from the 2026-09-23 tests)
+with `memory_num_tokens 1348` and `memory_max_tokens 5000000`, but no on/off state; `/backend-api/accounts/check/v4-2023-04-27`, `/backend-api/me`,
 `/backend-api/user_system_messages` and `/backend-api/settings/beta_features` had nothing either.
 A brand new conversation reported `memory_scope: "global_enabled"` while the switch was off, so
 that field says nothing about the account setting.
@@ -59,8 +59,11 @@ confirmation dialog. `GET /backend-api/settings/user` then changed in exactly th
 `settings.m3m`, `settings.sunshine`, `settings.moonshine`, all false to true. Clicking again fired
 the same PATCH with `value=false`; the switch read off and the JSON matched the original snapshot
 with no difference. The worker's guard reads `settings.m3m`, `sunshine` and `moonshine` once per
-job, before sending; any true means on; none present means unknown, which is reported, not
-treated as on.
+job, before sending; any true means on; all present and false means off; anything else (keys
+missing or null) means unknown, which is reported, not treated as on. No session token at all is
+a logged-out session and the turn is refused; a token the server answers 401 to is replaced once
+and the read repeated, so a stale credential never lets a turn through unchecked (review finding,
+2026-09-24).
 
 ## What a failed turn looks like
 
@@ -80,8 +83,10 @@ inside `main`. The banner's text is the server's own `detail` string, so it arri
 wording and language the failure had; matching words would be matching the server's mood. The
 detector `ERROR_BANNER_PRESENT` therefore matches shape: a `.text-token-text-error` element inside
 `main` that holds a button and has text. Saved as `tests/fixtures/chatgpt_error_banner.html`
-(18911 chars, no address-like strings); the ordinary reply fixture has zero occurrences of that
-token.
+(18911 chars, no address-like strings); the two negative fixtures, the assistant turn alone and
+the whole `main` of a healthy page with its composer, have zero occurrences of that token. The
+detector compares against the banner text seen before the turn was sent, so a banner left over
+from an earlier turn in a reused thread is not read as this turn's failure.
 
 After the failure the address read `https://chatgpt.com/c/WEB:<uuid>`: a client-side placeholder
 the server does not know. `_thread_id` now treats `WEB:` ids as no thread, so a failed first turn

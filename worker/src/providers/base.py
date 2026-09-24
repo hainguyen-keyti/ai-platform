@@ -11,8 +11,9 @@ class FeatureType(str, Enum):
     VIDEO_SCRIPT = "video_script"
 
 
-MEMORY_ON_ERROR = ("the provider's memory is on for the shared account, so this turn was not sent; "
-                   "turn it off (Settings, Personalization, Enable memory) and try again")
+MEMORY_ON_ERROR = ("the shared provider account has memory switched on, so this turn was not sent; "
+                   "ask the account owner to turn it off (Settings, Personalization, Enable memory) "
+                   "and try again")
 
 
 class JobCancelled(Exception):

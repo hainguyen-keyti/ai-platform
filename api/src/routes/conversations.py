@@ -65,6 +65,15 @@ def get_conversation(conversation_id: str, user: dict = Depends(current_user)):
     return conv
 
 
+def _entry_name(offered, fallback):
+    # The offered name came from the provider's site through the worker. Inside
+    # the archive it must be a bare, printable file name or it is not used.
+    name = PurePosixPath(str(offered or "")).name
+    if name in ("", ".", "..") or "\\" in name or any(ord(c) < 32 for c in name):
+        return fallback
+    return name
+
+
 @router.get("/{conversation_id}/media.zip")
 def download_conversation_media(conversation_id: str,
                                 message_id: Optional[str] = Query(default=None),
@@ -99,7 +108,7 @@ def download_conversation_media(conversation_id: str,
             if not path.exists():
                 continue
             metadata = json.loads(row["metadata"]) if row["metadata"] else {}
-            offered = PurePosixPath(str(metadata.get("name") or row["filename"])).name or row["filename"]
+            offered = _entry_name(metadata.get("name"), row["filename"])
             name, stem, suffix = offered, PurePosixPath(offered).stem, PurePosixPath(offered).suffix
             n = 1
             while name in used:

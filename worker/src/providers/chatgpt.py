@@ -341,30 +341,49 @@ class ChatGPTProvider(BaseProvider):
         return tail
 
     def _read_memory(self, page) -> str:
-        """The account's memory switch as the server reports it: on, off or unknown."""
-        if not self._access_token:
-            self._access_token = page.evaluate(SESSION_TOKEN)
-        if not self._access_token:
-            self.memory = "unknown"
-            return self.memory
-        try:
-            got = page.evaluate(FETCH_USER_SETTINGS, [self._access_token, list(MEMORY_KEYS)])
-        except Exception:
-            got = {}
-        if got.get("status") == 401:
-            self._access_token = None
+        """The account's memory switch as the server reports it: on, off or unknown.
+
+        No session token at all means the session is logged out; the anonymous
+        composer would still take a message, so that is refused outright. An
+        expired token is replaced once and the question asked again, so that a
+        turn is never let through on a stale credential.
+        """
+        got = {}
+        for attempt in range(2):
+            if not self._access_token:
+                self._access_token = page.evaluate(SESSION_TOKEN)
+            if not self._access_token:
+                raise ProviderError("no session token: the provider session is logged out; "
+                                    "run scripts/login_provider.py chatgpt")
+            try:
+                got = page.evaluate(FETCH_USER_SETTINGS, [self._access_token, list(MEMORY_KEYS)])
+            except Exception:
+                got = {}
+            if got.get("status") == 401 and attempt == 0:
+                self._access_token = None
+                continue
+            break
         values = got.get("values") or {}
-        if not values:
-            self.memory = "unknown"
-        elif any(values.get(k) for k in MEMORY_KEYS):
+        present = [values[k] for k in MEMORY_KEYS if k in values]
+        if any(v is True for v in present):
             self.memory = "on"
-        else:
+        elif present and all(v is False for v in present):
             self.memory = "off"
+        else:
+            self.memory = "unknown"
         return self.memory
 
-    def _fail_on_banner(self, page):
-        banner = page.evaluate(ERROR_BANNER_PRESENT)
-        if banner:
+    def _banner(self, page):
+        try:
+            return page.evaluate(ERROR_BANNER_PRESENT)
+        except Exception:
+            # A page in the middle of a navigation has no context to ask; that
+            # is not a banner.
+            return None
+
+    def _fail_on_banner(self, page, seen_before):
+        banner = self._banner(page)
+        if banner and banner != seen_before:
             raise ProviderError("the provider showed its error banner: {}".format(banner))
 
     def _thread_nodes(self, page, thread_id: str):
@@ -393,7 +412,7 @@ class ChatGPTProvider(BaseProvider):
             return set()
         return {n["id"] for n in data["nodes"]}
 
-    def _settle_via_server(self, page, baseline_ids: set, deadline: float):
+    def _settle_via_server(self, page, baseline_ids: set, deadline: float, banner_before=None):
         """Wait until the server marks the new assistant turn finished.
 
         Returns (reply text, the turn's new nodes), or None the moment the
@@ -411,7 +430,7 @@ class ChatGPTProvider(BaseProvider):
         while time.time() < deadline:
             page.wait_for_timeout(1000)
             self._check_stop()
-            self._fail_on_banner(page)
+            self._fail_on_banner(page, banner_before)
             thread_id = self._thread_id(page)
             if not thread_id:
                 if time.time() - started > NO_THREAD_GRACE:
@@ -520,7 +539,8 @@ class ChatGPTProvider(BaseProvider):
         except Exception:
             return ""
 
-    def _await_result(self, page, baseline: int, seen_before, prompt: str, seen_downloads):
+    def _await_result(self, page, baseline: int, seen_before, prompt: str, seen_downloads,
+                      banner_before=None):
         """Wait for the answer to settle, then take whatever it turned out to be.
 
         One loop for every kind of request. Branching on what the caller asked
@@ -539,7 +559,7 @@ class ChatGPTProvider(BaseProvider):
             # Once a second is the cancel checkpoint: a job the api has taken
             # away stops here instead of running to the end for nobody.
             self._check_stop()
-            self._fail_on_banner(page)
+            self._fail_on_banner(page, banner_before)
 
             if page.locator(STOP_BUTTON).count():
                 stable = 0
@@ -631,15 +651,18 @@ class ChatGPTProvider(BaseProvider):
 
         seen_before = set(page.evaluate(SNAPSHOT_IMAGES))
         seen_downloads = set(page.evaluate(SNAPSHOT_DOWNLOADS))
+        # A banner left over from an earlier turn is not this turn's failure.
+        banner_before = self._banner(page)
         baseline_ids = self._baseline_ids(page)
         started = time.time()
         self._send(page, prompt)
 
-        settled = self._settle_via_server(page, baseline_ids, started + REPLY_TIMEOUT)
+        settled = self._settle_via_server(page, baseline_ids, started + REPLY_TIMEOUT, banner_before)
         if settled is None:
             # No server view here; watch the page the old way.
             self.last_settle = "dom"
-            text, media = self._await_result(page, baseline, seen_before, prompt, seen_downloads)
+            text, media = self._await_result(page, baseline, seen_before, prompt, seen_downloads,
+                                             banner_before)
         else:
             self.last_settle = "server"
             text, fresh = settled
@@ -654,8 +677,9 @@ class ChatGPTProvider(BaseProvider):
             media += files or self._save_files(page, seen_downloads, prompt)
 
         # Read the address only once the turn is over: a brand new chat is still
-        # on the root url until the first message has been sent.
-        landed = page.url if "/c/" in page.url else None
+        # on the root url until the first message has been sent, and a failed
+        # first turn leaves a placeholder the server does not know.
+        landed = page.url if self._thread_id(page) else None
 
         if not text.strip() and not media:
             return GenerationResult(
