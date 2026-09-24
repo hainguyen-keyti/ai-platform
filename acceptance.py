@@ -233,6 +233,21 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
     token = None
     media_id = None
 
+    # The banner's shape was captured from the real site into fixtures, so the
+    # detector is checked in both modes without a real failure to provoke. It
+    # runs first, before any job has made the real worker open its browser, so
+    # its own short-lived browser never overlaps the worker's session.
+    signature = subprocess.run(
+        [python, str(ROOT / "tests" / "test_dom_signatures.py")],
+        capture_output=True, text=True, cwd=str(ROOT))
+    lines = [l for l in ((signature.stdout or "") + (signature.stderr or "")).splitlines() if l.strip()]
+    summary = next((l for l in reversed(lines) if "PASSED" in l), "")
+    if signature.returncode == 0 and summary.startswith("3/3"):
+        c["the provider's error banner is recognised by shape"].passed(summary)
+    else:
+        c["the provider's error banner is recognised by shape"].failed(
+            "exit {} {}".format(signature.returncode, (summary or (lines[-1] if lines else ""))[:110]))
+
     status, body = http("GET", api + "/health")
     if status == 200 and isinstance(body, dict) and body.get("status") == "ok":
         c["api health"].passed("status 200")
@@ -631,19 +646,6 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         c["health shows code version and pacing"].failed(
             "status {} keys {} provider keys {}".format(
                 hstatus, sorted(health)[:8], sorted(provider_state)))
-
-    # The banner's shape was captured from the real site into a fixture, so the
-    # detector is checked in both modes without a real failure to provoke.
-    signature = subprocess.run(
-        [python, str(ROOT / "tests" / "test_dom_signatures.py")],
-        capture_output=True, text=True, cwd=str(ROOT))
-    lines = [l for l in ((signature.stdout or "") + (signature.stderr or "")).splitlines() if l.strip()]
-    summary = next((l for l in reversed(lines) if "PASSED" in l), "")
-    if signature.returncode == 0 and summary.startswith("3/3"):
-        c["the provider's error banner is recognised by shape"].passed(summary)
-    else:
-        c["the provider's error banner is recognised by shape"].failed(
-            "exit {} {}".format(signature.returncode, (summary or (lines[-1] if lines else ""))[:110]))
 
     return checks
 

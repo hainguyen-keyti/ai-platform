@@ -363,6 +363,9 @@ class ChatGPTProvider(BaseProvider):
                 self._access_token = None
                 continue
             break
+        if got.get("status") == 401:
+            raise ProviderError("the provider rejected a fresh session token; the session is "
+                                "logged out or expired, run scripts/login_provider.py chatgpt")
         values = got.get("values") or {}
         present = [values[k] for k in MEMORY_KEYS if k in values]
         if any(v is True for v in present):
