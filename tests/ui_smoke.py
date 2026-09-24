@@ -274,17 +274,22 @@ def main():
         page.fill(COMPOSER, "take your time, cancel me please")
         page.click("button:has-text('Send')")
         page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
+        stage = "finding the Stop control"
         try:
             page.click("button:has-text('Stop')", timeout=3000)
-            page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=2500)
+            # The page learns of the cancel on its next poll (1.5s apart), so the
+            # bubble leaves within a few seconds; a job left running would keep
+            # it for the mock's ten.
+            stage = "waiting for the bubble to leave after Stop"
+            page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=6000)
             page.wait_for_timeout(8000)
             replied = page.locator("text=mock reply from chatgpt to: take your time, cancel me please").count()
             record("stop cancels a running job", replied == 0,
-                   "bubble gone within 2.5s, {} reply bubble(s) appeared afterwards".format(replied))
+                   "bubble gone within 6s, {} reply bubble(s) appeared afterwards".format(replied))
         except Exception as exc:
             page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=60000)
             record("stop cancels a running job", False,
-                   "{}: no Stop control, job ran to completion".format(type(exc).__name__))
+                   "{} while {}".format(type(exc).__name__, stage))
         shot(page, "07f-stop")
 
         # Auto-scroll can only be observed once the thread is taller than the

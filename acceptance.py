@@ -618,6 +618,15 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
     dstatus, _ = http("DELETE", "{}/conversations/{}".format(api, doomed_conv), token=token) \
         if doomed_conv else (0, None)
     final = wait_state(doomed_job, ("cancelled", "done", "failed"), job_timeout) if doomed_job else {}
+    # The mock's slow picture finishes anyway and is refused; wait for that
+    # refusal so the file it had saved has been removed before looking. The
+    # real provider stops mid-turn and posts nothing to refuse.
+    refused_before = (http("GET", worker_health)[1] or {}).get("results_refused") or 0
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if ((http("GET", worker_health)[1] or {}).get("results_refused") or 0) > refused_before:
+            break
+        time.sleep(1)
     time.sleep(1.5)
     files_after = set(os.listdir(media_dir))
     deadline = time.time() + 45

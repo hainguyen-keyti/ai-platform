@@ -662,6 +662,8 @@ class ChatGPTProvider(BaseProvider):
         return artifacts
 
     def _run(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
+        # Never let a cancel report the previous turn's thread as this one's.
+        self.last_cancelled_thread = None
         page = self._open(thread_url)
         # Look before speaking: with memory on, this turn would be written into
         # a store that every other user's turn can read (measured 2026-09-23).

@@ -61,8 +61,11 @@ export default function Chat({ onQuotaSpent }) {
   const [provider, setProvider] = useState('chatgpt')
   const [input, setInput] = useState('')
   const [status, setStatus] = useState(null)
-  const [jobId, setJobId] = useState(null)
   const [phase, setPhase] = useState(null)
+  // The job's id arrives one request after Send; Stop pressed before then is
+  // remembered and honoured the moment the id is known.
+  const jobRef = useRef(null)
+  const cancelWanted = useRef(false)
   const [pendingHint, setPendingHint] = useState(null)
   const [error, setError] = useState(null)
   const [viewing, setViewing] = useState(null)
@@ -181,16 +184,19 @@ export default function Chat({ onQuotaSpent }) {
     setError(null)
     setStatus('queued')
     setPendingHint(hint)
+    cancelWanted.current = false
+    jobRef.current = null
     // Sending is an explicit request to watch the tail again.
     stickToBottom.current = true
     try {
       const created = await starter()
+      jobRef.current = created.job_id
+      if (cancelWanted.current) await api.cancelJob(created.job_id)
       setActiveId(created.conversation_id)
       // Show what was just said straight away. Setting the id alone does not
       // reload an already open conversation, so a follow-up message stayed
       // invisible until its job finished, which for a picture is minutes.
       setConversation(await api.conversation(created.conversation_id))
-      setJobId(created.job_id)
       await waitForJob(created.job_id, (s, p) => { setStatus(s); setPhase(p) })
       const fresh = await api.conversation(created.conversation_id)
       setConversation(fresh)
@@ -203,18 +209,19 @@ export default function Chat({ onQuotaSpent }) {
       setError(err.message)
     } finally {
       setStatus(null)
-      setJobId(null)
+      jobRef.current = null
       setPhase(null)
       setPendingHint(null)
     }
   }
 
   async function stopJob() {
-    if (!jobId) return
+    cancelWanted.current = true
+    if (!jobRef.current) return
     try {
       // The api settles it at once and gives the credit back; the poll in
       // runJob sees "cancelled" and unwinds on its own.
-      await api.cancelJob(jobId)
+      await api.cancelJob(jobRef.current)
     } catch (err) {
       setError(err.message)
     }

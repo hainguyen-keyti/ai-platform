@@ -69,14 +69,16 @@ class MockProvider(BaseProvider):
         if self.memory == "on":
             raise ProviderError(MEMORY_ON_ERROR, kind="provider_misconfigured")
 
-    def _pace(self, seconds: Optional[float] = None):
+    def _pace(self, seconds: Optional[float] = None, interruptible: bool = True):
         """Sleep in small steps so a cancel lands within a quarter second."""
         total = settings.mock_delay if seconds is None else seconds
         deadline = time.time() + total
         while time.time() < deadline:
-            self._check_stop()
+            if interruptible:
+                self._check_stop()
             time.sleep(min(0.25, max(0.0, deadline - time.time())))
-        self._check_stop()
+        if interruptible:
+            self._check_stop()
 
     def _thread(self, thread_url: Optional[str]) -> str:
         # Reuse what the caller was given, otherwise open one. This is the whole
@@ -98,6 +100,19 @@ class MockProvider(BaseProvider):
         # cancelled or not; the api learns of it either way.
         thread = self._thread(thread_url)
         self.last_cancelled_thread = thread
+        if SLOW_PHRASE in lowered and any(word in lowered for word in IMAGE_WORDS):
+            # A slow picture is saved first and finishes whatever happens, like
+            # a provider that completes after the platform gave up on the job;
+            # what the api then refuses, the runner has to remove.
+            picture = self._store(solid_png(64, 64, (220, 60, 60)), ".png", "image", message)
+            self._pace(interruptible=False)
+            self._pace(SLOW_SECONDS, interruptible=False)
+            self._phase("picture appeared")
+            return GenerationResult(
+                success=True, thread_url=thread,
+                text="mock image for: {} [thread={}]".format(message.strip()[:120], thread),
+                media=[picture],
+            )
         self._pace()
         if SLOW_PHRASE in lowered:
             self._pace(SLOW_SECONDS)
@@ -136,8 +151,9 @@ class MockProvider(BaseProvider):
     def generate_image(self, prompt: str, reference_filename: Optional[str] = None,
                        thread_url: Optional[str] = None) -> GenerationResult:
         self._refuse_if_memory_on()
-        self._pace()
         thread = self._thread(thread_url)
+        self.last_cancelled_thread = thread
+        self._pace()
         self._phase("picture appeared")
         return GenerationResult(
             success=True, thread_url=thread,
@@ -148,8 +164,9 @@ class MockProvider(BaseProvider):
     def generate_video_script(self, image_filename: str, duration: int = 5,
                               thread_url: Optional[str] = None) -> GenerationResult:
         self._refuse_if_memory_on()
-        self._pace()
         thread = self._thread(thread_url)
+        self.last_cancelled_thread = thread
+        self._pace()
         self._phase("reply started")
         return GenerationResult(
             success=True, thread_url=thread,
