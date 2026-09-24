@@ -17,7 +17,14 @@ def _rollback(conn):
 
 
 def leave_tombstone(conn, provider: str, thread_url: str):
-    """Inside the caller's transaction: note a thread the worker must remove."""
+    """Inside the caller's transaction: note a thread the worker must remove, once per thread."""
+    pending = one(
+        conn,
+        "SELECT id FROM thread_tombstones WHERE thread_url = ? AND deleted_at IS NULL",
+        (thread_url,),
+    )
+    if pending:
+        return
     conn.execute(
         "INSERT INTO thread_tombstones (id, provider, thread_url) VALUES (?, ?, ?)",
         (uuid.uuid4().hex, provider, thread_url),

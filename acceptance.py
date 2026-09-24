@@ -601,10 +601,16 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
 
     # Deleting a conversation whose job is still running ends the job and gives
     # the credit back; the worker's late result is refused, so nothing of the
-    # deleted conversation is written afterwards.
+    # deleted conversation is written afterwards: no row, and no file either.
+    # A picture is asked for so that there would be something to write.
+    # The thread that turn had already opened on the provider's site is removed
+    # too, once the worker reports where it landed.
     q0 = quota_now()
+    files_before = set(os.listdir(media_dir))
+    deleted_before = threads_deleted()
     status, body = http("POST", api + "/chat",
-                        {"provider": "chatgpt", "message": SLOW_PHRASE + ": delete me while running"},
+                        {"provider": "chatgpt",
+                         "message": SLOW_PHRASE + ": draw a picture, then delete me while running"},
                         token=token)
     doomed_job = (body or {}).get("job_id") if status == 202 else None
     doomed_conv = (body or {}).get("conversation_id") if status == 202 else None
@@ -613,15 +619,24 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         if doomed_conv else (0, None)
     final = wait_state(doomed_job, ("cancelled", "done", "failed"), job_timeout) if doomed_job else {}
     time.sleep(1.5)
+    files_after = set(os.listdir(media_dir))
+    deadline = time.time() + 45
+    deleted_after = deleted_before
+    while time.time() < deadline and deleted_after < deleted_before + 1:
+        time.sleep(1)
+        deleted_after = threads_deleted()
     if (seen.get("status") == "running" and dstatus == 204 and final.get("status") == "cancelled"
-            and not ((final.get("result") or {}).get("media")) and quota_now() == q0):
+            and not ((final.get("result") or {}).get("media")) and quota_now() == q0
+            and files_after == files_before and deleted_after >= deleted_before + 1):
         c["deleting a conversation cancels its running job and refunds"].passed(
-            "job cancelled by the delete, credit returned, no media written")
+            "job cancelled by the delete, credit returned, no media row or file written, "
+            "the turn's own thread deleted {} -> {}".format(deleted_before, deleted_after))
     else:
         c["deleting a conversation cancels its running job and refunds"].failed(
-            "seen {} delete {} final {} media {} quota {} -> {}".format(
+            "seen {} delete {} final {} media {} quota {} -> {} new files {} threads deleted {} -> {}".format(
                 seen.get("status"), dstatus, final.get("status"),
-                (final.get("result") or {}).get("media"), q0, quota_now()))
+                (final.get("result") or {}).get("media"), q0, quota_now(),
+                sorted(files_after - files_before)[:3], deleted_before, deleted_after))
 
     # The tombstone queue's promises, checked on a throwaway database rather than
     # through a racing worker: once per attempt, settled stays settled, a failed

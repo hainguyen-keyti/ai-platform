@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from typing import Optional
 
 from src.providers.base import (MEMORY_ON_ERROR, BaseProvider, FeatureType, GenerationResult,
-                                MediaArtifact, ProviderError)
+                                JobCancelled, MediaArtifact, ProviderError)
 
 HOME = "https://chatgpt.com/"
 TEXTAREA = "#prompt-textarea"
@@ -239,6 +239,9 @@ class ChatGPTProvider(BaseProvider):
         # What the account's memory switch read before the last turn: on, off
         # or unknown. Shown in health; None until the first turn looks.
         self.memory = None
+        # Where a cancelled turn had already landed, so the api can still keep
+        # or remove that thread even though the result itself is refused.
+        self.last_cancelled_thread = None
 
     def start(self) -> None:
         # The browser itself is created on first use: the sync driver is bound to
@@ -679,26 +682,34 @@ class ChatGPTProvider(BaseProvider):
         banner_before = self._banner(page)
         baseline_ids = self._baseline_ids(page)
         started = time.time()
+        self.last_cancelled_thread = thread_url
         self._send(page, prompt)
 
-        settled = self._settle_via_server(page, baseline_ids, started + REPLY_TIMEOUT, banner_before)
-        if settled is None:
-            # No server view here; watch the page the old way.
-            self.last_settle = "dom"
-            text, media = self._await_result(page, baseline, seen_before, prompt, seen_downloads,
-                                             banner_before)
-        else:
-            self.last_settle = "server"
-            text, fresh = settled
-            # The server says the turn is over; give the page a moment to paint
-            # what it produced, then collect pictures from the page and files
-            # from the server. The button click stays only as a fallback.
-            page.wait_for_timeout(1500)
-            sources = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
-            media = self._download(page, sources, prompt)
-            files = self._fetch_sandbox_files(
-                page, self._thread_id(page) or "", fresh, prompt, {upload} if upload else set())
-            media += files or self._save_files(page, seen_downloads, prompt)
+        try:
+            settled = self._settle_via_server(page, baseline_ids, started + REPLY_TIMEOUT, banner_before)
+            if settled is None:
+                # No server view here; watch the page the old way.
+                self.last_settle = "dom"
+                text, media = self._await_result(page, baseline, seen_before, prompt, seen_downloads,
+                                                 banner_before)
+            else:
+                self.last_settle = "server"
+                text, fresh = settled
+                # The server says the turn is over; give the page a moment to paint
+                # what it produced, then collect pictures from the page and files
+                # from the server. The button click stays only as a fallback.
+                page.wait_for_timeout(1500)
+                sources = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
+                media = self._download(page, sources, prompt)
+                files = self._fetch_sandbox_files(
+                    page, self._thread_id(page) or "", fresh, prompt, {upload} if upload else set())
+                media += files or self._save_files(page, seen_downloads, prompt)
+        except JobCancelled:
+            # The message is already on the site; remember where, so the thread
+            # is not lost to the shared account's Library.
+            if self._thread_id(page):
+                self.last_cancelled_thread = page.url
+            raise
 
         # Read the address only once the turn is over: a brand new chat is still
         # on the root url until the first message has been sent, and a failed

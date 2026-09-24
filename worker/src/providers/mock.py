@@ -56,6 +56,7 @@ class MockProvider(BaseProvider):
         # A message can flip it on; the next ordinary message flips it back.
         self.memory = "off"
         self.deleted_threads = []
+        self.last_cancelled_thread = None
 
     def delete_thread(self, thread_url: str) -> bool:
         self.deleted_threads.append(thread_url)
@@ -93,6 +94,10 @@ class MockProvider(BaseProvider):
         lowered = message.lower()
         self.memory = "on" if MEMORY_PHRASE in lowered else "off"
         self._refuse_if_memory_on()
+        # Like the real site, the thread exists the moment the message is sent,
+        # cancelled or not; the api learns of it either way.
+        thread = self._thread(thread_url)
+        self.last_cancelled_thread = thread
         self._pace()
         if SLOW_PHRASE in lowered:
             self._pace(SLOW_SECONDS)
@@ -100,7 +105,6 @@ class MockProvider(BaseProvider):
             return GenerationResult.failure(
                 "mock provider showed its error banner", kind="provider_error")
 
-        thread = self._thread(thread_url)
         self._phase("reply started")
 
         # The real provider answers with whatever the request calls for, in the

@@ -143,7 +143,13 @@ class Runner(threading.Thread):
         }
         response = client.post("/internal/jobs/{}/result".format(job_id), json=body)
         if response.status_code == 409:
-            # Cancelled or reclaimed while we worked; the api already settled it.
+            # Cancelled or reclaimed while we worked; the api already settled it,
+            # so what this attempt saved has no row to belong to. Remove it.
+            for item in result.media:
+                try:
+                    (settings.media_path / item.filename).unlink(missing_ok=True)
+                except OSError:
+                    pass
             self.refused += 1
             self.last_error = "result refused: {}".format(response.json().get("detail"))
             return

@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from src.config import settings
 from src.db.client import db, many, one
 from src.models import PROVIDERS
+from src.tombstones import leave_tombstone
 
 HISTORY_LIMIT = 10
 TERMINAL = ("done", "failed", "cancelled")
@@ -248,6 +249,22 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            cancelled = one(conn, "SELECT * FROM jobs WHERE id = ? AND status = 'cancelled'", (job_id,))
+            if cancelled and thread_url:
+                # The turn was already on the provider's site when the job was
+                # cancelled. A deleted conversation's thread is noted for removal;
+                # a live conversation without a thread yet gets this one, so its
+                # next turn continues where the cancelled one landed.
+                conv = one(conn, "SELECT id, provider_thread_url FROM conversations WHERE id = ?",
+                           (cancelled["conversation_id"],)) if cancelled["conversation_id"] else None
+                if conv is None:
+                    leave_tombstone(conn, cancelled["provider"], thread_url)
+                elif not conv["provider_thread_url"]:
+                    conn.execute("UPDATE conversations SET provider_thread_url = ? WHERE id = ?",
+                                 (thread_url, conv["id"]))
+                conn.execute("COMMIT")
+                raise HTTPException(status_code=409,
+                                    detail="job is cancelled, this attempt may not change it")
             job = _live_attempt(conn, job_id, attempt)
 
             # Remember where the provider put this conversation so the next turn

@@ -146,7 +146,12 @@ class BrowserPool:
                         payload.get("filename", ""), int(payload.get("duration", 5)), thread_url
                     )
             except JobCancelled:
-                return GenerationResult.failure("cancelled while running", kind="cancelled")
+                # Refused by the api anyway, but the thread the turn landed in is
+                # worth reporting: kept for a live conversation, removed for a
+                # deleted one.
+                return GenerationResult(
+                    success=False, error="cancelled while running", error_kind="cancelled",
+                    thread_url=getattr(provider, "last_cancelled_thread", None))
             except ProviderError as exc:
                 return GenerationResult.failure(str(exc), kind=exc.kind)
             except Exception as exc:
