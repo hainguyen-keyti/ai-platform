@@ -359,7 +359,11 @@ class GrokProvider(BaseProvider):
         cid = self.thread_id(thread_url)
         if not cid:
             return True
-        page, _ = self._open()
+        # Reuse the page that is already on the site: opening a fresh one pays
+        # the Cloudflare wait again for what is one call.
+        page = self._page
+        if page is None or "grok.com" not in (page.url or ""):
+            page, _ = self._open()
         status, _ = self._api(page, DELETE_THREAD.format(cid), method="DELETE")
         if status in (200, 204, 404):
             return True
