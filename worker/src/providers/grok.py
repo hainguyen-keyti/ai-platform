@@ -26,6 +26,10 @@ CHALLENGE_TEXT = ("security verification", "just a moment", "verify you are huma
 REPLY_TIMEOUT = 300
 THREAD_WAIT = 45
 SERVER_POLL_SECONDS = 2
+# A turn that reads finished while it is still empty has not started. Grok
+# creates the assistant row before the words arrive, and inflightResponses can
+# be empty in that gap, which is exactly how an earlier settle chose nothing.
+START_FLOOR = 4
 OPEN_ATTEMPTS = 3
 OPEN_RETRY_SECONDS = 10
 CANCEL_THREAD_WAIT = 15
@@ -215,6 +219,15 @@ class GrokProvider(BaseProvider):
         page.wait_for_timeout(400)
         page.keyboard.press("Enter")
 
+    @staticmethod
+    def _turn_content(turn):
+        """What a turn actually carries: words with the card markup removed, and pictures."""
+        text = GROK_RENDER.sub("", (turn or {}).get("message") or "").strip()
+        assets = [item for item in ((turn or {}).get("fileAttachmentsMetadata")
+                                    or (turn or {}).get("fileAttachmentAssetMetadata") or [])
+                  if (item.get("fileMimeType") or item.get("mimeType") or "").startswith("image/")]
+        return text, assets
+
     def _server_turn(self, page, cid, baseline_ids):
         """The newest assistant turn as the server tells it, and whether it is done."""
         status, raw = self._api(page, SERVER_TURNS.format(cid))
@@ -230,6 +243,10 @@ class GrokProvider(BaseProvider):
             return None, False, status
         last = answers[-1]
         if last.get("partial"):
+            return last, False, status
+        text, assets = self._turn_content(last)
+        if not text and not assets:
+            # Finished-looking and empty means the words have not arrived yet.
             return last, False, status
         node_status, node_raw = self._api(page, SERVER_NODES.format(cid))
         try:
@@ -316,6 +333,8 @@ class GrokProvider(BaseProvider):
             while time.time() < deadline:
                 page.wait_for_timeout(SERVER_POLL_SECONDS * 1000)
                 self._check_stop()
+                if time.time() - started < START_FLOOR:
+                    continue
                 if not cid:
                     cid = self.thread_id(page.url)
                     if cid:
@@ -346,7 +365,7 @@ class GrokProvider(BaseProvider):
                 success=False, thread_url=thread, error_kind="provider_timeout",
                 error="grok returned nothing after {:.0f}s".format(time.time() - started))
 
-        text = GROK_RENDER.sub("", turn.get("message") or "").strip()
+        text, _ = self._turn_content(turn)
         media = self._assets(page, turn, prompt)
         if not text and not media:
             return GenerationResult(
