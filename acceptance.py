@@ -60,6 +60,8 @@ CHECKS = (
     "each provider gets its own runner",
     "one provider's cooldown does not hold the other",
     "a job nobody serves is failed and refunded",
+    "a conversation keeps to one provider",
+    "a job queued behind a long turn is not failed as unserved",
     "memory on refuses the turn and refunds",
     "health reports the provider's memory setting",
     "health shows code version and pacing",
@@ -271,6 +273,10 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     checks = [Check(n) for n in CHECKS]
     c = dict(zip([x.name for x in checks], checks))
     restart_worker = worker_ctl["restart"]
+    # The provider this run is not speaking to, used wherever a check needs a
+    # second one: a cooldown that must not spread, a worker that serves someone
+    # else, a conversation that must refuse a stranger's turn.
+    other_provider = "grok" if provider != "grok" else "chatgpt"
 
     def wanted(*names):
         """False when this mode already skipped the check, so its turns are never spent."""
@@ -898,26 +904,25 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
 
         # A provider on cooldown must hold only itself. hold_seconds() used to
         # return the longest wait of any provider, which parks every runner.
-        other = "grok" if provider != "grok" else "chatgpt"
         held = restart_worker({"COOLDOWN_BASE_SECONDS": "45"})
         broken = start_job(BROKEN_PHRASE + " so this provider goes on cooldown")
         wait_state(broken, ("failed",), job_timeout) if broken else {}
-        free_job = start_job("a turn for the provider that is not on cooldown", as_provider=other)
+        free_job = start_job("a turn for the provider that is not on cooldown",
+                             as_provider=other_provider)
         moved = wait_state(free_job, ("running", "done"), 20) if free_job else {}
         if held and moved.get("status") in ("running", "done"):
             c["one provider's cooldown does not hold the other"].passed(
                 "{} on a 45s cooldown, {} still {} within 20s".format(
-                    provider, other, moved.get("status")))
+                    provider, other_provider, moved.get("status")))
         else:
             c["one provider's cooldown does not hold the other"].failed(
                 "worker restarted {}, {} job was {} after 20s".format(
-                    held, other, moved.get("status")))
+                    held, other_provider, moved.get("status")))
         restart_worker()
 
     # A job nobody serves must not wait forever. With the worker off, every job
     # used to sit pending while the user watched a typing bubble.
     q0 = quota_now()
-    other = "grok" if provider != "grok" else "chatgpt"
     if real:
         # One real account at a time: the worker simply goes away.
         moved = worker_ctl["stop"]()
@@ -926,8 +931,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         # Harder, and what a second provider makes possible: a worker that is
         # alive and asking for work, but not for this provider's work. A claim
         # that ignored the provider filter would run the job anyway.
-        moved = worker_ctl["restart"]({"PROVIDERS": other})
-        how = "while the worker served only {}".format(other)
+        moved = worker_ctl["restart"]({"PROVIDERS": other_provider})
+        how = "while the worker served only {}".format(other_provider)
     orphan = start_job("nobody is serving this one")
     final = wait_state(orphan, ("failed", "done", "cancelled"), 90) if orphan else {}
     worker_ctl["restart"]()
@@ -939,6 +944,60 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         c["a job nobody serves is failed and refunded"].failed(
             "worker moved {} status {} kind {} quota {} -> {}".format(
                 moved, final.get("status"), final.get("error_kind"), q0, quota_now()))
+
+    # A conversation holds one provider's thread. Sending another provider's turn
+    # into it would hand that provider a url from a site it is not logged into,
+    # and the delete would post the tombstone to the wrong runner. Refused before
+    # anything is created, so it costs neither a credit nor a provider turn.
+    if conv:
+        q0 = quota_now()
+        refusals = [
+            http("POST", api + "/chat",
+                 {"provider": other_provider, "message": "a turn from the wrong provider",
+                  "conversation_id": conv}, token=token)[0],
+            http("POST", api + "/image/generate",
+                 {"provider": other_provider, "prompt": "a circle", "conversation_id": conv},
+                 token=token)[0],
+        ]
+        if media_id:
+            refusals.append(http("POST", api + "/video/script",
+                                 {"provider": other_provider, "media_id": media_id,
+                                  "conversation_id": conv}, token=token)[0])
+        same, _ = http("GET", "{}/conversations/{}".format(api, conv), token=token)
+        if all(status == 409 for status in refusals) and quota_now() == q0 and same == 200:
+            c["a conversation keeps to one provider"].passed(
+                "{} refused on {} entry point(s) with 409, credit untouched".format(
+                    other_provider, len(refusals)))
+        else:
+            c["a conversation keeps to one provider"].failed(
+                "statuses {} quota {} -> {} conversation readable {}".format(
+                    refusals, q0, quota_now(), same))
+    else:
+        c["a conversation keeps to one provider"].failed("no conversation to guard")
+
+    # A worker in the middle of a long turn stops asking for work; its heartbeat
+    # is the only proof it is alive. Without that proof the job queued behind it
+    # is failed as unserved while the worker is perfectly healthy.
+    if real:
+        c["a job queued behind a long turn is not failed as unserved"].skip(
+            "needs a turn longer than the unserved window; the mock can be told to take one")
+    else:
+        slow_worker = restart_worker({"MOCK_DELAY_SECONDS": "45"})
+        first = start_job("a long turn that keeps the worker busy")
+        running = wait_state(first, ("running",), 20) if first else {}
+        queued = start_job("the turn waiting behind it")
+        done_first = wait_state(first, ("done", "failed"), 120) if first else {}
+        done_queued = wait_state(queued, ("done", "failed"), 180) if queued else {}
+        restart_worker()
+        if (slow_worker and running.get("status") == "running"
+                and done_first.get("status") == "done" and done_queued.get("status") == "done"):
+            c["a job queued behind a long turn is not failed as unserved"].passed(
+                "a 45s turn ran while the job behind it waited and then finished")
+        else:
+            c["a job queued behind a long turn is not failed as unserved"].failed(
+                "worker restarted {} first {} then {} queued {} kind {}".format(
+                    slow_worker, running.get("status"), done_first.get("status"),
+                    done_queued.get("status"), done_queued.get("error_kind")))
 
     # The leak measured on 2026-09-23 needed one thing: the shared account's
     # memory switched on. The worker must look before it speaks. Only the mock

@@ -168,8 +168,11 @@ class GrokProvider(BaseProvider):
         # Anything that can sit over the composer: the cookie dialog and the
         # product tips. Their own reject or dismiss control only; the platform
         # never accepts optional cookies on someone's behalf.
-        for sel in ("#onetrust-reject-all-handler", "#onetrust-close-btn-container button",
-                    "button:has-text('Dismiss')", "button[aria-label='Close']"):
+        for sel in ("#onetrust-reject-all-handler",
+                    "#onetrust-banner-sdk button[aria-label='Close']",
+                    "#onetrust-close-btn-container button",
+                    "[role=dialog] button:has-text('Dismiss')",
+                    "[role=dialog] button[aria-label='Close']"):
             try:
                 found = page.locator(sel)
                 if found.count() and found.first.is_visible():
@@ -221,21 +224,38 @@ class GrokProvider(BaseProvider):
                     # never be satisfied and three attempts burn for nothing.
                     wanted, target = None, HOME
                     continue
-                if status in (401, 403) or not self._signed_in(page):
+                # 403 is also what a page still behind the challenge returns, so
+                # it alone proves nothing; ask the account, and only when the
+                # page itself claimed to be through the challenge.
+                if status == 401 or (cleared and status == 403 and not self._signed_in(page)):
                     raise ProviderError(SIGNED_OUT, kind="provider_misconfigured")
             if attempt + 1 < OPEN_ATTEMPTS:
                 self._phase("waiting for the provider")
                 time.sleep(OPEN_RETRY_SECONDS * (2 ** attempt))
         raise ProviderError(
             "grok did not open {}: cleared={} landed={}".format(
-                (wanted or "a new chat")[:8], (self.last_open or {}).get("cleared"),
+                (self.thread_id(thread_url) or "a new chat")[:8],
+                (self.last_open or {}).get("cleared"),
                 (self.last_open or {}).get("landed")))
+
+    @staticmethod
+    def _flat(text: str) -> str:
+        """One line of single spaces, so raw prompt and rendered text compare."""
+        return " ".join((text or "").split())
 
     def _composer_text(self, page, composer) -> str:
         try:
-            return (page.locator(composer).first.inner_text() or "").strip()
+            return self._flat(page.locator(composer).first.inner_text())
         except Exception:
             return ""
+
+    def _clear_composer(self, page, composer):
+        try:
+            page.locator(composer).first.click(timeout=3000)
+            page.keyboard.press("ControlOrMeta+a")
+            page.keyboard.press("Backspace")
+        except Exception:
+            pass
 
     def _send(self, page, composer, prompt: str):
         """Type the turn and prove it landed before pressing Enter.
@@ -245,7 +265,14 @@ class GrokProvider(BaseProvider):
         an assistant row that never fills. Reading the composer back is what
         tells the difference between a send and a silent miss.
         """
+        # A ProseMirror renders each line as its own block, so the composer's
+        # innerText never equals the prompt character for character: both sides
+        # are flattened before they are compared, and a retry starts from an
+        # empty box rather than appending to what is already there.
+        wanted = self._flat(prompt)[:40]
         for attempt in range(3):
+            if attempt:
+                self._clear_composer(page, composer)
             self._dismiss_overlays(page)
             box = page.locator(composer).first
             try:
@@ -266,7 +293,7 @@ class GrokProvider(BaseProvider):
             # time, each line spending one of the account's few turns.
             page.keyboard.insert_text(prompt)
             page.wait_for_timeout(500)
-            if prompt[:40] in self._composer_text(page, composer):
+            if wanted in self._composer_text(page, composer):
                 page.keyboard.press("Enter")
                 return
             self._phase("retrying the composer")
@@ -376,10 +403,10 @@ class GrokProvider(BaseProvider):
         try:
             said = page.evaluate(
                 "() => ((document.querySelector('main') || document.body).innerText || '')"
-                ".split('\\n').map(s => s.trim()).filter(Boolean).slice(-6).join(' ')")
+                ".split('\\n').map(s => s.trim()).filter(Boolean).slice(-3).join(' ')")
         except Exception:
             said = ""
-        return (said or "no reason shown")[:200]
+        return self._flat(said or "no reason shown")[:120]
 
     def _run(self, prompt: str, thread_url: Optional[str] = None):
         self.last_cancelled_thread = None

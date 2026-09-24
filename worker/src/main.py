@@ -54,12 +54,14 @@ def health():
         "mode": settings.provider_mode,
         "api_url": settings.api_url,
         "providers": pool.status(),
+        # The defaults; what each provider actually waits is under providers.
         "pacing": {
             "min_gap_seconds": settings.min_gap,
             "image_budget_3h": settings.image_budget,
             "cooldown_base_seconds": settings.cooldown_base,
             "cooldown_max_seconds": settings.cooldown_max,
             "holding_for_seconds": round(pool.hold_seconds(), 1),
+            "per_provider": {name: pool.pacing(name) for name in settings.providers},
         },
         "runners": {r.provider: r.snapshot() for r in runners},
         # The totals stay at the top so anything reading them keeps working.

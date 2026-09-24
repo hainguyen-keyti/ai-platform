@@ -123,6 +123,10 @@ class BrowserPool:
             return health.hold_seconds() if health else 0.0
         return max([h.hold_seconds() for h in self._health.values()] or [0.0])
 
+    def pacing(self, provider: str) -> dict:
+        health = self._health.get(provider)
+        return dict(health.pacing) if health else {}
+
     def note_result(self, provider_name: str, result: GenerationResult, elapsed: float):
         health = self._health.get(provider_name)
         if health:

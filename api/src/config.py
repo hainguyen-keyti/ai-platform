@@ -28,13 +28,14 @@ class Settings:
         # exercised without waiting for one. Zero in real use.
         self.clock_offset_seconds = int(os.environ.get("CLOCK_OFFSET_SECONDS", "0"))
         # How long a job may sit pending with no worker asking for its provider
-        # before it is failed and refunded. Long enough to survive a worker
-        # restart, short enough that nobody watches a dead typing bubble.
+        # before it is failed and refunded, floored below so a healthy worker in
+        # the middle of a long turn is never mistaken for a missing one.
         self.no_worker_seconds = int(os.environ.get("NO_WORKER_SECONDS", "180"))
-        # A busy worker proves it is alive by its heartbeat, which beats once
-        # per third of the lease. A window shorter than a lease plus a missed
-        # beat would fail the jobs queued behind a healthy long turn.
-        floor = self.job_lease_seconds + int(self.job_lease_seconds / 3.0) + 30
+        # A busy worker proves it is alive by its heartbeat, one beat per third
+        # of the lease. Two intervals covers a missed beat, and thirty seconds
+        # covers a restart; shorter than that and a job queued behind a healthy
+        # long turn is failed as unserved.
+        floor = int(self.job_lease_seconds / 3.0) * 2 + 30
         self.no_worker_seconds = max(self.no_worker_seconds, floor)
 
 

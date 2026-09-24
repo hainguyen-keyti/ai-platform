@@ -133,8 +133,10 @@ def quota(page, tag="quota"):
 def send(page, cohort, prompt):
     box = page.locator(cohort).first
     box.click(timeout=15000)
-    # ProseMirror ignores fill(); it listens to the keyboard pipeline only.
-    page.keyboard.type(prompt)
+    # ProseMirror ignores fill(), and keyboard.type() presses a key per
+    # character with "\n" mapped to Enter, which on grok.com sends. insert_text
+    # is one CDP call and cannot split a prompt into several turns.
+    page.keyboard.insert_text(prompt)
     page.wait_for_timeout(400)
     page.keyboard.press("Enter")
 
