@@ -352,6 +352,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     status, body = http("POST", api + "/image/generate",
                         {"provider": provider, "prompt": "a plain red circle on white"},
                         token=token)
+    image_conv = (body or {}).get("conversation_id") if status == 202 else None
     if status == 202 and body.get("job_id"):
         job, err = poll_job(api, body["job_id"], token, job_timeout)
         ids = ((job or {}).get("result") or {}).get("media") or []
@@ -600,7 +601,11 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # Deleting a conversation takes its media with it, on disk and in the api,
     # and hands the provider thread to the worker to remove from the shared
     # account's Library. It never touches the credit balance.
-    if conv_pack:
+    # Whichever conversation holds media: the packaging one, or the image job's
+    # own conversation when this provider was not asked to build files.
+    to_delete = conv_pack or image_conv
+    if to_delete:
+        conv_pack = to_delete
         cstatus, cbody = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)
         items = [x for m in (cbody or {}).get("messages") or [] for x in (m.get("media") or [])] \
             + list((cbody or {}).get("orphan_media") or [])
