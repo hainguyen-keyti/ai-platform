@@ -11,17 +11,22 @@ TOMBSTONE_INTERVAL_SECONDS = 10.0
 
 
 class Runner(threading.Thread):
-    """Pulls jobs from the API and posts results back.
+    """Pulls one provider's jobs from the API and posts results back.
 
     The worker holds no database handle: the API owns all state, which is what
     lets the worker sit outside Docker today and on another host later. While a
     job runs, a heartbeat keeps its lease alive and carries back the one thing
     the worker needs to know mid-flight: that the job is no longer its to finish.
+
+    One runner per provider, because a provider's browser belongs to the thread
+    that created it: two stealth browsers cannot be launched from one thread, and
+    a provider paused by its own cooldown must not park anybody else.
     """
 
-    def __init__(self, pool):
-        super().__init__(name="job-runner", daemon=True)
+    def __init__(self, pool, provider):
+        super().__init__(name="job-runner-{}".format(provider), daemon=True)
         self.pool = pool
+        self.provider = provider
         self._stop = threading.Event()
         self.processed = 0
         self.failed = 0
@@ -32,6 +37,19 @@ class Runner(threading.Thread):
         self.thread_deletions_failed = 0
         self._next_tombstone_check = 0.0
 
+    def snapshot(self) -> dict:
+        return {
+            "thread": self.name,
+            "alive": self.is_alive(),
+            "current_job": self.current_job,
+            "jobs_processed": self.processed,
+            "jobs_failed": self.failed,
+            "results_refused": self.refused,
+            "threads_deleted": self.threads_deleted,
+            "thread_deletions_failed": self.thread_deletions_failed,
+            "last_error": self.last_error,
+        }
+
     def stop(self):
         self._stop.set()
 
@@ -39,7 +57,7 @@ class Runner(threading.Thread):
         headers = {"X-Worker-Token": settings.worker_token}
         with httpx.Client(base_url=settings.api_url, headers=headers, timeout=30.0) as client:
             while not self._stop.is_set():
-                hold = self.pool.hold_seconds()
+                hold = self.pool.hold_seconds(self.provider)
                 if hold > 0:
                     self._stop.wait(min(hold, 5.0))
                     continue
@@ -69,14 +87,14 @@ class Runner(threading.Thread):
                     self.current_job = None
 
     def _claim(self, client):
-        response = client.post("/internal/jobs/claim")
+        response = client.post("/internal/jobs/claim", json={"providers": [self.provider]})
         if response.status_code == 204:
             return None
         response.raise_for_status()
         return response.json()
 
     def _delete_one_thread(self, client):
-        response = client.post("/internal/tombstones/claim")
+        response = client.post("/internal/tombstones/claim", json={"providers": [self.provider]})
         if response.status_code != 200:
             return
         stone = response.json()
@@ -104,7 +122,8 @@ class Runner(threading.Thread):
 
     def _handle(self, client, job):
         job_id, attempt = job["id"], job["attempt"]
-        self.current_job = {"id": job_id, "attempt": attempt, "feature": job["feature"]}
+        self.current_job = {"id": job_id, "attempt": attempt, "feature": job["feature"],
+                            "provider": job["provider"]}
         lost = threading.Event()
         finished = threading.Event()
         beat = threading.Thread(

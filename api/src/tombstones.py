@@ -31,8 +31,13 @@ def leave_tombstone(conn, provider: str, thread_url: str):
     )
 
 
-def claim_tombstone():
-    """Hand the worker one thread to remove, oldest first, at most once per attempt."""
+def claim_tombstone(providers=None):
+    """Hand the worker one thread to remove, oldest first, at most once per attempt.
+
+    A worker is only offered threads of the providers it serves: it is the one
+    holding that provider's browser session.
+    """
+    serves = [p for p in (providers or []) if isinstance(p, str)]
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -42,12 +47,16 @@ def claim_tombstone():
                 " AND claimed_at < datetime('now', ?)",
                 (RECLAIM_AFTER,),
             )
+            where = "deleted_at IS NULL AND claimed_at IS NULL AND attempts < ?"
+            params = [MAX_ATTEMPTS]
+            if serves:
+                where += " AND provider IN ({})".format(", ".join("?" * len(serves)))
+                params += serves
             stone = one(
                 conn,
                 "SELECT id, provider, thread_url FROM thread_tombstones"
-                " WHERE deleted_at IS NULL AND claimed_at IS NULL AND attempts < ?"
-                " ORDER BY created_at, rowid LIMIT 1",
-                (MAX_ATTEMPTS,),
+                " WHERE {} ORDER BY created_at, rowid LIMIT 1".format(where),
+                params,
             )
             if stone:
                 conn.execute(

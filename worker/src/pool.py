@@ -105,8 +105,15 @@ class BrowserPool:
                 pass
         self._providers.clear()
 
-    def hold_seconds(self) -> float:
-        """How long the runner should wait before claiming anything."""
+    def hold_seconds(self, provider: str = None) -> float:
+        """How long this provider's runner should wait before claiming anything.
+
+        Per provider on purpose: the longest wait of any provider used to be
+        returned to everyone, so one provider's cooldown parked the rest.
+        """
+        if provider is not None:
+            health = self._health.get(provider)
+            return health.hold_seconds() if health else 0.0
         return max([h.hold_seconds() for h in self._health.values()] or [0.0])
 
     def note_result(self, provider_name: str, result: GenerationResult, elapsed: float):

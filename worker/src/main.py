@@ -29,15 +29,17 @@ def running_code_sha() -> str:
 
 CODE_SHA = running_code_sha()
 pool = BrowserPool()
-runner = Runner(pool)
+runners = [Runner(pool, name) for name in settings.providers]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     pool.start()
-    runner.start()
+    for runner in runners:
+        runner.start()
     yield
-    runner.stop()
+    for runner in runners:
+        runner.stop()
     pool.stop()
 
 
@@ -59,11 +61,13 @@ def health():
             "cooldown_max_seconds": settings.cooldown_max,
             "holding_for_seconds": round(pool.hold_seconds(), 1),
         },
-        "current_job": runner.current_job,
-        "jobs_processed": runner.processed,
-        "jobs_failed": runner.failed,
-        "results_refused": runner.refused,
-        "threads_deleted": runner.threads_deleted,
-        "thread_deletions_failed": runner.thread_deletions_failed,
-        "last_error": runner.last_error,
+        "runners": {r.provider: r.snapshot() for r in runners},
+        # The totals stay at the top so anything reading them keeps working.
+        "current_job": next((r.current_job for r in runners if r.current_job), None),
+        "jobs_processed": sum(r.processed for r in runners),
+        "jobs_failed": sum(r.failed for r in runners),
+        "results_refused": sum(r.refused for r in runners),
+        "threads_deleted": sum(r.threads_deleted for r in runners),
+        "thread_deletions_failed": sum(r.thread_deletions_failed for r in runners),
+        "last_error": next((r.last_error for r in reversed(runners) if r.last_error), None),
     }

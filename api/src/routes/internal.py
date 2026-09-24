@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Response
 
 from src.jobs import claim_next_job, heartbeat, record_progress, record_result
-from src.models import TombstoneResult, WorkerHeartbeat, WorkerProgress, WorkerResult
+from src.models import TombstoneResult, WorkerClaim, WorkerHeartbeat, WorkerProgress, WorkerResult
 from src.security import require_worker
 from src.tombstones import claim_tombstone, settle_tombstone
 
@@ -9,8 +9,8 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 
 
 @router.post("/jobs/claim")
-def claim(_: bool = Depends(require_worker)):
-    job = claim_next_job()
+def claim(body: WorkerClaim = WorkerClaim(), _: bool = Depends(require_worker)):
+    job = claim_next_job(body.providers)
     if job is None:
         return Response(status_code=204)
     return job
@@ -27,8 +27,8 @@ def progress(job_id: str, body: WorkerProgress, _: bool = Depends(require_worker
 
 
 @router.post("/tombstones/claim")
-def claim_thread_to_delete(_: bool = Depends(require_worker)):
-    stone = claim_tombstone()
+def claim_thread_to_delete(body: WorkerClaim = WorkerClaim(), _: bool = Depends(require_worker)):
+    stone = claim_tombstone(body.providers)
     if stone is None:
         return Response(status_code=204)
     return stone

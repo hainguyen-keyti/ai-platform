@@ -95,6 +95,14 @@ CREATE TABLE IF NOT EXISTS thread_tombstones (
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- One row per provider a worker has asked for work on. A pending job is only
+-- declared unserved when nobody has asked for that provider lately, so a job
+-- queued behind a five minute picture is never mistaken for an orphan.
+CREATE TABLE IF NOT EXISTS worker_pings (
+    provider  TEXT PRIMARY KEY,
+    last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_tombstones_open      ON thread_tombstones(deleted_at, claimed_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_token       ON sessions(token);
 CREATE INDEX IF NOT EXISTS idx_conversations_user   ON conversations(user_id, updated_at DESC);

@@ -55,6 +55,10 @@ class WorkerResult(BaseModel):
     thread_url: Optional[str] = Field(default=None, max_length=500)
 
 
+class WorkerClaim(BaseModel):
+    providers: list[str] = Field(default_factory=list, max_length=8)
+
+
 class WorkerHeartbeat(BaseModel):
     attempt: int = Field(ge=1)
 

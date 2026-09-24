@@ -164,18 +164,63 @@ def _sweep_stranded(conn):
             )
 
 
-def claim_next_job():
+def _note_worker(conn, providers):
+    for name in providers:
+        conn.execute(
+            "INSERT INTO worker_pings (provider, last_seen) VALUES (?, datetime('now'))"
+            " ON CONFLICT(provider) DO UPDATE SET last_seen = datetime('now')",
+            (name,),
+        )
+
+
+def _sweep_unserved(conn, job_id=None):
+    """Fail and refund pending jobs whose provider no worker has asked for.
+
+    Age alone would be wrong: a job queued behind a five minute picture is
+    waiting for a worker that exists. What makes a job an orphan is that nobody
+    has asked for its provider within the window.
+    """
+    window = "-{} seconds".format(settings.no_worker_seconds)
+    sql = ("SELECT j.id, j.user_id, j.provider FROM jobs j"
+           " LEFT JOIN worker_pings w ON w.provider = j.provider"
+           " WHERE j.status = 'pending' AND j.created_at < datetime('now', ?)"
+           " AND (w.last_seen IS NULL OR w.last_seen < datetime('now', ?))")
+    params = [window, window]
+    if job_id:
+        sql += " AND j.id = ?"
+        params.append(job_id)
+    for job in many(conn, sql, params):
+        changed = conn.execute(
+            "UPDATE jobs SET status = 'failed', error = ?, error_kind = 'no_worker',"
+            " lease_expires_at = NULL, phase = NULL, finished_at = datetime('now')"
+            " WHERE id = ? AND status = 'pending'",
+            ("no worker is serving {} right now".format(job["provider"]), job["id"]),
+        ).rowcount
+        if changed == 1:
+            _refund(conn, job["user_id"])
+
+
+def claim_next_job(providers=None):
     lease = "+{} seconds".format(settings.job_lease_seconds)
+    serves = [p for p in (providers or []) if p in PROVIDERS]
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            _note_worker(conn, serves)
             _sweep_stranded(conn)
+            _sweep_unserved(conn)
+            where = "j.status = 'pending'"
+            params = []
+            if serves:
+                where += " AND j.provider IN ({})".format(", ".join("?" * len(serves)))
+                params = list(serves)
             row = one(
                 conn,
                 "SELECT j.id, j.provider, j.feature, j.payload, j.attempts,"
                 " c.provider_thread_url AS thread_url"
                 " FROM jobs j LEFT JOIN conversations c ON c.id = j.conversation_id"
-                " WHERE j.status = 'pending' ORDER BY j.created_at, j.rowid LIMIT 1",
+                " WHERE {} ORDER BY j.created_at, j.rowid LIMIT 1".format(where),
+                params,
             )
             if row:
                 row["attempts"] += 1
@@ -349,6 +394,14 @@ def cancel_job(user_id, job_id):
 
 def get_job(user_id, job_id):
     with db() as conn:
+        # The person waiting is the one who notices first, so their own poll is
+        # what discovers that nobody is serving this job.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            _sweep_unserved(conn, job_id)
+            conn.execute("COMMIT")
+        except Exception:
+            _rollback(conn)
         job = one(conn, "SELECT * FROM jobs WHERE id = ? AND user_id = ?", (job_id, user_id))
     if not job:
         raise HTTPException(status_code=404, detail="job not found")

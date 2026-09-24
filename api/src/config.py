@@ -27,6 +27,10 @@ class Settings:
         # A test seam: shifts the api's idea of today so a day change can be
         # exercised without waiting for one. Zero in real use.
         self.clock_offset_seconds = int(os.environ.get("CLOCK_OFFSET_SECONDS", "0"))
+        # How long a job may sit pending with no worker asking for its provider
+        # before it is failed and refunded. Long enough to survive a worker
+        # restart, short enough that nobody watches a dead typing bubble.
+        self.no_worker_seconds = int(os.environ.get("NO_WORKER_SECONDS", "180"))
 
 
 settings = Settings()
