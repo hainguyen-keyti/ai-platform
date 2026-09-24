@@ -1,8 +1,13 @@
+import io
 import json
+import zipfile
+from pathlib import PurePosixPath
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from src.db.client import db, many, one
+from src.routes.media import _safe_path
 from src.security import current_user
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
@@ -58,6 +63,60 @@ def get_conversation(conversation_id: str, user: dict = Depends(current_user)):
     # it is returned separately and the client places it by timestamp.
     conv["orphan_media"] = by_message.get(None, [])
     return conv
+
+
+@router.get("/{conversation_id}/media.zip")
+def download_conversation_media(conversation_id: str,
+                                message_id: Optional[str] = Query(default=None),
+                                user: dict = Depends(current_user)):
+    """Everything a conversation (or one message of it) produced, as one archive.
+
+    The bytes are already ours, so packaging is done here rather than asked of
+    the model, which delivered a zip in one of four measured attempts.
+    """
+    with db() as conn:
+        owned = one(
+            conn,
+            "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+            (conversation_id, user["id"]),
+        )
+        if not owned:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        sql = ("SELECT filename, metadata FROM media"
+               " WHERE conversation_id = ? AND user_id = ?")
+        params = [conversation_id, user["id"]]
+        if message_id:
+            sql += " AND message_id = ?"
+            params.append(message_id)
+        rows = many(conn, sql + " ORDER BY created_at, rowid", params)
+
+    buffer = io.BytesIO()
+    used = set()
+    # Pictures and archives do not compress; store them as they are.
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        for row in rows:
+            path = _safe_path(row["filename"])
+            if not path.exists():
+                continue
+            metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+            offered = PurePosixPath(str(metadata.get("name") or row["filename"])).name or row["filename"]
+            name, stem, suffix = offered, PurePosixPath(offered).stem, PurePosixPath(offered).suffix
+            n = 1
+            while name in used:
+                n += 1
+                name = "{}-{}{}".format(stem, n, suffix)
+            used.add(name)
+            archive.write(str(path), arcname=name)
+    if not used:
+        raise HTTPException(status_code=404, detail="no media files in this conversation")
+
+    label = "conversation-{}{}.zip".format(
+        conversation_id[:8], "-message-{}".format(message_id[:8]) if message_id else "")
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="{}"'.format(label)},
+    )
 
 
 @router.delete("/{conversation_id}", status_code=204)

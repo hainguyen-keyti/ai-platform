@@ -62,6 +62,21 @@ export async function mediaBlobUrl(id) {
   return URL.createObjectURL(await response.blob())
 }
 
+// One archive of everything a conversation, or one message of it, produced.
+// Returns a blob url and the file name the server chose.
+export async function conversationZipUrl(conversationId, messageId) {
+  const query = messageId ? `?message_id=${encodeURIComponent(messageId)}` : ''
+  const response = await fetch(`${BASE}/conversations/${conversationId}/media.zip${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!response.ok) throw new Error(`could not build the archive (${response.status})`)
+  const match = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '')
+  return {
+    url: URL.createObjectURL(await response.blob()),
+    filename: match ? match[1] : `conversation-${conversationId.slice(0, 8)}.zip`,
+  }
+}
+
 export async function waitForJob(jobId, onTick) {
   for (;;) {
     const job = await api.job(jobId)

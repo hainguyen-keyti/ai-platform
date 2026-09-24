@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { api, waitForJob } from '../lib/api.js'
+import { api, conversationZipUrl, waitForJob } from '../lib/api.js'
 import MediaImage from '../components/MediaImage.jsx'
 import TypingBubble from '../components/TypingBubble.jsx'
 import Lightbox from '../components/Lightbox.jsx'
@@ -37,9 +37,32 @@ export default function Chat({ onQuotaSpent }) {
   const [pendingHint, setPendingHint] = useState(null)
   const [error, setError] = useState(null)
   const [viewing, setViewing] = useState(null)
+  const [packing, setPacking] = useState(false)
 
   function open(url, item) {
     setViewing({ url, filename: item.filename })
+  }
+
+  // Everything the conversation produced, or one message's worth, in one zip
+  // built by the api from bytes it already holds. Asking the model to package
+  // its own output worked in one of four measured attempts.
+  async function saveZip(messageId) {
+    if (!conversation || packing) return
+    setPacking(true)
+    setError(null)
+    try {
+      const { url, filename } = await conversationZipUrl(conversation.id, messageId)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = filename
+      link.click()
+      // Revoking straight away can cancel the transfer that just started.
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setPacking(false)
+    }
   }
 
   const scrollRef = useRef(null)
@@ -70,6 +93,12 @@ export default function Chat({ onQuotaSpent }) {
       items.push({ kind: 'media', at: item.created_at, id: item.id, media: item })
     }
     return items.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))
+  }, [conversation])
+
+  const mediaCount = useMemo(() => {
+    if (!conversation) return 0
+    return conversation.messages.reduce((n, m) => n + (m.media?.length || 0), 0)
+      + (conversation.orphan_media?.length || 0)
   }, [conversation])
 
   function trackScroll() {
@@ -170,6 +199,13 @@ export default function Chat({ onQuotaSpent }) {
             className="border rounded px-2 py-1 text-sm">
             {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
+          {mediaCount >= 2 && (
+            <button type="button" data-testid="download-all" onClick={() => saveZip()}
+              disabled={packing}
+              className="rounded border px-3 py-1 text-sm hover:bg-slate-100 disabled:opacity-50">
+              {packing ? 'Packing...' : `Download all (${mediaCount})`}
+            </button>
+          )}
           {error && <span className="text-sm text-red-600">{error}</span>}
         </header>
 
@@ -196,6 +232,13 @@ export default function Chat({ onQuotaSpent }) {
                   <MediaCard key={item.id} item={item} busy={!!status}
                     onOpen={open} onScript={requestScript} />
                 ))}
+                {(entry.message.media?.length || 0) >= 2 && (
+                  <button type="button" data-testid="download-message" disabled={packing}
+                    onClick={() => saveZip(entry.message.id)}
+                    className="text-xs text-slate-500 underline hover:text-slate-900 disabled:opacity-50">
+                    Download these {entry.message.media.length} as one zip
+                  </button>
+                )}
               </div>
             )
           )}
