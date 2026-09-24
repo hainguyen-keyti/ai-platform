@@ -5,6 +5,10 @@ CREATE TABLE IF NOT EXISTS users (
     name            TEXT,
     role            TEXT NOT NULL DEFAULT 'user',
     quota_remaining INTEGER NOT NULL DEFAULT 100,
+    -- The balance comes back up to quota_daily on the first request of each UTC
+    -- day; last_refill_day is what makes that happen once.
+    quota_daily     INTEGER NOT NULL DEFAULT 100,
+    last_refill_day TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -77,6 +81,21 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished_at      TEXT
 );
 
+-- A conversation deleted here still lives as a thread in the provider's
+-- account. The worker holds no database, so the api leaves it this note; the
+-- worker claims it, removes the thread and settles it, three tries at most.
+CREATE TABLE IF NOT EXISTS thread_tombstones (
+    id          TEXT PRIMARY KEY,
+    provider    TEXT NOT NULL,
+    thread_url  TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    claimed_at  TEXT,
+    deleted_at  TEXT,
+    error       TEXT,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_tombstones_open      ON thread_tombstones(deleted_at, claimed_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_token       ON sessions(token);
 CREATE INDEX IF NOT EXISTS idx_conversations_user   ON conversations(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_conv        ON messages(conversation_id, created_at);

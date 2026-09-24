@@ -7,22 +7,46 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from src.db.client import db, many, one
+from src.models import ConversationUpdate
 from src.routes.media import _safe_path
 from src.security import current_user
+from src.tombstones import leave_tombstone
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
+
+LISTED = "id, user_id, provider, title, created_at, updated_at"
+
+
+def _like(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return "%{}%".format(escaped)
 
 
 @router.get("")
 def list_conversations(user: dict = Depends(current_user),
-                       limit: int = Query(default=50, ge=1, le=200)):
+                       limit: int = Query(default=50, ge=1, le=200),
+                       q: Optional[str] = Query(default=None, max_length=200)):
+    term = (q or "").strip()
     with db() as conn:
-        rows = many(
-            conn,
-            "SELECT id, user_id, provider, title, created_at, updated_at FROM conversations"
-            " WHERE user_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT ?",
-            (user["id"], limit),
-        )
+        if term:
+            # By title or by any word inside the conversation, always the
+            # caller's own; the message clause is scoped through the join.
+            rows = many(
+                conn,
+                "SELECT {} FROM conversations c WHERE c.user_id = ? AND ("
+                " c.title LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM messages m"
+                "  WHERE m.conversation_id = c.id AND m.content LIKE ? ESCAPE '\\'))"
+                " ORDER BY c.updated_at DESC, c.rowid DESC LIMIT ?".format(
+                    ", ".join("c." + col for col in LISTED.split(", "))),
+                (user["id"], _like(term), _like(term), limit),
+            )
+        else:
+            rows = many(
+                conn,
+                "SELECT {} FROM conversations WHERE user_id = ?"
+                " ORDER BY updated_at DESC, rowid DESC LIMIT ?".format(LISTED),
+                (user["id"], limit),
+            )
     return {"items": rows}
 
 
@@ -63,6 +87,19 @@ def get_conversation(conversation_id: str, user: dict = Depends(current_user)):
     # it is returned separately and the client places it by timestamp.
     conv["orphan_media"] = by_message.get(None, [])
     return conv
+
+
+@router.patch("/{conversation_id}")
+def rename_conversation(conversation_id: str, body: ConversationUpdate,
+                        user: dict = Depends(current_user)):
+    with db() as conn:
+        changed = conn.execute(
+            "UPDATE conversations SET title = ? WHERE id = ? AND user_id = ?",
+            (body.title.strip(), conversation_id, user["id"]),
+        ).rowcount
+        if changed != 1:
+            raise HTTPException(status_code=404, detail="conversation not found")
+        return one(conn, "SELECT {} FROM conversations WHERE id = ?".format(LISTED), (conversation_id,))
 
 
 def _entry_name(offered, fallback):
@@ -131,13 +168,42 @@ def download_conversation_media(conversation_id: str,
 
 @router.delete("/{conversation_id}", status_code=204)
 def delete_conversation(conversation_id: str, user: dict = Depends(current_user)):
+    """Remove the conversation, its messages and media, and note its provider thread.
+
+    Rows go in one transaction; files go after it, so a failed unlink can never
+    leave a row pointing at nothing. The credit balance is not touched.
+    """
     with db() as conn:
-        owned = one(
-            conn,
-            "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
-            (conversation_id, user["id"]),
-        )
-        if not owned:
-            raise HTTPException(status_code=404, detail="conversation not found")
-        conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conv = one(
+                conn,
+                "SELECT id, provider, provider_thread_url FROM conversations"
+                " WHERE id = ? AND user_id = ?",
+                (conversation_id, user["id"]),
+            )
+            if not conv:
+                raise HTTPException(status_code=404, detail="conversation not found")
+            filenames = [r["filename"] for r in many(
+                conn,
+                "SELECT filename FROM media WHERE conversation_id = ? AND user_id = ?",
+                (conversation_id, user["id"]),
+            )]
+            conn.execute("DELETE FROM media WHERE conversation_id = ? AND user_id = ?",
+                         (conversation_id, user["id"]))
+            conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+            if conv["provider_thread_url"]:
+                leave_tombstone(conn, conv["provider"], conv["provider_thread_url"])
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+    for name in filenames:
+        try:
+            _safe_path(name).unlink(missing_ok=True)
+        except HTTPException:
+            continue
     return Response(status_code=204)

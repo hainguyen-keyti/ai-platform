@@ -66,3 +66,13 @@ class WorkerProgress(BaseModel):
 
 class QuotaUpdate(BaseModel):
     quota_remaining: int = Field(ge=0, le=1000000)
+    quota_daily: Optional[int] = Field(default=None, ge=0, le=1000000)
+
+
+class ConversationUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=80)
+
+
+class TombstoneResult(BaseModel):
+    ok: bool
+    error: Optional[str] = Field(default=None, max_length=500)

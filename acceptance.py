@@ -43,14 +43,18 @@ CHECKS = (
     "media listing scoped to user",
     "thread reused within a conversation",
     "threads never cross conversations",
+    "a conversation can be renamed and found by search",
     "non image deliverable is kept",
     "non image deliverable is kept when asked in vietnamese",
     "a follow-up turn packages what the first one made",
     "a conversation's media downloads as one zip",
+    "deleting a conversation removes its media files and the provider thread",
     "a job settles exactly once",
     "a provider error fails the job and refunds",
     "a stranded job is reclaimed",
     "a running job can be cancelled",
+    "quota refills once a day up to the cap",
+    "admin sees usage per user, others do not",
     "memory on refuses the turn and refunds",
     "health reports the provider's memory setting",
     "health shows code version and pacing",
@@ -218,7 +222,7 @@ def tail(path, lines=15):
 
 
 def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, restart_worker,
-               python):
+               python, restart_api):
     # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
     # first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
@@ -415,6 +419,33 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
                 "conversation one {} conversation two {} {}".format(
                     t1 or "no thread reported", t3 or "no thread reported", err_c or ""))
 
+    # A conversation the team can find again: renamed, then searched by its new
+    # title and by a word inside one of its messages, and invisible to anyone else.
+    def search(query, tok):
+        s, body = http("GET", "{}/conversations?q={}".format(api, query), token=tok)
+        return [x["id"] for x in ((body or {}).get("items") or [])] if s == 200 else None
+
+    new_title = "renamed-{}".format(stamp[-6:])
+    inside = "Remember" if real else "opening"
+    if conv:
+        rstatus, rbody = http("PATCH", "{}/conversations/{}".format(api, conv),
+                              {"title": new_title}, token=token)
+        by_title, by_word, theirs = search(new_title, token), search(inside, token), search(inside, btoken)
+        foreign, _ = http("PATCH", "{}/conversations/{}".format(api, conv),
+                          {"title": "hijacked"}, token=btoken)
+        if (rstatus == 200 and (rbody or {}).get("title") == new_title
+                and conv in (by_title or []) and conv in (by_word or [])
+                and theirs == [] and foreign == 404):
+            c["a conversation can be renamed and found by search"].passed(
+                "renamed, found by title and by {!r}, other user sees 0 and gets 404".format(inside))
+        else:
+            c["a conversation can be renamed and found by search"].failed(
+                "rename {} title {!r}, by title {}, by word {}, other user sees {}, foreign rename {}".format(
+                    rstatus, (rbody or {}).get("title") if isinstance(rbody, dict) else rbody,
+                    by_title, by_word, theirs, foreign))
+    else:
+        c["a conversation can be renamed and found by search"].failed("no conversation to rename")
+
     def check_zip(check_name, message, conversation_id=None):
         done, err, _ = chat_once(message, conversation_id)
         result = (done or {}).get("result") or {}
@@ -498,10 +529,49 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
     else:
         c["a conversation's media downloads as one zip"].failed("no conversation to package")
 
-    # ---- reliability: quota conservation, leases, cancel, health ----
-
     def quota_now():
         return (http("GET", api + "/auth/me", token=token)[1] or {}).get("quota_remaining")
+
+    def threads_deleted():
+        _, health = http("GET", worker_health)
+        return (health or {}).get("threads_deleted") or 0
+
+    # Deleting a conversation takes its media with it, on disk and in the api,
+    # and hands the provider thread to the worker to remove from the shared
+    # account's Library. It never touches the credit balance.
+    if conv_pack:
+        cstatus, cbody = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)
+        items = [x for m in (cbody or {}).get("messages") or [] for x in (m.get("media") or [])] \
+            + list((cbody or {}).get("orphan_media") or [])
+        media_ids = [x["id"] for x in items]
+        filenames = [x["filename"] for x in items]
+        deleted_before = threads_deleted()
+        q_before = quota_now()
+        dstatus, _ = http("DELETE", "{}/conversations/{}".format(api, conv_pack), token=token)
+        conv_gone = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)[0] == 404
+        media_gone = all(http("GET", "{}/media/{}".format(api, m), token=token)[0] == 404 for m in media_ids)
+        files_gone = not any((Path(media_dir) / f).exists() for f in filenames)
+        deadline = time.time() + 30
+        deleted_after = deleted_before
+        while time.time() < deadline and deleted_after < deleted_before + 1:
+            time.sleep(1)
+            deleted_after = threads_deleted()
+        if (dstatus == 204 and conv_gone and media_gone and files_gone and media_ids
+                and quota_now() == q_before and deleted_after >= deleted_before + 1):
+            c["deleting a conversation removes its media files and the provider thread"].passed(
+                "204; {} media rows and files gone; provider threads deleted {} -> {}; quota unchanged".format(
+                    len(media_ids), deleted_before, deleted_after))
+        else:
+            c["deleting a conversation removes its media files and the provider thread"].failed(
+                "delete {}, conversation gone {}, {} media gone {}, files gone {}, quota {} -> {}, "
+                "threads deleted {} -> {}".format(dstatus, conv_gone, len(media_ids), media_gone,
+                                                  files_gone, q_before, quota_now(), deleted_before,
+                                                  deleted_after))
+    else:
+        c["deleting a conversation removes its media files and the provider thread"].failed(
+            "no conversation to delete")
+
+    # ---- reliability: quota conservation, leases, cancel, health ----
 
     def job_state(job_id):
         return http("GET", "{}/jobs/{}".format(api, job_id), token=token)[1] or {}
@@ -603,6 +673,44 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
             "cancel {} final {} quota {} -> {}".format(
                 cancel_status, final.get("status"), q0, quota_now()))
 
+    # A day passes (the api is restarted with its clock moved forward): the
+    # balance comes back to the cap once, does not stack on a second look, and a
+    # job afterwards spends from the refilled cap.
+    q_spent = quota_now()
+    restarted = restart_api({"CLOCK_OFFSET_SECONDS": "86400"})
+    q_first, q_second = quota_now(), quota_now()
+    job_id = start_job("a plain turn after the day changed")
+    wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
+    q_after_job, q_again = quota_now(), quota_now()
+    if (restarted and q_spent is not None and q_spent < 100 and q_first == 100 and q_second == 100
+            and q_after_job == 99 and q_again == 99):
+        c["quota refills once a day up to the cap"].passed(
+            "{} -> 100 after the day changed, held at 100, 99 after one job".format(q_spent))
+    else:
+        c["quota refills once a day up to the cap"].failed(
+            "api restarted {}, quota {} -> {} then {}, after a job {} then {}".format(
+                restarted, q_spent, q_first, q_second, q_after_job, q_again))
+
+    # The first account owns the instance and sees who spent what; usage is read
+    # from the jobs that already record every charge and refund.
+    ustatus, usage = http("GET", api + "/admin/usage", token=token)
+    rows = {r.get("email"): r for r in ((usage or {}).get("items") or [])} if ustatus == 200 else {}
+    mine, theirs_row = rows.get(user_a) or {}, rows.get(user_b)
+    consistent = bool(mine) and mine.get("jobs_total") == sum(
+        mine.get(k) or 0 for k in ("done", "failed", "cancelled", "open"))
+    forbidden, _ = http("GET", api + "/admin/usage", token=btoken)
+    if (ustatus == 200 and consistent and (mine.get("jobs_total") or 0) >= 5
+            and (mine.get("images") or 0) >= 1 and theirs_row is not None and forbidden == 403):
+        c["admin sees usage per user, others do not"].passed(
+            "{} jobs ({} done, {} failed, {} cancelled) and {} images for the admin, other user 403".format(
+                mine.get("jobs_total"), mine.get("done"), mine.get("failed"), mine.get("cancelled"),
+                mine.get("images")))
+    else:
+        c["admin sees usage per user, others do not"].failed(
+            "status {} admin row {} other row present {} other user {}".format(
+                ustatus, {k: mine.get(k) for k in ("jobs_total", "done", "failed", "cancelled", "open", "images")},
+                theirs_row is not None, forbidden))
+
     # The leak measured on 2026-09-23 needed one thing: the shared account's
     # memory switched on. The worker must look before it speaks. Only the mock
     # can pretend the switch is on; against the real account the setting is read
@@ -682,21 +790,19 @@ def main():
     checks = []
     boot_error = None
 
+    api_env = {
+        "DB_PATH": str(db_dir / "app.db"),
+        "MEDIA_PATH": str(media_dir),
+        "JWT_SECRET": "acceptance-jwt-secret",
+        "INVITE_CODE": invite_code,
+        "WORKER_TOKEN": worker_token,
+        # Short lease so a killed worker's job is reclaimed within the run.
+        "JOB_LEASE_SECONDS": "2",
+        "JOB_MAX_ATTEMPTS": "3",
+    }
+
     try:
-        api_proc, api_log = start_service(
-            python, ROOT / "api", api_port,
-            {
-                "DB_PATH": str(db_dir / "app.db"),
-                "MEDIA_PATH": str(media_dir),
-                "JWT_SECRET": "acceptance-jwt-secret",
-                "INVITE_CODE": invite_code,
-                "WORKER_TOKEN": worker_token,
-                # Short lease so a killed worker's job is reclaimed within the run.
-                "JOB_LEASE_SECONDS": "2",
-                "JOB_MAX_ATTEMPTS": "3",
-            },
-            workspace / "api.log",
-        )
+        api_proc, api_log = start_service(python, ROOT / "api", api_port, api_env, workspace / "api.log")
         ok, detail = wait_healthy(api_base + "/health", 25)
         if not ok:
             boot_error = "api never became healthy ({})\n{}".format(detail, tail(workspace / "api.log"))
@@ -735,8 +841,17 @@ def main():
                 python, ROOT / "worker", worker_port, worker_env, workspace / "worker-2.log")
             return wait_healthy(worker_health, 40)[0]
 
+        def restart_api(extra_env):
+            """Bring the api back with extra settings, on the same database and port."""
+            nonlocal api_proc, api_log
+            stop(api_proc, api_log)
+            env = dict(api_env)
+            env.update(extra_env)
+            api_proc, api_log = start_service(python, ROOT / "api", api_port, env, workspace / "api-2.log")
+            return wait_healthy(api_base + "/health", 25)[0]
+
         checks = run_checks(api_base, media_dir, args.real, invite_code,
-                            worker_token, worker_health, restart_worker, python)
+                            worker_token, worker_health, restart_worker, python, restart_api)
 
     except RuntimeError:
         pass

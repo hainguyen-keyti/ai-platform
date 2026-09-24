@@ -8,6 +8,7 @@ from fastapi import Header, HTTPException
 
 from src.config import settings
 from src.db.client import db, one
+from src.quota import refill_if_due
 
 
 def hash_password(raw: str) -> str:
@@ -58,6 +59,10 @@ def current_user(authorization: str = Header(default="")) -> dict:
         if not one(conn, "SELECT id FROM sessions WHERE token = ?", (token,)):
             raise HTTPException(status_code=401, detail="session revoked")
         user = one(conn, "SELECT * FROM users WHERE id = ?", (payload.get("sub"),))
+        if user:
+            # Every authenticated request passes here, so a new day is noticed
+            # on the first one, whatever it asks for.
+            user = refill_if_due(conn, user)
     if not user:
         raise HTTPException(status_code=401, detail="unknown user")
     user["token"] = token

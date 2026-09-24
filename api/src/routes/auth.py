@@ -18,6 +18,7 @@ def _public(user: dict) -> dict:
         "name": user["name"],
         "role": user["role"],
         "quota_remaining": user["quota_remaining"],
+        "quota_daily": user.get("quota_daily"),
         "created_at": user["created_at"],
     }
 
@@ -35,14 +36,15 @@ def register(body: RegisterRequest):
         first = one(conn, "SELECT COUNT(*) AS n FROM users")["n"] == 0
         user_id = uuid.uuid4().hex
         conn.execute(
-            "INSERT INTO users (id, email, password_hash, name, role, quota_remaining)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO users (id, email, password_hash, name, role, quota_remaining, quota_daily)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 user_id,
                 email,
                 hash_password(body.password),
                 body.name,
                 "admin" if first else "user",
+                settings.default_quota,
                 settings.default_quota,
             ),
         )

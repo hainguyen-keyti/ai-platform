@@ -24,6 +24,9 @@ class Settings:
         # cannot, and the row is reclaimed on the next claim.
         self.job_lease_seconds = int(os.environ.get("JOB_LEASE_SECONDS", "420"))
         self.job_max_attempts = int(os.environ.get("JOB_MAX_ATTEMPTS", "3"))
+        # A test seam: shifts the api's idea of today so a day change can be
+        # exercised without waiting for one. Zero in real use.
+        self.clock_offset_seconds = int(os.environ.get("CLOCK_OFFSET_SECONDS", "0"))
 
 
 settings = Settings()
