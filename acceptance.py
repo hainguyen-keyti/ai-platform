@@ -57,11 +57,45 @@ CHECKS = (
     "a running job can be cancelled",
     "quota refills once a day up to the cap",
     "admin sees usage per user, others do not",
+    "each provider gets its own runner",
+    "one provider's cooldown does not hold the other",
+    "a job nobody serves is failed and refunded",
     "memory on refuses the turn and refunds",
     "health reports the provider's memory setting",
     "health shows code version and pacing",
     "the provider's error banner is recognised by shape",
 )
+
+# Checks a real provider cannot be asked to do, by name, with the reason the
+# gate prints. Grok's account is on the free tier and allows seven turns a day,
+# so the provider-agnostic reliability checks are left to mock mode rather than
+# spending the day's budget proving the queue twice.
+REAL_SKIPS = {
+    "grok": {
+        "video script job returns text":
+            "grok's first driver serves chat and image only",
+        "non image deliverable is kept":
+            "asks the provider to build a file; unmeasured on grok",
+        "non image deliverable is kept when asked in vietnamese":
+            "asks the provider to build a file; unmeasured on grok",
+        "a follow-up turn packages what the first one made":
+            "asks the provider to build a file; unmeasured on grok",
+        "a conversation's media downloads as one zip":
+            "needs two media in one conversation, two of the day's seven turns",
+        "deleting a conversation cancels its running job and refunds":
+            "provider-agnostic, covered in mock mode; costs a turn",
+        "a job settles exactly once":
+            "provider-agnostic, covered in mock mode; costs a turn",
+        "a running job can be cancelled":
+            "provider-agnostic, covered in mock mode; costs a turn",
+        "quota refills once a day up to the cap":
+            "provider-agnostic, covered in mock mode; costs a turn",
+        "health reports the provider's memory setting":
+            "the memory switch is a chatgpt account setting",
+        "the provider's error banner is recognised by shape":
+            "the fixtures are chatgpt's own markup",
+    },
+}
 
 # Phrases the mock provider reacts to, so failure modes can be exercised on purpose.
 SLOW_PHRASE = "take your time"
@@ -223,14 +257,21 @@ def tail(path, lines=15):
     return "\n".join("      | " + line for line in content[-lines:]) or "      | (empty)"
 
 
-def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, restart_worker,
-               python, restart_api):
+def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, worker_ctl,
+               python, restart_api, provider="chatgpt"):
     # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
     # first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
     job_timeout = 420 if real else 30
     checks = [Check(n) for n in CHECKS]
     c = dict(zip([x.name for x in checks], checks))
+    restart_worker = worker_ctl["restart"]
+    # A provider that cannot be asked for something says so once, here, and the
+    # check below it sees an already-skipped entry and leaves it alone.
+    if real:
+        for name, reason in (REAL_SKIPS.get(provider) or {}).items():
+            if name in c:
+                c[name].skip(reason)
     stamp = str(int(time.time() * 1000))
     # A plain domain: email-validator rejects reserved suffixes such as .local.
     user_a = "acc-a-{}@aiplatform-acceptance.com".format(stamp)
@@ -296,7 +337,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         c["auth rejects bad token"].failed("garbage {} missing {}".format(bad_status, none_status))
 
     status, body = http("POST", api + "/chat",
-                        {"provider": "chatgpt", "message": "Reply with the single word: pong"},
+                        {"provider": provider, "message": "Reply with the single word: pong"},
                         token=token)
     if status == 202 and body.get("job_id"):
         job, err = poll_job(api, body["job_id"], token, job_timeout)
@@ -309,7 +350,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         c["chat job completes"].failed("status {} body {}".format(status, body))
 
     status, body = http("POST", api + "/image/generate",
-                        {"provider": "chatgpt", "prompt": "a plain red circle on white"},
+                        {"provider": provider, "prompt": "a plain red circle on white"},
                         token=token)
     if status == 202 and body.get("job_id"):
         job, err = poll_job(api, body["job_id"], token, job_timeout)
@@ -331,7 +372,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
 
     if media_id:
         status, body = http("POST", api + "/video/script",
-                            {"provider": "chatgpt", "media_id": media_id, "duration": 5},
+                            {"provider": provider, "media_id": media_id, "duration": 5},
                             token=token)
         if status == 202 and body.get("job_id"):
             job, err = poll_job(api, body["job_id"], token, job_timeout)
@@ -365,7 +406,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
 
     def chat_once(message, conversation_id=None):
         status, body = http("POST", api + "/chat",
-                            {"provider": "chatgpt", "message": message,
+                            {"provider": provider, "message": message,
                              "conversation_id": conversation_id}, token=token)
         if status != 202 or not (body or {}).get("job_id"):
             return None, "status {} body {}".format(status, body), None
@@ -551,9 +592,9 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
             time.sleep(0.4)
         return last
 
-    def start_job(message):
+    def start_job(message, as_provider=None):
         status, body = http("POST", api + "/chat",
-                            {"provider": "chatgpt", "message": message}, token=token)
+                            {"provider": as_provider or provider, "message": message}, token=token)
         return body.get("job_id") if status == 202 and body else None
 
     # Deleting a conversation takes its media with it, on disk and in the api,
@@ -609,7 +650,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
     files_before = set(os.listdir(media_dir))
     deleted_before = threads_deleted()
     status, body = http("POST", api + "/chat",
-                        {"provider": "chatgpt",
+                        {"provider": provider,
                          "message": SLOW_PHRASE + ": draw a picture, then delete me while running"},
                         token=token)
     doomed_job = (body or {}).get("job_id") if status == 202 else None
@@ -792,13 +833,74 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
                 ustatus, {k: mine.get(k) for k in ("jobs_total", "done", "failed", "cancelled", "open", "images")},
                 theirs_row is not None, forbidden))
 
+    # ---- serving more than one provider ----
+
+    # One runner per provider, each with its own browser: two stealth browsers
+    # cannot be launched from one thread, so a second provider on the single
+    # runner would break on its first job.
+    if real:
+        c["each provider gets its own runner"].skip(
+            "real mode runs one provider at a time; two browsers are exercised in mock mode")
+        c["one provider's cooldown does not hold the other"].skip(
+            "needs two providers configured; real mode runs one at a time")
+    else:
+        _, health = http("GET", worker_health)
+        health = health or {}
+        runners = health.get("runners") or {}
+        configured = sorted(health.get("providers") or {})
+        owners = sorted({(r or {}).get("thread") for r in runners.values() if isinstance(r, dict)})
+        if (len(configured) >= 2 and sorted(runners) == configured
+                and all((r or {}).get("alive") for r in runners.values())
+                and len(owners) == len(runners)):
+            c["each provider gets its own runner"].passed(
+                "{} providers, {} runners on distinct threads {}".format(
+                    len(configured), len(runners), owners))
+        else:
+            c["each provider gets its own runner"].failed(
+                "providers {} runners {}".format(
+                    configured, {k: (v or {}).get("thread") for k, v in runners.items()} or "none"))
+
+        # A provider on cooldown must hold only itself. hold_seconds() used to
+        # return the longest wait of any provider, which parks every runner.
+        other = "grok" if provider != "grok" else "chatgpt"
+        held = restart_worker({"COOLDOWN_BASE_SECONDS": "45"})
+        broken = start_job(BROKEN_PHRASE + " so this provider goes on cooldown")
+        wait_state(broken, ("failed",), job_timeout) if broken else {}
+        free_job = start_job("a turn for the provider that is not on cooldown", as_provider=other)
+        moved = wait_state(free_job, ("running", "done"), 20) if free_job else {}
+        if held and moved.get("status") in ("running", "done"):
+            c["one provider's cooldown does not hold the other"].passed(
+                "{} on a 45s cooldown, {} still {} within 20s".format(
+                    provider, other, moved.get("status")))
+        else:
+            c["one provider's cooldown does not hold the other"].failed(
+                "worker restarted {}, {} job was {} after 20s".format(
+                    held, other, moved.get("status")))
+        restart_worker()
+
+    # A job nobody serves must not wait forever. With the worker off, every job
+    # used to sit pending while the user watched a typing bubble.
+    q0 = quota_now()
+    stopped = worker_ctl["stop"]()
+    orphan = start_job("nobody is serving this one")
+    final = wait_state(orphan, ("failed", "done", "cancelled"), 45) if orphan else {}
+    worker_ctl["start"]()
+    if (stopped and final.get("status") == "failed"
+            and final.get("error_kind") == "no_worker" and quota_now() == q0):
+        c["a job nobody serves is failed and refunded"].passed(
+            "failed as no_worker with the worker off, credit returned")
+    else:
+        c["a job nobody serves is failed and refunded"].failed(
+            "worker stopped {} status {} kind {} quota {} -> {}".format(
+                stopped, final.get("status"), final.get("error_kind"), q0, quota_now()))
+
     # The leak measured on 2026-09-23 needed one thing: the shared account's
     # memory switched on. The worker must look before it speaks. Only the mock
     # can pretend the switch is on; against the real account the setting is read
     # for real, and the check after this one asserts what was read.
     def memory_in_health():
         hstatus, health = http("GET", worker_health)
-        return hstatus, ((health or {}).get("providers") or {}).get("chatgpt", {}).get("memory")
+        return hstatus, ((health or {}).get("providers") or {}).get(provider, {}).get("memory")
 
     q0 = quota_now()
     if real:
@@ -830,7 +932,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
 
     hstatus, health = http("GET", worker_health)
     health = health or {}
-    provider_state = (health.get("providers") or {}).get("chatgpt") or {}
+    provider_state = (health.get("providers") or {}).get(provider) or {}
     if (hstatus == 200 and health.get("code_sha")
             and "cooldown_until" in provider_state and isinstance(health.get("pacing"), dict)):
         c["health shows code version and pacing"].passed(
@@ -847,6 +949,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--real", action="store_true",
                         help="drive real providers through cloakbrowser instead of mocks")
+    parser.add_argument("--provider", default="chatgpt", choices=("chatgpt", "grok", "gemini"),
+                        help="which provider the job checks speak to (default chatgpt)")
     parser.add_argument("--keep", action="store_true",
                         help="keep the temp workspace and print its path")
     args = parser.parse_args()
@@ -880,6 +984,9 @@ def main():
         # Short lease so a killed worker's job is reclaimed within the run.
         "JOB_LEASE_SECONDS": "2",
         "JOB_MAX_ATTEMPTS": "3",
+        # A job nobody claims is failed and refunded this soon, so the check for
+        # it does not have to wait out a production timeout.
+        "NO_WORKER_SECONDS": "5",
     }
 
     try:
@@ -902,6 +1009,9 @@ def main():
             # the root and failed every second turn; pace it like the worker.
             "COOLDOWN_BASE_SECONDS": "10" if args.real else "1",
             "MIN_GAP_SECONDS": "6" if args.real else "0",
+            # Real mode drives one account, and one browser, at a time. Mock mode
+            # serves two so the two-provider machinery is exercised every run.
+            "PROVIDERS": args.provider if args.real else "chatgpt,grok",
         }
         worker_health = "http://127.0.0.1:{}/health".format(worker_port)
         worker_proc, worker_log = start_service(
@@ -911,16 +1021,38 @@ def main():
             boot_error = "worker never became healthy ({})\n{}".format(detail, tail(workspace / "worker.log"))
             raise RuntimeError(boot_error)
 
-        def restart_worker():
-            """Kill the worker mid-job so its lease can expire, then bring a fresh one up."""
+        worker_logs = {"n": 1}
+
+        def start_worker(extra_env=None):
             nonlocal worker_proc, worker_log
+            worker_logs["n"] += 1
+            env = dict(worker_env)
+            env.update(extra_env or {})
+            worker_proc, worker_log = start_service(
+                python, ROOT / "worker", worker_port, env,
+                workspace / "worker-{}.log".format(worker_logs["n"]))
+            return wait_healthy(worker_health, 40)[0]
+
+        def stop_worker():
+            """Kill the worker outright; a job claimed by it loses its keeper."""
+            nonlocal worker_proc
             if worker_proc.poll() is None:
                 worker_proc.kill()
                 worker_proc.wait(timeout=10)
             worker_log.close()
-            worker_proc, worker_log = start_service(
-                python, ROOT / "worker", worker_port, worker_env, workspace / "worker-2.log")
-            return wait_healthy(worker_health, 40)[0]
+            deadline = time.time() + 15
+            while time.time() < deadline:
+                if http("GET", worker_health, timeout=2)[0] != 200:
+                    return True
+                time.sleep(0.5)
+            return False
+
+        def restart_worker(extra_env=None):
+            """Kill the worker mid-job so its lease can expire, then bring a fresh one up."""
+            stop_worker()
+            return start_worker(extra_env)
+
+        worker_ctl = {"restart": restart_worker, "stop": stop_worker, "start": start_worker}
 
         def restart_api(extra_env):
             """Bring the api back with extra settings, on the same database and port."""
@@ -932,7 +1064,8 @@ def main():
             return wait_healthy(api_base + "/health", 25)[0]
 
         checks = run_checks(api_base, media_dir, args.real, invite_code,
-                            worker_token, worker_health, restart_worker, python, restart_api)
+                            worker_token, worker_health, worker_ctl, python, restart_api,
+                            args.provider)
 
     except RuntimeError:
         pass
@@ -951,7 +1084,8 @@ def main():
 
     width = max(len(c.name) for c in checks)
     print()
-    print("mode: {}".format("real providers" if args.real else "mock providers"))
+    print("mode: {} providers, speaking to {}".format(
+        "real" if args.real else "mock", args.provider))
     print()
     for c in checks:
         tag = "SKIP" if c.skipped else ("PASS" if c.ok else "FAIL")
