@@ -74,10 +74,17 @@ async (url) => {
 }
 """
 
+# The origin is compared, not searched for: a page-controlled url like
+# https://evil.example/x?assets.grok.com/users/ would otherwise be fetched with
+# this session's cookies and stored as the user's own picture.
 PAGE_ASSETS = """
 () => Array.from(document.querySelectorAll('img'))
         .map((i) => i.currentSrc || i.src)
-        .filter((s) => s && s.indexOf('assets.grok.com/users/') !== -1)
+        .filter((s) => {
+            try { const u = new URL(s);
+                  return u.origin === 'https://assets.grok.com' && u.pathname.startsWith('/users/'); }
+            catch (e) { return false; }
+        })
 """
 
 
@@ -210,8 +217,12 @@ class GrokProvider(BaseProvider):
                 status, _ = self._api(page, SERVER_NODES.format(wanted))
                 if status == 404:
                     # Gone for good: the only case where a fresh chat is right.
-                    target = HOME
+                    # Forget what we were looking for, or the guard above can
+                    # never be satisfied and three attempts burn for nothing.
+                    wanted, target = None, HOME
                     continue
+                if status in (401, 403) or not self._signed_in(page):
+                    raise ProviderError(SIGNED_OUT, kind="provider_misconfigured")
             if attempt + 1 < OPEN_ATTEMPTS:
                 self._phase("waiting for the provider")
                 time.sleep(OPEN_RETRY_SECONDS * (2 ** attempt))
@@ -249,7 +260,11 @@ class GrokProvider(BaseProvider):
                     box.evaluate("(el) => el.focus()")
                 except Exception:
                     pass
-            page.keyboard.type(prompt)
+            # insert_text, never keyboard.type: Playwright's type() presses a
+            # key per character and maps "\n" to Enter, which on grok.com sends.
+            # A prompt carrying our replayed history would go out a line at a
+            # time, each line spending one of the account's few turns.
+            page.keyboard.insert_text(prompt)
             page.wait_for_timeout(500)
             if prompt[:40] in self._composer_text(page, composer):
                 page.keyboard.press("Enter")
@@ -271,18 +286,18 @@ class GrokProvider(BaseProvider):
         """The newest assistant turn as the server tells it, and whether it is done."""
         status, raw = self._api(page, SERVER_TURNS.format(cid))
         if status != 200:
-            return None, False, status
+            return None, "working", status
         try:
             body = json.loads(raw)
         except ValueError:
-            return None, False, status
+            return None, "working", status
         answers = [r for r in (body.get("responses") or [])
                    if r.get("sender") == "assistant" and r.get("responseId") not in baseline_ids]
         if not answers:
-            return None, False, status
+            return None, "working", status
         last = answers[-1]
         if last.get("partial"):
-            return last, False, status
+            return last, "working", status
         node_status, node_raw = self._api(page, SERVER_NODES.format(cid))
         try:
             inflight = json.loads(node_raw).get("inflightResponses") if node_status == 200 else None

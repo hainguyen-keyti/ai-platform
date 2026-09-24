@@ -88,11 +88,20 @@ def create_job(user, provider, feature, payload, conversation_id=None,
             if conversation_id:
                 owned = one(
                     conn,
-                    "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+                    "SELECT id, provider FROM conversations WHERE id = ? AND user_id = ?",
                     (conversation_id, user["id"]),
                 )
                 if not owned:
                     raise HTTPException(status_code=404, detail="conversation not found")
+                # The conversation holds one provider's thread. Sending another
+                # provider's turn into it would hand that provider a thread url
+                # from a site it is not even logged into.
+                if owned["provider"] != provider:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="this conversation belongs to {}; start a new chat to use {}".format(
+                            owned["provider"], provider),
+                    )
             else:
                 conversation_id = uuid.uuid4().hex
                 conn.execute(
@@ -217,17 +226,19 @@ def note_workers(providers):
 def claim_next_job(providers=None):
     lease = "+{} seconds".format(settings.job_lease_seconds)
     serves = [p for p in (providers or []) if p in PROVIDERS]
+    if not serves:
+        # Fail closed: a caller that names no provider it can serve gets no
+        # work, rather than every provider's work.
+        return None
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             _note_worker(conn, serves)
             _sweep_stranded(conn)
             _sweep_unserved(conn)
-            where = "j.status = 'pending'"
-            params = []
-            if serves:
-                where += " AND j.provider IN ({})".format(", ".join("?" * len(serves)))
-                params = list(serves)
+            where = "j.status = 'pending' AND j.provider IN ({})".format(
+                ", ".join("?" * len(serves)))
+            params = list(serves)
             row = one(
                 conn,
                 "SELECT j.id, j.provider, j.feature, j.payload, j.attempts,"
@@ -312,7 +323,11 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            cancelled = one(conn, "SELECT * FROM jobs WHERE id = ? AND status = 'cancelled'", (job_id,))
+            cancelled = one(
+                conn,
+                "SELECT * FROM jobs WHERE id = ? AND status IN ('cancelled', 'failed')",
+                (job_id,),
+            )
             if cancelled and thread_url:
                 # The turn was already on the provider's site when the job was
                 # cancelled. A deleted conversation's thread is noted for removal;
@@ -326,8 +341,9 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
                     conn.execute("UPDATE conversations SET provider_thread_url = ? WHERE id = ?",
                                  (thread_url, conv["id"]))
                 conn.execute("COMMIT")
-                raise HTTPException(status_code=409,
-                                    detail="job is cancelled, this attempt may not change it")
+                raise HTTPException(
+                    status_code=409,
+                    detail="job is {}, this attempt may not change it".format(cancelled["status"]))
             job = _live_attempt(conn, job_id, attempt)
 
             # Remember where the provider put this conversation so the next turn

@@ -128,6 +128,17 @@ class Runner(threading.Thread):
                 continue
 
     def _handle(self, client, job):
+        if job.get("provider") != self.provider:
+            # This runner owns one browser, on this thread. Driving another
+            # provider's browser from here is the error the whole design exists
+            # to prevent, so it is refused rather than attempted.
+            self.last_error = "refused a {} job on the {} runner".format(
+                job.get("provider"), self.provider)
+            client.post("/internal/jobs/{}/result".format(job["id"]), json={
+                "status": "failed", "attempt": job["attempt"], "text": "", "media": [],
+                "error": self.last_error, "error_kind": "worker_error"})
+            self.failed += 1
+            return
         job_id, attempt = job["id"], job["attempt"]
         self.current_job = {"id": job_id, "attempt": attempt, "feature": job["feature"],
                             "provider": job["provider"]}

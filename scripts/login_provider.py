@@ -31,6 +31,8 @@ PROVIDERS = {
         "home": "https://grok.com/",
         "domain": "grok.com",
         "cookies": ("sso", "sso-rw"),
+        # The cookie only says a session exists; this says the account answers.
+        "proves_it": "/rest/app-chat/conversations?pageSize=1",
     },
     "gemini": {
         "home": "https://gemini.google.com/",
@@ -43,12 +45,39 @@ WAIT_MINUTES = 15
 POLL_SECONDS = 3
 
 
-def signed_in(context, spec):
-    """The provider's own session cookie, on the provider's own domain."""
+ASK = """
+async (path) => {
+    try {
+        const r = await fetch(path, {credentials: 'include'});
+        return r.status;
+    } catch (e) { return 0; }
+}
+"""
+
+
+def signed_in(context, spec, page=None):
+    """The provider's own session cookie, and where possible its own answer.
+
+    A cookie can be present on a page that is not really signed in, which is how
+    one login was lost on 2026-09-24. When the provider offers an endpoint that
+    only an account can read, that is what decides.
+    """
+    found = None
     for cookie in context.cookies():
         if spec["domain"] in cookie.get("domain", "") and cookie.get("name") in spec["cookies"]:
-            return cookie["name"]
-    return None
+            found = cookie["name"]
+            break
+    if not found:
+        return None
+    proof = spec.get("proves_it")
+    if proof and page is not None:
+        try:
+            if page.evaluate(ASK, proof) != 200:
+                return None
+        except Exception:
+            return None
+        return "{} and {} answered".format(found, proof.split("?")[0])
+    return found
 
 
 def summarise(context, spec):
@@ -87,15 +116,20 @@ def main():
     try:
         while time.time() < deadline:
             try:
-                found = signed_in(context, spec)
+                found = signed_in(context, spec, page)
             except Exception:
                 print("the browser window was closed before the login finished")
+                browser.close()
                 return 1
             if found:
                 break
             time.sleep(POLL_SECONDS)
     except KeyboardInterrupt:
         print("cancelled")
+        browser.close()
+        return 1
+    except Exception as exc:
+        print("stopped: {}: {}".format(type(exc).__name__, str(exc)[:120]))
         browser.close()
         return 1
 

@@ -31,6 +31,11 @@ class Settings:
         # before it is failed and refunded. Long enough to survive a worker
         # restart, short enough that nobody watches a dead typing bubble.
         self.no_worker_seconds = int(os.environ.get("NO_WORKER_SECONDS", "180"))
+        # A busy worker proves it is alive by its heartbeat, which beats once
+        # per third of the lease. A window shorter than a lease plus a missed
+        # beat would fail the jobs queued behind a healthy long turn.
+        floor = self.job_lease_seconds + int(self.job_lease_seconds / 3.0) + 30
+        self.no_worker_seconds = max(self.no_worker_seconds, floor)
 
 
 settings = Settings()

@@ -124,6 +124,12 @@ export default function Chat({ onQuotaSpent }) {
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [conversation, status])
 
+  // A conversation holds one provider's thread, and the api refuses a turn from
+  // another one. Follow the conversation rather than letting the two disagree.
+  useEffect(() => {
+    if (conversation?.provider) setProvider(conversation.provider)
+  }, [conversation?.provider])
+
   // A reply that lands while the tab is hidden is counted in the title, and
   // announced when notifications were allowed; coming back clears it.
   useEffect(() => {
@@ -320,7 +326,9 @@ export default function Chat({ onQuotaSpent }) {
       <section className="flex-1 flex flex-col">
         <header className="flex items-center gap-3 border-b bg-white px-4 py-2">
           <select value={provider} onChange={(e) => setProvider(e.target.value)}
-            className="border rounded px-2 py-1 text-sm">
+            disabled={!!activeId} title={activeId ? t.providerLocked : undefined}
+            data-testid="provider-select"
+            className="border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-500">
             {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
           {mediaCount >= 2 && (

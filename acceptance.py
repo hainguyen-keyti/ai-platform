@@ -64,6 +64,7 @@ CHECKS = (
     "health reports the provider's memory setting",
     "health shows code version and pacing",
     "the provider's error banner is recognised by shape",
+    "grok settles on words or a picture, never on an empty turn",
 )
 
 # Checks a real provider cannot be asked to do, by name, with the reason the
@@ -306,6 +307,16 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     else:
         c["the provider's error banner is recognised by shape"].failed(
             "exit {} {}".format(code, (summary or (lines[-1] if lines else ""))[:110]))
+
+    settle = subprocess.run([python, str(ROOT / "tests" / "test_grok_settle.py")],
+                            capture_output=True, text=True, cwd=str(ROOT))
+    lines = [l for l in ((settle.stdout or "") + (settle.stderr or "")).splitlines() if l.strip()]
+    summary = next((l for l in reversed(lines) if "PASSED" in l), "")
+    if settle.returncode == 0 and summary.startswith("8/8"):
+        c["grok settles on words or a picture, never on an empty turn"].passed(summary)
+    else:
+        c["grok settles on words or a picture, never on an empty turn"].failed(
+            "exit {} {}".format(settle.returncode, (summary or (lines[-1] if lines else ""))[:110]))
 
     status, body = http("GET", api + "/health")
     if status == 200 and isinstance(body, dict) and body.get("status") == "ok":
@@ -671,7 +682,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     status, body = http("POST", api + "/chat",
                         {"provider": provider,
                          "message": SLOW_PHRASE + ": draw a picture, then delete me while running"},
-                        token=token)
+                        token=token) \
+        if wanted("deleting a conversation cancels its running job and refunds") else (0, {})
     doomed_job = (body or {}).get("job_id") if status == 202 else None
     doomed_conv = (body or {}).get("conversation_id") if status == 202 else None
     seen = wait_state(doomed_job, ("running", "done", "failed"), 20) if doomed_job else {}
@@ -905,18 +917,28 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # A job nobody serves must not wait forever. With the worker off, every job
     # used to sit pending while the user watched a typing bubble.
     q0 = quota_now()
-    stopped = worker_ctl["stop"]()
+    other = "grok" if provider != "grok" else "chatgpt"
+    if real:
+        # One real account at a time: the worker simply goes away.
+        moved = worker_ctl["stop"]()
+        how = "with the worker off"
+    else:
+        # Harder, and what a second provider makes possible: a worker that is
+        # alive and asking for work, but not for this provider's work. A claim
+        # that ignored the provider filter would run the job anyway.
+        moved = worker_ctl["restart"]({"PROVIDERS": other})
+        how = "while the worker served only {}".format(other)
     orphan = start_job("nobody is serving this one")
-    final = wait_state(orphan, ("failed", "done", "cancelled"), 60) if orphan else {}
-    worker_ctl["start"]()
-    if (stopped and final.get("status") == "failed"
+    final = wait_state(orphan, ("failed", "done", "cancelled"), 90) if orphan else {}
+    worker_ctl["restart"]()
+    if (moved and final.get("status") == "failed"
             and final.get("error_kind") == "no_worker" and quota_now() == q0):
         c["a job nobody serves is failed and refunded"].passed(
-            "failed as no_worker with the worker off, credit returned")
+            "failed as no_worker {}, credit returned".format(how))
     else:
         c["a job nobody serves is failed and refunded"].failed(
-            "worker stopped {} status {} kind {} quota {} -> {}".format(
-                stopped, final.get("status"), final.get("error_kind"), q0, quota_now()))
+            "worker moved {} status {} kind {} quota {} -> {}".format(
+                moved, final.get("status"), final.get("error_kind"), q0, quota_now()))
 
     # The leak measured on 2026-09-23 needed one thing: the shared account's
     # memory switched on. The worker must look before it speaks. Only the mock
