@@ -1,15 +1,39 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import Markdown, { defaultUrlTransform } from 'react-markdown'
 import { api, conversationZipUrl, waitForJob } from '../lib/api.js'
+import { useStrings } from '../lib/strings.jsx'
 import MediaImage from '../components/MediaImage.jsx'
 import TypingBubble from '../components/TypingBubble.jsx'
 import Lightbox from '../components/Lightbox.jsx'
 import FileCard from '../components/FileCard.jsx'
 
 const PROVIDERS = ['chatgpt', 'grok', 'gemini']
-const SLOW_HINT = 'Still working. Asking for a picture takes the longest.'
 const STICK_THRESHOLD_PX = 80
+const BASE_TITLE = document.title
 
-function MediaCard({ item, busy, onOpen, onScript }) {
+// A link the model writes to its own sandbox points nowhere a browser can go;
+// the file itself is already a card under the text. Everything else keeps
+// react-markdown's own url rules.
+function keepSandbox(url) {
+  return url.startsWith('sandbox:') ? url : defaultUrlTransform(url)
+}
+
+const markdownParts = {
+  a: ({ href, children }) => ((href || '').startsWith('sandbox:')
+    ? <span>{children}</span>
+    : <a href={href} target="_blank" rel="noopener noreferrer" className="underline">{children}</a>),
+}
+
+function ReplyText({ text }) {
+  return (
+    <div data-testid="reply-bubble"
+      className="max-w-2xl whitespace-pre-wrap rounded-lg border bg-white px-3 py-2 text-sm [&_p]:my-0 [&_ul]:my-1 [&_ul]:pl-5 [&_ul]:list-disc [&_ol]:my-1 [&_ol]:pl-5 [&_ol]:list-decimal [&_pre]:my-1 [&_pre]:overflow-x-auto [&_code]:text-xs">
+      <Markdown urlTransform={keepSandbox} components={markdownParts}>{text}</Markdown>
+    </div>
+  )
+}
+
+function MediaCard({ item, busy, onOpen, onScript, label }) {
   // Whatever came back is shown as what it is. Only a picture can be previewed
   // or turned into a video script.
   if (item.type !== 'image') return <FileCard item={item} />
@@ -19,14 +43,16 @@ function MediaCard({ item, busy, onOpen, onScript }) {
       <MediaImage id={item.id} className="w-full" onOpen={(url) => onOpen(url, item)} />
       <button onClick={() => onScript(item.id)} disabled={busy}
         className="mt-2 w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
-        Video script
+        {label}
       </button>
     </div>
   )
 }
 
 export default function Chat({ onQuotaSpent }) {
+  const { t } = useStrings()
   const [conversations, setConversations] = useState([])
+  const [query, setQuery] = useState('')
   const [activeId, setActiveId] = useState(null)
   const [conversation, setConversation] = useState(null)
   const [provider, setProvider] = useState('chatgpt')
@@ -38,6 +64,9 @@ export default function Chat({ onQuotaSpent }) {
   const [error, setError] = useState(null)
   const [viewing, setViewing] = useState(null)
   const [packing, setPacking] = useState(false)
+  const [renaming, setRenaming] = useState(null)
+  const [draftTitle, setDraftTitle] = useState('')
+  const unseen = useRef(0)
 
   function open(url, item) {
     setViewing({ url, filename: item.filename })
@@ -70,7 +99,13 @@ export default function Chat({ onQuotaSpent }) {
   // history must not be yanked back down when a reply lands.
   const stickToBottom = useRef(true)
 
-  useEffect(() => { refreshList() }, [])
+  // The search box asks the api, which also looks inside messages; a short
+  // pause so a person typing does not fire a request per keystroke.
+  useEffect(() => {
+    const id = setTimeout(() => { refreshList() }, 250)
+    return () => clearTimeout(id)
+  }, [query])
+
   useEffect(() => {
     stickToBottom.current = true
     if (!activeId) { setConversation(null); return }
@@ -82,6 +117,28 @@ export default function Chat({ onQuotaSpent }) {
     if (!el || !stickToBottom.current) return
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [conversation, status])
+
+  // A reply that lands while the tab is hidden is counted in the title, and
+  // announced when notifications were allowed; coming back clears it.
+  useEffect(() => {
+    function back() {
+      if (!document.hidden) {
+        unseen.current = 0
+        document.title = BASE_TITLE
+      }
+    }
+    document.addEventListener('visibilitychange', back)
+    return () => document.removeEventListener('visibilitychange', back)
+  }, [])
+
+  function announce() {
+    if (!document.hidden) return
+    unseen.current += 1
+    document.title = `(${unseen.current}) ${BASE_TITLE}`
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try { new Notification(BASE_TITLE, { body: t.replyLanded }) } catch { /* not available here */ }
+    }
+  }
 
   // Media from before media carried a message id has no bubble to sit under.
   // Pinning it after the messages put old pictures below newer replies, so it
@@ -110,7 +167,7 @@ export default function Chat({ onQuotaSpent }) {
 
   async function refreshList() {
     try {
-      const data = await api.conversations()
+      const data = await api.conversations(query.trim())
       setConversations(data.items)
     } catch (err) {
       setError(err.message)
@@ -134,6 +191,7 @@ export default function Chat({ onQuotaSpent }) {
       await waitForJob(created.job_id, (s, p) => { setStatus(s); setPhase(p) })
       const fresh = await api.conversation(created.conversation_id)
       setConversation(fresh)
+      announce()
       refreshList()
       // Every job costs a credit, so the number in the nav is stale the moment
       // one finishes.
@@ -164,9 +222,12 @@ export default function Chat({ onQuotaSpent }) {
     const text = input.trim()
     if (!text || status) return
     setInput('')
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {})
+    }
     // One way in. The provider returns whatever the reply turned out to be, so
     // asking the user to declare "this one is a picture" bought nothing.
-    runJob(() => api.chat({ provider, conversation_id: activeId, message: text }), SLOW_HINT)
+    runJob(() => api.chat({ provider, conversation_id: activeId, message: text }), t.slowHint)
   }
 
   function requestScript(mediaId) {
@@ -174,21 +235,74 @@ export default function Chat({ onQuotaSpent }) {
     runJob(() => api.videoScript({ provider, media_id: mediaId, conversation_id: activeId }))
   }
 
+  function startRename(c) {
+    setDraftTitle(c.title || '')
+    setRenaming(c.id)
+  }
+
+  async function commitRename(id) {
+    const title = draftTitle.trim()
+    setRenaming(null)
+    if (!title) return
+    try {
+      await api.renameConversation(id, title)
+      if (conversation?.id === id) setConversation({ ...conversation, title })
+      refreshList()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  async function removeConversation(id) {
+    if (!window.confirm(t.confirmDelete)) return
+    try {
+      await api.deleteConversation(id)
+      if (activeId === id) { setActiveId(null); setConversation(null) }
+      refreshList()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
   return (
     <div className="flex h-full">
       <aside className="w-64 border-r bg-white flex flex-col">
         <button onClick={() => { setActiveId(null); setConversation(null) }}
           className="m-3 rounded bg-slate-900 text-white py-2 text-sm">
-          New chat
+          {t.newChat}
         </button>
+        <input data-testid="conversation-search" value={query} placeholder={t.search}
+          onChange={(e) => setQuery(e.target.value)}
+          className="mx-3 mb-2 rounded border px-2 py-1 text-sm" />
         <div className="flex-1 overflow-y-auto">
           {conversations.map((c) => (
-            <button key={c.id} onClick={() => setActiveId(c.id)}
-              className={`block w-full text-left px-3 py-2 text-sm truncate hover:bg-slate-100 ${
+            <div key={c.id} data-testid="conversation-item"
+              className={`flex items-center gap-1 px-3 py-1.5 text-sm hover:bg-slate-100 ${
                 c.id === activeId ? 'bg-slate-100 font-medium' : ''}`}>
-              <span className="text-slate-400 mr-1">{c.provider}</span>
-              {c.title || 'Untitled'}
-            </button>
+              {renaming === c.id ? (
+                <input data-testid="rename-input" autoFocus value={draftTitle}
+                  onChange={(e) => setDraftTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(c.id)
+                    if (e.key === 'Escape') setRenaming(null)
+                  }}
+                  onBlur={() => setRenaming(null)}
+                  className="min-w-0 flex-1 rounded border px-1 py-0.5 text-sm font-normal" />
+              ) : (
+                <button onClick={() => setActiveId(c.id)} className="min-w-0 flex-1 truncate text-left">
+                  <span className="text-slate-400 mr-1">{c.provider}</span>
+                  {c.title || t.untitled}
+                </button>
+              )}
+              <button data-testid="rename-conversation" type="button" title={t.rename}
+                onClick={() => startRename(c)} className="px-1 text-slate-400 hover:text-slate-900">
+                ✎
+              </button>
+              <button data-testid="delete-conversation" type="button" title={t.delete}
+                onClick={() => removeConversation(c.id)} className="px-1 text-slate-400 hover:text-red-600">
+                ×
+              </button>
+            </div>
           ))}
         </div>
       </aside>
@@ -203,7 +317,7 @@ export default function Chat({ onQuotaSpent }) {
             <button type="button" data-testid="download-all" onClick={() => saveZip()}
               disabled={packing}
               className="rounded border px-3 py-1 text-sm hover:bg-slate-100 disabled:opacity-50">
-              {packing ? 'Packing...' : `Download all (${mediaCount})`}
+              {packing ? t.packing : t.downloadAll(mediaCount)}
             </button>
           )}
           {error && <span className="text-sm text-red-600">{error}</span>}
@@ -211,32 +325,36 @@ export default function Chat({ onQuotaSpent }) {
 
         <div ref={scrollRef} onScroll={trackScroll} data-testid="message-scroll"
           className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
-          {!conversation && <p className="text-slate-400 text-sm">Start a new conversation.</p>}
+          {!conversation && <p className="text-slate-400 text-sm">{t.startHint}</p>}
 
           {timeline.map((entry) =>
             entry.kind === 'media' ? (
               <div key={entry.id} className="flex flex-col items-start gap-2">
-                <MediaCard item={entry.media} busy={!!status}
+                <MediaCard item={entry.media} busy={!!status} label={t.videoScript}
                   onOpen={open} onScript={requestScript} />
               </div>
             ) : (
               <div key={entry.id} className={`flex flex-col gap-2 ${
                 entry.message.role === 'user' ? 'items-end' : 'items-start'}`}>
                 {entry.message.content && (
-                  <div className={`max-w-2xl whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
-                    entry.message.role === 'user' ? 'bg-slate-900 text-white' : 'bg-white border'}`}>
-                    {entry.message.content}
-                  </div>
+                  entry.message.role === 'user' ? (
+                    <div data-testid="user-bubble"
+                      className="max-w-2xl whitespace-pre-wrap rounded-lg bg-slate-900 px-3 py-2 text-sm text-white">
+                      {entry.message.content}
+                    </div>
+                  ) : (
+                    <ReplyText text={entry.message.content} />
+                  )
                 )}
                 {entry.message.media?.map((item) => (
-                  <MediaCard key={item.id} item={item} busy={!!status}
+                  <MediaCard key={item.id} item={item} busy={!!status} label={t.videoScript}
                     onOpen={open} onScript={requestScript} />
                 ))}
                 {(entry.message.media?.length || 0) >= 2 && (
                   <button type="button" data-testid="download-message" disabled={packing}
                     onClick={() => saveZip(entry.message.id)}
                     className="text-xs text-slate-500 underline hover:text-slate-900 disabled:opacity-50">
-                    Download these {entry.message.media.length} as one zip
+                    {t.downloadThese(entry.message.media.length)}
                   </button>
                 )}
               </div>
@@ -251,16 +369,16 @@ export default function Chat({ onQuotaSpent }) {
 
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)}
-            placeholder="Type a message, or ask for a picture..."
+            placeholder={t.composer}
             className="flex-1 border rounded px-3 py-2 text-sm" />
           {status ? (
             <button type="button" onClick={stopJob}
               className="rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700">
-              Stop
+              {t.stop}
             </button>
           ) : (
             <button type="submit" className="bg-slate-900 text-white rounded px-4 text-sm">
-              Send
+              {t.send}
             </button>
           )}
         </form>

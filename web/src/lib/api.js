@@ -43,8 +43,9 @@ export const api = {
   register: (email, password, name, invite_code) =>
     request('POST', '/auth/register', { email, password, name, invite_code }),
   me: () => request('GET', '/auth/me'),
-  conversations: () => request('GET', '/conversations'),
+  conversations: (q) => request('GET', q ? `/conversations?q=${encodeURIComponent(q)}` : '/conversations'),
   conversation: (id) => request('GET', `/conversations/${id}`),
+  renameConversation: (id, title) => request('PATCH', `/conversations/${id}`, { title }),
   deleteConversation: (id) => request('DELETE', `/conversations/${id}`),
   chat: (payload) => request('POST', '/chat', payload),
   videoScript: (payload) => request('POST', '/video/script', payload),

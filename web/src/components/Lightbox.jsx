@@ -1,6 +1,9 @@
 import { useEffect } from 'react'
+import { useStrings } from '../lib/strings.jsx'
 
 export default function Lightbox({ url, filename, onClose }) {
+  const { t } = useStrings()
+
   useEffect(() => {
     function onKey(event) {
       if (event.key === 'Escape') onClose()
@@ -20,10 +23,10 @@ export default function Lightbox({ url, filename, onClose }) {
       <div className="flex gap-3" onClick={(e) => e.stopPropagation()}>
         <a data-testid="lightbox-download" href={url} download={filename || 'image.png'}
           className="rounded bg-white px-4 py-2 text-sm font-medium text-slate-900">
-          Download
+          {t.download}
         </a>
         <button onClick={onClose} className="rounded bg-white/20 px-4 py-2 text-sm text-white">
-          Close
+          {t.close}
         </button>
       </div>
     </div>

@@ -88,6 +88,21 @@ def main():
         record("nav shows identity and quota", email.split("@")[0] in page.content(),
                "{} left".format(quota_before))
 
+        # The team types Vietnamese; the switch must change the labels and back,
+        # so the rest of this test can keep reading the English ones.
+        try:
+            page.click("[data-testid=language-switch]", timeout=5000)
+            page.wait_for_selector("button:has-text('Gửi')", timeout=5000)
+            vietnamese = page.locator("button:has-text('Trò chuyện mới')").count()
+            page.click("[data-testid=language-switch]", timeout=5000)
+            page.wait_for_selector("button:has-text('Send')", timeout=5000)
+            shot(page, "03b-language")
+            record("the language switch changes the labels and back", vietnamese == 1,
+                   "Send became Gửi, New chat became Trò chuyện mới, and back")
+        except Exception as exc:
+            record("the language switch changes the labels and back", False,
+                   "{}: no switch, or the labels did not change".format(type(exc).__name__))
+
         page.fill(COMPOSER, "hello from the ui smoke test")
         shot(page, "04-message-typed")
         page.click("button:has-text('Send')")
@@ -191,6 +206,24 @@ def main():
                card["hasButton"] and not card["brokenImage"],
                "card reads {!r}, download button {}".format(card["text"], card["hasButton"]))
 
+        # The model writes markdown; the bubble must show it rendered, and a
+        # sandbox: link (the file is already a card) must not appear as a raw link.
+        rendered_md = page.evaluate(
+            """() => {
+                const bubbles = Array.from(document.querySelectorAll('[data-testid=message-scroll] [data-testid=reply-bubble]'));
+                const el = bubbles.find((b) => (b.textContent || '').includes('mock archive'));
+                if (!el) return null;
+                const text = el.textContent || '';
+                return {strong: el.querySelectorAll('strong').length,
+                        rawStars: text.includes('**'), rawSandbox: text.includes('sandbox:'),
+                        sandboxLinks: el.querySelectorAll('a[href^="sandbox:"]').length};
+            }"""
+        )
+        record("markdown in a reply renders, sandbox links become text",
+               bool(rendered_md) and rendered_md["strong"] >= 1 and not rendered_md["rawStars"]
+               and not rendered_md["rawSandbox"] and rendered_md["sandboxLinks"] == 0,
+               "{}".format(rendered_md))
+
         # Everything this conversation produced, the picture and the file, in one
         # zip built by the platform; caught as a browser download, then opened.
         try:
@@ -236,14 +269,16 @@ def main():
 
         # Waiting minutes with no way out was the top complaint the surveyed
         # interfaces had all fixed: Send must become Stop while a job runs.
-        page.fill(COMPOSER, "cancel me please")
+        # The slow phrase keeps the mock busy long enough that Stop is pressed
+        # while the job is still running, whatever else the machine is doing.
+        page.fill(COMPOSER, "take your time, cancel me please")
         page.click("button:has-text('Send')")
         page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
         try:
             page.click("button:has-text('Stop')", timeout=3000)
             page.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=2500)
-            page.wait_for_timeout(6000)
-            replied = page.locator("text=mock reply from chatgpt to: cancel me please").count()
+            page.wait_for_timeout(8000)
+            replied = page.locator("text=mock reply from chatgpt to: take your time, cancel me please").count()
             record("stop cancels a running job", replied == 0,
                    "bubble gone within 2.5s, {} reply bubble(s) appeared afterwards".format(replied))
         except Exception as exc:
@@ -280,6 +315,33 @@ def main():
         record("quota in the nav tracks the jobs spent", quota_mid == quota_before - 3,
                "{} -> {} after 3 jobs".format(quota_before, quota_mid))
 
+        # A reply that lands while the tab is hidden must show in the title, and
+        # the badge must clear when the person comes back.
+        base_title = page.title()
+        page.evaluate(
+            """() => {
+                Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+                Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => 'hidden'});
+            }"""
+        )
+        page.fill(COMPOSER, "badge me while the tab is hidden")
+        page.click("button:has-text('Send')")
+        page.wait_for_selector("text=mock reply from chatgpt to: badge me", timeout=60000)
+        page.wait_for_timeout(800)
+        badged = page.title()
+        page.evaluate(
+            """() => {
+                Object.defineProperty(document, 'hidden', {configurable: true, get: () => false});
+                Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => 'visible'});
+                document.dispatchEvent(new Event('visibilitychange'));
+            }"""
+        )
+        page.wait_for_timeout(500)
+        cleared = page.title()
+        record("a reply landing while the tab is hidden badges the title",
+               badged.startswith("(1)") and cleared == base_title,
+               "title {!r} while hidden, {!r} after returning".format(badged, cleared))
+
         page.click("nav button:has-text('gallery')")
         page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
         page.wait_for_timeout(1500)
@@ -290,6 +352,50 @@ def main():
         )
         record("gallery lists the generated media", gallery_images >= 1,
                "{}, {} thumbnail(s)".format(heading, gallery_images))
+
+        # Back in the chat: the conversation can be renamed, found, and deleted
+        # from the sidebar, and deleting it takes its media out of the gallery.
+        page.click("nav button:has-text('chat')")
+        page.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
+        try:
+            page.click("[data-testid=rename-conversation]", timeout=5000)
+            page.fill("[data-testid=rename-input]", "Renamed by the smoke test")
+            page.keyboard.press("Enter")
+            page.wait_for_selector("aside >> text=Renamed by the smoke test", timeout=5000)
+            shot(page, "08b-renamed")
+            record("a conversation can be renamed from the sidebar", True, "new title shown in the sidebar")
+        except Exception as exc:
+            record("a conversation can be renamed from the sidebar", False,
+                   "{}: no rename control or the title did not change".format(type(exc).__name__))
+
+        try:
+            page.fill("[data-testid=conversation-search]", "Renamed by")
+            page.wait_for_timeout(700)
+            hits = page.locator("[data-testid=conversation-item]").count()
+            page.fill("[data-testid=conversation-search]", "zzz-nothing-here")
+            page.wait_for_timeout(700)
+            misses = page.locator("[data-testid=conversation-item]").count()
+            page.fill("[data-testid=conversation-search]", "")
+            page.wait_for_timeout(700)
+            record("search filters the sidebar", hits == 1 and misses == 0,
+                   "{} hit(s) for the title, {} for nonsense".format(hits, misses))
+        except Exception as exc:
+            record("search filters the sidebar", False, "{}: no search box".format(type(exc).__name__))
+
+        try:
+            page.once("dialog", lambda d: d.accept())
+            page.click("[data-testid=delete-conversation]", timeout=5000)
+            page.wait_for_selector("[data-testid=conversation-item]", state="detached", timeout=10000)
+            page.click("nav button:has-text('gallery')")
+            page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
+            page.wait_for_timeout(1000)
+            after = page.locator("text=/Gallery \\(\\d+\\)/").first.inner_text()
+            shot(page, "08c-deleted")
+            record("deleting a conversation from the sidebar removes it and its media",
+                   after.strip().endswith("(0)"), "sidebar empty, gallery reads {!r}".format(after))
+        except Exception as exc:
+            record("deleting a conversation from the sidebar removes it and its media", False,
+                   "{}: no delete control or the conversation stayed".format(type(exc).__name__))
 
         page.click("button:has-text('sign out')")
         page.wait_for_selector("button:has-text('Sign in')", timeout=20000)

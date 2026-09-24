@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { api, setToken } from '../lib/api.js'
+import { useStrings } from '../lib/strings.jsx'
 
 export default function Login({ onSignedIn }) {
+  const { t } = useStrings()
   const [mode, setMode] = useState('login')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -31,29 +33,29 @@ export default function Login({ onSignedIn }) {
   return (
     <div className="min-h-full flex items-center justify-center bg-slate-100 p-6">
       <form onSubmit={submit} className="w-full max-w-sm bg-white rounded-xl shadow p-6 space-y-4">
-        <h1 className="text-xl font-semibold">AI Platform</h1>
+        <h1 className="text-xl font-semibold">{t.appName}</h1>
 
         <div className="flex gap-2 text-sm">
           <button type="button" onClick={() => setMode('login')}
             className={`px-3 py-1 rounded ${mode === 'login' ? 'bg-slate-900 text-white' : 'bg-slate-100'}`}>
-            Sign in
+            {t.signIn}
           </button>
           <button type="button" onClick={() => setMode('register')}
             className={`px-3 py-1 rounded ${mode === 'register' ? 'bg-slate-900 text-white' : 'bg-slate-100'}`}>
-            Create account
+            {t.createAccount}
           </button>
         </div>
 
-        <input className="w-full border rounded px-3 py-2" type="email" required placeholder="email"
+        <input className="w-full border rounded px-3 py-2" type="email" required placeholder={t.email}
           value={email} onChange={(e) => setEmail(e.target.value)} />
         <input className="w-full border rounded px-3 py-2" type="password" required minLength={8}
-          placeholder="password" value={password} onChange={(e) => setPassword(e.target.value)} />
+          placeholder={t.password} value={password} onChange={(e) => setPassword(e.target.value)} />
 
         {mode === 'register' && (
           <>
-            <input className="w-full border rounded px-3 py-2" placeholder="name (optional)"
+            <input className="w-full border rounded px-3 py-2" placeholder={t.nameOptional}
               value={name} onChange={(e) => setName(e.target.value)} />
-            <input className="w-full border rounded px-3 py-2" required placeholder="invite code"
+            <input className="w-full border rounded px-3 py-2" required placeholder={t.inviteCode}
               value={invite} onChange={(e) => setInvite(e.target.value)} />
           </>
         )}
@@ -62,7 +64,7 @@ export default function Login({ onSignedIn }) {
 
         <button type="submit" disabled={busy}
           className="w-full bg-slate-900 text-white rounded py-2 disabled:opacity-50">
-          {busy ? 'working...' : mode === 'login' ? 'Sign in' : 'Create account'}
+          {busy ? t.working : mode === 'login' ? t.signIn : t.createAccount}
         </button>
       </form>
     </div>

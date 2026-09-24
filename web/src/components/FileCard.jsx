@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { mediaBlobUrl } from '../lib/api.js'
+import { useStrings } from '../lib/strings.jsx'
 
 function readableSize(bytes) {
   if (!bytes) return null
@@ -9,6 +10,7 @@ function readableSize(bytes) {
 }
 
 export default function FileCard({ item }) {
+  const { t } = useStrings()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
   const name = item.metadata?.name || item.filename
@@ -45,7 +47,7 @@ export default function FileCard({ item }) {
       </div>
       <button data-testid="file-download" onClick={save} disabled={busy}
         className="mt-2 w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
-        {busy ? 'Preparing...' : 'Download'}
+        {busy ? t.preparing : t.download}
       </button>
       {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
     </div>
