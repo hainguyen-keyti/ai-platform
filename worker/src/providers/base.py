@@ -11,12 +11,25 @@ class FeatureType(str, Enum):
     VIDEO_SCRIPT = "video_script"
 
 
+MEMORY_ON_ERROR = ("the provider's memory is on for the shared account, so this turn was not sent; "
+                   "turn it off (Settings, Personalization, Enable memory) and try again")
+
+
 class JobCancelled(Exception):
     """The job being worked on was cancelled or reclaimed; stop and do not report."""
 
 
 class ProviderError(Exception):
-    """The provider itself is unwell: logged out, throttled, showing an error banner."""
+    """The provider itself is unwell: logged out, throttled, showing an error banner.
+
+    kind names the failure for the api and the pool: provider_error by default,
+    provider_misconfigured when the account is in a state the platform must not
+    speak into, such as memory switched on.
+    """
+
+    def __init__(self, message: str, kind: str = "provider_error"):
+        super().__init__(message)
+        self.kind = kind
 
 
 @dataclass

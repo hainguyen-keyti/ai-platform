@@ -19,6 +19,7 @@ can look at what actually rendered instead of trusting an assertion.
 import os
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import cloakbrowser
@@ -189,6 +190,19 @@ def main():
         record("a non image arrives as a file, not a broken picture",
                card["hasButton"] and not card["brokenImage"],
                "card reads {!r}, download button {}".format(card["text"], card["hasButton"]))
+
+        # Everything this conversation produced, the picture and the file, in one
+        # zip built by the platform; caught as a browser download, then opened.
+        try:
+            with page.expect_download(timeout=20000) as caught:
+                page.click("[data-testid=download-all]", timeout=5000)
+            names = zipfile.ZipFile(caught.value.path()).namelist()
+            shot(page, "07g-download-all")
+            record("download all media as one zip", len(names) == 2,
+                   "{} entries: {}".format(len(names), names[:3]))
+        except Exception as exc:
+            record("download all media as one zip", False,
+                   "{}: no Download all control, or no archive came out".format(type(exc).__name__))
 
         # Scrolling up mid-job means "I am reading"; the reply landing must not
         # drag the view back down.

@@ -7,7 +7,8 @@ import zlib
 from typing import Optional
 
 from src.config import settings
-from src.providers.base import BaseProvider, FeatureType, GenerationResult, MediaArtifact
+from src.providers.base import (MEMORY_ON_ERROR, BaseProvider, FeatureType, GenerationResult,
+                                MediaArtifact, ProviderError)
 
 IMAGE_WORDS = ("image", "picture", "draw", "ảnh", "vẽ")
 FILE_WORDS = ("zip", "archive", "nén")
@@ -15,6 +16,7 @@ FILE_WORDS = ("zip", "archive", "nén")
 # exercised without a real provider.
 SLOW_PHRASE = "take your time"
 BROKEN_PHRASE = "pretend the provider broke"
+MEMORY_PHRASE = "pretend memory is on"
 SLOW_SECONDS = 6.0
 
 
@@ -50,9 +52,16 @@ class MockProvider(BaseProvider):
     def __init__(self, media_path, sessions_path, name="chatgpt"):
         super().__init__(media_path, sessions_path)
         self.name = name
+        # The account-level switch the real provider reads before every turn.
+        # A message can flip it on; the next ordinary message flips it back.
+        self.memory = "off"
 
     def start(self) -> None:
         return None
+
+    def _refuse_if_memory_on(self):
+        if self.memory == "on":
+            raise ProviderError(MEMORY_ON_ERROR, kind="provider_misconfigured")
 
     def _pace(self, seconds: Optional[float] = None):
         """Sleep in small steps so a cancel lands within a quarter second."""
@@ -77,6 +86,8 @@ class MockProvider(BaseProvider):
     def chat(self, message: str, history: Optional[list] = None,
              thread_url: Optional[str] = None) -> GenerationResult:
         lowered = message.lower()
+        self.memory = "on" if MEMORY_PHRASE in lowered else "off"
+        self._refuse_if_memory_on()
         self._pace()
         if SLOW_PHRASE in lowered:
             self._pace(SLOW_SECONDS)
@@ -112,6 +123,7 @@ class MockProvider(BaseProvider):
 
     def generate_image(self, prompt: str, reference_filename: Optional[str] = None,
                        thread_url: Optional[str] = None) -> GenerationResult:
+        self._refuse_if_memory_on()
         self._pace()
         thread = self._thread(thread_url)
         self._phase("picture appeared")
@@ -123,6 +135,7 @@ class MockProvider(BaseProvider):
 
     def generate_video_script(self, image_filename: str, duration: int = 5,
                               thread_url: Optional[str] = None) -> GenerationResult:
+        self._refuse_if_memory_on()
         self._pace()
         thread = self._thread(thread_url)
         self._phase("reply started")

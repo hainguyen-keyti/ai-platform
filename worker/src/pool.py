@@ -148,7 +148,7 @@ class BrowserPool:
             except JobCancelled:
                 return GenerationResult.failure("cancelled while running", kind="cancelled")
             except ProviderError as exc:
-                return GenerationResult.failure(str(exc), kind="provider_error")
+                return GenerationResult.failure(str(exc), kind=exc.kind)
             except Exception as exc:
                 return GenerationResult.failure(
                     "{}: {}".format(type(exc).__name__, exc), kind="worker_error")
@@ -167,8 +167,9 @@ class BrowserPool:
             }
             entry.update(self._health[name].snapshot())
             # Diagnostics the provider chooses to expose: how the last turn was
-            # settled and whether the last thread open landed where it aimed.
-            for attr in ("last_settle", "last_open"):
+            # settled, whether the last thread open landed where it aimed, and
+            # what the account's memory switch read before the last turn.
+            for attr in ("last_settle", "last_open", "memory"):
                 if provider is not None and hasattr(provider, attr):
                     entry[attr] = getattr(provider, attr)
             out[name] = entry

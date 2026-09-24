@@ -46,16 +46,21 @@ CHECKS = (
     "non image deliverable is kept",
     "non image deliverable is kept when asked in vietnamese",
     "a follow-up turn packages what the first one made",
+    "a conversation's media downloads as one zip",
     "a job settles exactly once",
     "a provider error fails the job and refunds",
     "a stranded job is reclaimed",
     "a running job can be cancelled",
+    "memory on refuses the turn and refunds",
+    "health reports the provider's memory setting",
     "health shows code version and pacing",
+    "the provider's error banner is recognised by shape",
 )
 
 # Phrases the mock provider reacts to, so failure modes can be exercised on purpose.
 SLOW_PHRASE = "take your time"
 BROKEN_PHRASE = "pretend the provider broke"
+MEMORY_PHRASE = "pretend memory is on"
 
 THREAD_MARKER = re.compile(r"\[thread=([^\]]+)\]")
 
@@ -212,7 +217,8 @@ def tail(path, lines=15):
     return "\n".join("      | " + line for line in content[-lines:]) or "      | (empty)"
 
 
-def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, restart_worker):
+def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, restart_worker,
+               python):
     # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
     # first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
@@ -434,6 +440,32 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         check_zip("a follow-up turn packages what the first one made",
                   "gói tấm hình vừa rồi lại thành một file zip cho tôi tải về", conv_pack)
 
+    # Everything a conversation produced is already on our disk, so packaging it
+    # is the platform's job, not a request to the model (measured: one turn asking
+    # for ten pictures and a zip produced a zip in 1 of 4 runs).
+    if conv_pack:
+        cstatus, cbody = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)
+        held = sum(len(m.get("media") or []) for m in (cbody or {}).get("messages") or []) \
+            + len((cbody or {}).get("orphan_media") or [])
+        zstatus, zblob = http_bytes("{}/conversations/{}/media.zip".format(api, conv_pack), token)
+        names = []
+        if zstatus == 200 and isinstance(zblob, bytes) and zblob[:2] == b"PK":
+            try:
+                names = zipfile.ZipFile(io.BytesIO(zblob)).namelist()
+            except zipfile.BadZipFile:
+                names = []
+        other, _ = http_bytes("{}/conversations/{}/media.zip".format(api, conv_pack), btoken) \
+            if btoken else (0, b"")
+        if held >= 2 and len(names) == held and other == 404:
+            c["a conversation's media downloads as one zip"].passed(
+                "{} media, {} entries {}, other user {}".format(held, len(names), names[:3], other))
+        else:
+            c["a conversation's media downloads as one zip"].failed(
+                "conversation holds {} media, zip {} with {} entries {}, other user {}".format(
+                    held, zstatus, len(names), names[:3], other))
+    else:
+        c["a conversation's media downloads as one zip"].failed("no conversation to package")
+
     # ---- reliability: quota conservation, leases, cancel, health ----
 
     def quota_now():
@@ -539,6 +571,42 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
             "cancel {} final {} quota {} -> {}".format(
                 cancel_status, final.get("status"), q0, quota_now()))
 
+    # The leak measured on 2026-09-23 needed one thing: the shared account's
+    # memory switched on. The worker must look before it speaks. Only the mock
+    # can pretend the switch is on; against the real account the setting is read
+    # for real, and the check after this one asserts what was read.
+    def memory_in_health():
+        hstatus, health = http("GET", worker_health)
+        return hstatus, ((health or {}).get("providers") or {}).get("chatgpt", {}).get("memory")
+
+    q0 = quota_now()
+    if real:
+        c["memory on refuses the turn and refunds"].skip(
+            "needs a provider that can pretend memory is on; covered in mock mode")
+    else:
+        job_id = start_job(MEMORY_PHRASE + " for this one message")
+        final = wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
+        _, memory = memory_in_health()
+        if (final.get("status") == "failed" and final.get("error_kind") == "provider_misconfigured"
+                and quota_now() == q0 and memory == "on"):
+            c["memory on refuses the turn and refunds"].passed(
+                "failed as provider_misconfigured, credit returned, health shows memory on")
+        else:
+            c["memory on refuses the turn and refunds"].failed(
+                "status {} kind {} quota {} -> {} health memory {!r}".format(
+                    final.get("status"), final.get("error_kind"), q0, quota_now(), memory))
+        # A served turn afterwards, so the reading below is of a provider that
+        # looked again, not of the pretend switch.
+        job_id = start_job("a plain turn after the memory check")
+        wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
+
+    hstatus, memory = memory_in_health()
+    if memory == "off":
+        c["health reports the provider's memory setting"].passed("memory {}".format(memory))
+    else:
+        c["health reports the provider's memory setting"].failed(
+            "health memory {!r}, status {}".format(memory, hstatus))
+
     hstatus, health = http("GET", worker_health)
     health = health or {}
     provider_state = (health.get("providers") or {}).get("chatgpt") or {}
@@ -550,6 +618,19 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, r
         c["health shows code version and pacing"].failed(
             "status {} keys {} provider keys {}".format(
                 hstatus, sorted(health)[:8], sorted(provider_state)))
+
+    # The banner's shape was captured from the real site into a fixture, so the
+    # detector is checked in both modes without a real failure to provoke.
+    signature = subprocess.run(
+        [python, str(ROOT / "tests" / "test_dom_signatures.py")],
+        capture_output=True, text=True, cwd=str(ROOT))
+    lines = [l for l in ((signature.stdout or "") + (signature.stderr or "")).splitlines() if l.strip()]
+    summary = next((l for l in reversed(lines) if "PASSED" in l), "")
+    if signature.returncode == 0 and summary.startswith("2/2"):
+        c["the provider's error banner is recognised by shape"].passed(summary)
+    else:
+        c["the provider's error banner is recognised by shape"].failed(
+            "exit {} {}".format(signature.returncode, (summary or (lines[-1] if lines else ""))[:110]))
 
     return checks
 
@@ -636,7 +717,7 @@ def main():
             return wait_healthy(worker_health, 40)[0]
 
         checks = run_checks(api_base, media_dir, args.real, invite_code,
-                            worker_token, worker_health, restart_worker)
+                            worker_token, worker_health, restart_worker, python)
 
     except RuntimeError:
         pass

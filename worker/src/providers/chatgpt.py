@@ -5,8 +5,8 @@ import uuid
 from pathlib import PurePosixPath
 from typing import Optional
 
-from src.providers.base import (BaseProvider, FeatureType, GenerationResult, MediaArtifact,
-                                ProviderError)
+from src.providers.base import (MEMORY_ON_ERROR, BaseProvider, FeatureType, GenerationResult,
+                                MediaArtifact, ProviderError)
 
 HOME = "https://chatgpt.com/"
 TEXTAREA = "#prompt-textarea"
@@ -148,6 +148,40 @@ async ([id, messageId, sandboxPath, token]) => {
 }
 """
 
+# Measured 2026-09-24 by flipping the switch in Settings, Personalization and
+# watching the wire: "Enable memory" is PATCH settings/account_user_setting
+# ?feature=m3m, and GET settings/user reports it as settings.m3m, with
+# settings.sunshine and settings.moonshine following it. A conversation's own
+# memory_scope read "global_enabled" with the switch off, so it says nothing.
+MEMORY_KEYS = ("m3m", "sunshine", "moonshine")
+FETCH_USER_SETTINGS = """
+async ([token, keys]) => {
+    const r = await fetch("/backend-api/settings/user",
+                          {headers: {Authorization: "Bearer " + token}, credentials: "include"});
+    if (!r.ok) return {status: r.status, values: {}};
+    const j = await r.json();
+    const s = (j && j.settings) || {};
+    const values = {};
+    for (const k of keys) if (k in s) values[k] = s[k];
+    return {status: 200, values: values};
+}
+"""
+
+# Measured 2026-09-24 by failing the turn request with a 500 from inside the
+# page: the site paints one div carrying the text-token-text-error token, the
+# server's own message and a Retry button, and no ordinary reply uses that
+# token. Shape, not words: the message comes from the server in whatever
+# language and wording the failure had.
+ERROR_BANNER_PRESENT = """
+() => {
+    for (const el of document.querySelectorAll('main .text-token-text-error')) {
+        const text = (el.textContent || '').trim();
+        if (el.querySelector('button') && text) return text.slice(0, 160);
+    }
+    return null;
+}
+"""
+
 SANDBOX_PATH = re.compile(r"/mnt/data/[^\s\"'`)\]}>,]+")
 
 # A file ChatGPT builds is offered by a button, not a link: there is no href to
@@ -187,6 +221,9 @@ class ChatGPTProvider(BaseProvider):
         self._access_token = None
         self.last_settle = None
         self.last_open = None
+        # What the account's memory switch read before the last turn: on, off
+        # or unknown. Shown in health; None until the first turn looks.
+        self.memory = None
 
     def start(self) -> None:
         # The browser itself is created on first use: the sync driver is bound to
@@ -296,7 +333,39 @@ class ChatGPTProvider(BaseProvider):
         url = page.url
         if "/c/" not in url:
             return None
-        return url.rsplit("/c/", 1)[1].split("?")[0].split("#")[0] or None
+        tail = url.rsplit("/c/", 1)[1].split("?")[0].split("#")[0]
+        # A turn whose first request failed leaves a client-side placeholder in
+        # the address (measured: /c/WEB:<uuid>); the server knows no such thread.
+        if not tail or tail.startswith("WEB:"):
+            return None
+        return tail
+
+    def _read_memory(self, page) -> str:
+        """The account's memory switch as the server reports it: on, off or unknown."""
+        if not self._access_token:
+            self._access_token = page.evaluate(SESSION_TOKEN)
+        if not self._access_token:
+            self.memory = "unknown"
+            return self.memory
+        try:
+            got = page.evaluate(FETCH_USER_SETTINGS, [self._access_token, list(MEMORY_KEYS)])
+        except Exception:
+            got = {}
+        if got.get("status") == 401:
+            self._access_token = None
+        values = got.get("values") or {}
+        if not values:
+            self.memory = "unknown"
+        elif any(values.get(k) for k in MEMORY_KEYS):
+            self.memory = "on"
+        else:
+            self.memory = "off"
+        return self.memory
+
+    def _fail_on_banner(self, page):
+        banner = page.evaluate(ERROR_BANNER_PRESENT)
+        if banner:
+            raise ProviderError("the provider showed its error banner: {}".format(banner))
 
     def _thread_nodes(self, page, thread_id: str):
         """The thread as the server sees it.
@@ -342,6 +411,7 @@ class ChatGPTProvider(BaseProvider):
         while time.time() < deadline:
             page.wait_for_timeout(1000)
             self._check_stop()
+            self._fail_on_banner(page)
             thread_id = self._thread_id(page)
             if not thread_id:
                 if time.time() - started > NO_THREAD_GRACE:
@@ -469,6 +539,7 @@ class ChatGPTProvider(BaseProvider):
             # Once a second is the cancel checkpoint: a job the api has taken
             # away stops here instead of running to the end for nobody.
             self._check_stop()
+            self._fail_on_banner(page)
 
             if page.locator(STOP_BUTTON).count():
                 stable = 0
@@ -545,6 +616,10 @@ class ChatGPTProvider(BaseProvider):
 
     def _run(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
         page = self._open(thread_url)
+        # Look before speaking: with memory on, this turn would be written into
+        # a store that every other user's turn can read (measured 2026-09-23).
+        if self._read_memory(page) == "on":
+            raise ProviderError(MEMORY_ON_ERROR, kind="provider_misconfigured")
         baseline = page.locator(ASSISTANT_TURN).count()
 
         if upload:
