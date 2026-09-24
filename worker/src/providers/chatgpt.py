@@ -2,6 +2,7 @@ import base64
 import re
 import time
 import uuid
+from collections import Counter
 from pathlib import PurePosixPath
 from typing import Optional
 
@@ -174,11 +175,12 @@ async ([token, keys]) => {
 # language and wording the failure had.
 ERROR_BANNER_PRESENT = """
 () => {
+    const found = [];
     for (const el of document.querySelectorAll('main .text-token-text-error')) {
         const text = (el.textContent || '').trim();
-        if (el.querySelector('button') && text) return text.slice(0, 160);
+        if (el.querySelector('button') && text) found.push(text.slice(0, 160));
     }
-    return null;
+    return found;
 }
 """
 
@@ -349,6 +351,8 @@ class ChatGPTProvider(BaseProvider):
         turn is never let through on a stale credential.
         """
         got = {}
+        # Until the read below succeeds, health must not show the last turn's answer.
+        self.memory = "unknown"
         for attempt in range(2):
             if not self._access_token:
                 self._access_token = page.evaluate(SESSION_TOKEN)
@@ -376,18 +380,22 @@ class ChatGPTProvider(BaseProvider):
             self.memory = "unknown"
         return self.memory
 
-    def _banner(self, page):
+    def _banner(self, page) -> list:
+        """Every error banner on the page, oldest first, as its text."""
         try:
-            return page.evaluate(ERROR_BANNER_PRESENT)
+            return list(page.evaluate(ERROR_BANNER_PRESENT) or [])
         except Exception:
             # A page in the middle of a navigation has no context to ask; that
             # is not a banner.
-            return None
+            return []
 
     def _fail_on_banner(self, page, seen_before):
-        banner = self._banner(page)
-        if banner and banner != seen_before:
-            raise ProviderError("the provider showed its error banner: {}".format(banner))
+        # A banner is this turn's only if it was not there before the turn was
+        # sent; a new one is appended after any older ones, so every banner is
+        # counted, not just the first in the page.
+        fresh = list((Counter(self._banner(page)) - Counter(seen_before or [])).elements())
+        if fresh:
+            raise ProviderError("the provider showed its error banner: {}".format(fresh[0]))
 
     def _thread_nodes(self, page, thread_id: str):
         """The thread as the server sees it.

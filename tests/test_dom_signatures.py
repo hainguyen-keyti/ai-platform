@@ -6,7 +6,7 @@
 The fixtures under tests/fixtures/ are snippets saved from the real site by
 tests/provider_probe.py. The error banner must be recognised in its own fixture
 and not in an ordinary reply, so a detector that matches everything, or nothing,
-fails here without a real failure to provoke. Prints N/3 PASSED.
+fails here without a real failure to provoke. Prints N/4 PASSED.
 """
 
 import sys
@@ -24,6 +24,14 @@ CASES = (
     ("chatgpt_reply.html", False),
     ("chatgpt_main_reply.html", False),
 )
+
+# Two banners, an old one first: the detector must report both, or a fresh
+# failure appended after a persisted one would hide behind it.
+TWO_BANNERS = """<main>
+<div class="text-token-text-error border"><span>old: persisted from an earlier turn</span><button>Retry</button></div>
+<article>ordinary turn</article>
+<div class="text-token-text-error border"><span>new: this turn failed</span><button>Retry</button></div>
+</main>"""
 
 results = []
 
@@ -63,6 +71,10 @@ def main():
             page.evaluate("(html) => { document.body.innerHTML = html; }", path.read_text())
             found = bool(page.evaluate(ERROR_BANNER_PRESENT))
             record(name, found == expected, "detector says {}, expected {}".format(found, expected))
+        page.evaluate("(html) => { document.body.innerHTML = html; }", TWO_BANNERS)
+        texts = page.evaluate(ERROR_BANNER_PRESENT)
+        record("two banners, old one first", len(texts) == 2 and texts[-1].startswith("new:"),
+               "detector returned {}".format(texts))
     finally:
         browser.close()
     return finish()

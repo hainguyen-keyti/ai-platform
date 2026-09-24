@@ -69,7 +69,8 @@ def _entry_name(offered, fallback):
     # The offered name came from the provider's site through the worker. Inside
     # the archive it must be a bare, printable file name or it is not used.
     name = PurePosixPath(str(offered or "")).name
-    if name in ("", ".", "..") or "\\" in name or any(ord(c) < 32 for c in name):
+    if (not name.strip() or name in (".", "..") or "\\" in name
+            or any(ord(c) < 32 or ord(c) == 127 for c in name)):
         return fallback
     return name
 

@@ -2,7 +2,7 @@
 """Measure the ChatGPT behaviours the worker depends on, against the real site.
 
     ~/cloakbrowser-env/bin/python tests/provider_probe.py [all|send|dom-settle|memory|banner|cleanup]
-    ~/cloakbrowser-env/bin/python tests/provider_probe.py send,cleanup    # comma-separated, in this order
+    ~/cloakbrowser-env/bin/python tests/provider_probe.py send,cleanup    # comma-separated; always run in PROBES order
     ~/cloakbrowser-env/bin/python tests/provider_probe.py memory-toggle   # by name only
 
 Each probe prints what it saw; nothing here asserts a wish. The output is copied
