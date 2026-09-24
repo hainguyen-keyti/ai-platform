@@ -5,6 +5,10 @@ import httpx
 
 from src.config import settings
 
+# How often an idle worker asks whether a deleted conversation left a thread to
+# remove from the provider's account. Rare work; no need to ask every poll.
+TOMBSTONE_INTERVAL_SECONDS = 10.0
+
 
 class Runner(threading.Thread):
     """Pulls jobs from the API and posts results back.
@@ -24,6 +28,9 @@ class Runner(threading.Thread):
         self.refused = 0
         self.last_error = None
         self.current_job = None
+        self.threads_deleted = 0
+        self.thread_deletions_failed = 0
+        self._next_tombstone_check = 0.0
 
     def stop(self):
         self._stop.set()
@@ -44,6 +51,12 @@ class Runner(threading.Thread):
                     self.last_error = "claim failed, {}: {}".format(type(exc).__name__, exc)
 
                 if job is None:
+                    if time.time() >= self._next_tombstone_check:
+                        self._next_tombstone_check = time.time() + TOMBSTONE_INTERVAL_SECONDS
+                        try:
+                            self._delete_one_thread(client)
+                        except Exception as exc:
+                            self.last_error = "tombstone failed, {}: {}".format(type(exc).__name__, exc)
                     self._stop.wait(settings.poll_interval)
                     continue
 
@@ -61,6 +74,20 @@ class Runner(threading.Thread):
             return None
         response.raise_for_status()
         return response.json()
+
+    def _delete_one_thread(self, client):
+        response = client.post("/internal/tombstones/claim")
+        if response.status_code != 200:
+            return
+        stone = response.json()
+        result = self.pool.delete_thread(stone["provider"], stone["thread_url"])
+        client.post("/internal/tombstones/{}/result".format(stone["id"]),
+                    json={"ok": result.success, "error": result.error})
+        if result.success:
+            self.threads_deleted += 1
+        else:
+            self.thread_deletions_failed += 1
+            self.last_error = "thread deletion failed: {}".format(result.error)
 
     def _heartbeat(self, client, job_id, attempt, lease_seconds, lost, finished):
         interval = max(0.5, lease_seconds / 3.0)

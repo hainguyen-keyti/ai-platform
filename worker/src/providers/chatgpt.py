@@ -184,6 +184,19 @@ ERROR_BANNER_PRESENT = """
 }
 """
 
+# Measured 2026-09-24: this is the call the site's own delete makes; it answers
+# 200 {"success": true} and the thread reads 404 afterwards.
+DELETE_THREAD = """
+async ([id, token]) => {
+    const r = await fetch("/backend-api/conversation/" + id, {
+        method: "PATCH", credentials: "include",
+        headers: {Authorization: "Bearer " + token, "Content-Type": "application/json"},
+        body: JSON.stringify({is_visible: false}),
+    });
+    return {status: r.status};
+}
+"""
+
 SANDBOX_PATH = re.compile(r"/mnt/data/[^\s\"'`)\]}>,]+")
 
 # A file ChatGPT builds is offered by a button, not a link: there is no href to
@@ -698,6 +711,27 @@ class ChatGPTProvider(BaseProvider):
                 error="chatgpt returned nothing after {:.0f}s".format(time.time() - started),
             )
         return GenerationResult(success=True, text=text, media=media, thread_url=landed)
+
+    def delete_thread(self, thread_url: str) -> bool:
+        """Hide a thread in the shared account; a thread the server no longer knows counts as gone."""
+        wanted = thread_url.rsplit("/c/", 1)[-1].split("?")[0].split("#")[0]
+        if not wanted or wanted.startswith("WEB:"):
+            return True
+        page = self._ensure_page()
+        if not page.url.startswith(HOME):
+            page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+        if not self._access_token:
+            self._access_token = page.evaluate(SESSION_TOKEN)
+        if not self._access_token:
+            raise ProviderError("no session token: the provider session is logged out; "
+                                "run scripts/login_provider.py chatgpt")
+        got = page.evaluate(DELETE_THREAD, [wanted, self._access_token])
+        status = got.get("status")
+        if status == 401:
+            self._access_token = None
+        if status in (200, 404):
+            return True
+        raise ProviderError("thread {} was not deleted: server status {}".format(wanted[:8], status))
 
     def chat(self, message: str, history: Optional[list] = None,
              thread_url: Optional[str] = None) -> GenerationResult:

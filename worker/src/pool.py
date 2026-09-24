@@ -156,6 +156,23 @@ class BrowserPool:
                 provider.bind(None, None)
         return GenerationResult.failure("unknown feature {}".format(feature), kind="worker_error")
 
+    def delete_thread(self, provider_name: str, thread_url: str) -> GenerationResult:
+        """Remove one thread from the provider's account, under the same lock as turns."""
+        provider = self._providers.get(provider_name)
+        if provider is None:
+            return GenerationResult.failure(
+                "provider {} unavailable: {}".format(
+                    provider_name, self._errors.get(provider_name, "not enabled on this worker")),
+                kind="provider_error")
+        with self._locks[provider_name]:
+            try:
+                return GenerationResult(success=bool(provider.delete_thread(thread_url)))
+            except ProviderError as exc:
+                return GenerationResult.failure(str(exc), kind=exc.kind)
+            except Exception as exc:
+                return GenerationResult.failure(
+                    "{}: {}".format(type(exc).__name__, exc), kind="worker_error")
+
     def status(self) -> dict:
         out = {}
         for name in settings.providers:

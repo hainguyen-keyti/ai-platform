@@ -63,5 +63,7 @@ def health():
         "jobs_processed": runner.processed,
         "jobs_failed": runner.failed,
         "results_refused": runner.refused,
+        "threads_deleted": runner.threads_deleted,
+        "thread_deletions_failed": runner.thread_deletions_failed,
         "last_error": runner.last_error,
     }

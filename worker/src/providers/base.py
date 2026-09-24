@@ -114,5 +114,9 @@ class BaseProvider(ABC):
                               thread_url: Optional[str] = None) -> GenerationResult:
         ...
 
+    def delete_thread(self, thread_url: str) -> bool:
+        """Remove a thread from the provider's own account; True once it is gone."""
+        raise NotImplementedError("{} cannot delete threads".format(self.name))
+
     def stop(self) -> None:
         return None

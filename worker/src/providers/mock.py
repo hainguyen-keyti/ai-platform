@@ -55,6 +55,11 @@ class MockProvider(BaseProvider):
         # The account-level switch the real provider reads before every turn.
         # A message can flip it on; the next ordinary message flips it back.
         self.memory = "off"
+        self.deleted_threads = []
+
+    def delete_thread(self, thread_url: str) -> bool:
+        self.deleted_threads.append(thread_url)
+        return True
 
     def start(self) -> None:
         return None
@@ -103,9 +108,12 @@ class MockProvider(BaseProvider):
         # media paths at all.
         if any(word in lowered for word in FILE_WORDS):
             self._phase("file appeared")
+            # Shaped like the real reply: a bold sandbox link the interface must
+            # render as text, since the file is already a card of its own.
             return GenerationResult(
                 success=True, thread_url=thread,
-                text="mock archive for: {} [thread={}]".format(message.strip()[:120], thread),
+                text=("Đã gói xong. [**Tải file a_b.zip**](sandbox:/mnt/data/a_b.zip) "
+                      "mock archive for: {} [thread={}]").format(message.strip()[:120], thread),
                 media=[self._store(two_file_zip(), ".zip", "file", message)],
             )
         if any(word in lowered for word in IMAGE_WORDS):
