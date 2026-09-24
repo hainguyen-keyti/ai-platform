@@ -200,6 +200,20 @@ def _sweep_unserved(conn, job_id=None):
             _refund(conn, job["user_id"])
 
 
+def note_workers(providers):
+    """Record that a worker serving these providers is alive right now.
+
+    Claiming is not the only proof of life: a runner deliberately pausing
+    between turns, or sitting out a cooldown, is working exactly as intended.
+    """
+    serves = [p for p in (providers or []) if p in PROVIDERS]
+    if not serves:
+        return {"noted": []}
+    with db() as conn:
+        _note_worker(conn, serves)
+    return {"noted": serves}
+
+
 def claim_next_job(providers=None):
     lease = "+{} seconds".format(settings.job_lease_seconds)
     serves = [p for p in (providers or []) if p in PROVIDERS]
@@ -264,7 +278,7 @@ def heartbeat(job_id, attempt):
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            job = one(conn, "SELECT status, attempts FROM jobs WHERE id = ?", (job_id,))
+            job = one(conn, "SELECT status, attempts, provider FROM jobs WHERE id = ?", (job_id,))
             if not job:
                 raise HTTPException(status_code=404, detail="job not found")
             alive = job["status"] == "running" and job["attempts"] == attempt
@@ -273,6 +287,10 @@ def heartbeat(job_id, attempt):
                     "UPDATE jobs SET lease_expires_at = datetime('now', ?) WHERE id = ?",
                     ("+{} seconds".format(settings.job_lease_seconds), job_id),
                 )
+                # A worker in the middle of a turn stops asking for work, so its
+                # heartbeat is the proof it is alive. Without this, one five
+                # minute picture made every job queued behind it look unserved.
+                _note_worker(conn, [job["provider"]])
             conn.execute("COMMIT")
         except Exception:
             _rollback(conn)

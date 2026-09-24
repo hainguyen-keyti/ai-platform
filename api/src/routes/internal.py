@@ -1,11 +1,16 @@
 from fastapi import APIRouter, Depends, Response
 
-from src.jobs import claim_next_job, heartbeat, record_progress, record_result
+from src.jobs import claim_next_job, heartbeat, note_workers, record_progress, record_result
 from src.models import TombstoneResult, WorkerClaim, WorkerHeartbeat, WorkerProgress, WorkerResult
 from src.security import require_worker
 from src.tombstones import claim_tombstone, settle_tombstone
 
 router = APIRouter(prefix="/internal", tags=["internal"])
+
+
+@router.post("/workers/ping")
+def ping(body: WorkerClaim = WorkerClaim(), _: bool = Depends(require_worker)):
+    return note_workers(body.providers)
 
 
 @router.post("/jobs/claim")

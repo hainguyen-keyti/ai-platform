@@ -113,10 +113,14 @@ class Check:
         self.detail = "not reached"
 
     def passed(self, detail=""):
+        if self.skipped:
+            return
         self.ok = True
         self.detail = detail
 
     def failed(self, detail):
+        if self.skipped:
+            return
         self.ok = False
         self.detail = detail
 
@@ -266,6 +270,10 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     checks = [Check(n) for n in CHECKS]
     c = dict(zip([x.name for x in checks], checks))
     restart_worker = worker_ctl["restart"]
+
+    def wanted(*names):
+        """False when this mode already skipped the check, so its turns are never spent."""
+        return not any(c[n].skipped for n in names)
     # A provider that cannot be asked for something says so once, here, and the
     # check below it sees an already-skipped entry and leaves it alone.
     if real:
@@ -371,7 +379,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     else:
         c["image job produces file"].failed("status {} body {}".format(status, body))
 
-    if media_id:
+    if media_id and wanted("video script job returns text"):
         status, body = http("POST", api + "/video/script",
                             {"provider": provider, "media_id": media_id, "duration": 5},
                             token=token)
@@ -384,7 +392,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                 c["video script job returns text"].failed(err or "empty script")
         else:
             c["video script job returns text"].failed("status {} body {}".format(status, body))
-    else:
+    elif wanted("video script job returns text"):
         c["video script job returns text"].failed("skipped, no media id from the image check")
 
     status, mine = http("GET", api + "/media", token=token)
@@ -515,22 +523,26 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             err or "nothing but pictures came back: {}".format(
                 (result.get("text") or "")[:120] or "no reply"))
 
-    check_zip("non image deliverable is kept",
-              "build me a zip file holding a.txt and b.txt")
+    if wanted("non image deliverable is kept"):
+        check_zip("non image deliverable is kept",
+                  "build me a zip file holding a.txt and b.txt")
     # The same request in the language the user actually types in. The button
     # ChatGPT offers is labelled in that language, and matching on the English
     # word let a real request through unnoticed.
-    check_zip("non image deliverable is kept when asked in vietnamese",
-              "Tạo cho tôi một file zip chứa hai file text tên a.txt và b.txt")
+    if wanted("non image deliverable is kept when asked in vietnamese"):
+        check_zip("non image deliverable is kept when asked in vietnamese",
+                  "Tạo cho tôi một file zip chứa hai file text tên a.txt và b.txt")
 
     # The journey a real user took, which passed every check above while being
     # broken: make something, then in the same conversation ask for it packaged.
     # Its download button was labelled neither in English nor with a file name.
-    drawn, draw_err, conv_pack = chat_once("vẽ cho tôi một hình vuông màu xanh")
-    if not conv_pack:
+    conv_pack = None
+    if wanted("a follow-up turn packages what the first one made"):
+        drawn, draw_err, conv_pack = chat_once("vẽ cho tôi một hình vuông màu xanh")
+    if not conv_pack and wanted("a follow-up turn packages what the first one made"):
         c["a follow-up turn packages what the first one made"].failed(
             draw_err or "the first turn produced no conversation")
-    else:
+    elif conv_pack:
         check_zip("a follow-up turn packages what the first one made",
                   "gói tấm hình vừa rồi lại thành một file zip cho tôi tải về", conv_pack)
 
@@ -546,7 +558,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                 return status, []
         return status, []
 
-    if conv_pack:
+    if conv_pack and wanted("a conversation's media downloads as one zip"):
         cstatus, cbody = http("GET", "{}/conversations/{}".format(api, conv_pack), token=token)
         messages = (cbody or {}).get("messages") or []
         held = sum(len(m.get("media") or []) for m in messages) \
@@ -570,7 +582,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                 "conversation holds {} media, zip {} with {} entries {}, other user {}, "
                 "one message {} with {} entries, unknown message {}".format(
                     held, zstatus, len(names), names[:3], other, mstatus, len(mnames), unknown))
-    else:
+    elif wanted("a conversation's media downloads as one zip"):
         c["a conversation's media downloads as one zip"].failed("no conversation to package")
 
     def quota_now():
@@ -717,7 +729,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # A result carrying the wrong attempt number must be refused outright, not
     # merged, or a reclaimed job could be finished twice.
     q0 = quota_now()
-    job_id = start_job(SLOW_PHRASE + ": ping")
+    job_id = start_job(SLOW_PHRASE + ": ping") if wanted("a job settles exactly once") else None
     seen = wait_state(job_id, ("running",), 10) if job_id else {}
     forged_status, _ = http("POST", "{}/internal/jobs/{}/result".format(api, job_id),
                             {"status": "done", "text": "forged by a stale attempt",
@@ -780,7 +792,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                     restarted, final.get("status"), final.get("attempts"), q0, quota_now()))
 
     q0 = quota_now()
-    job_id = start_job(SLOW_PHRASE + ": cancel me")
+    job_id = start_job(SLOW_PHRASE + ": cancel me") if wanted("a running job can be cancelled") else None
     seen = wait_state(job_id, ("running",), 10) if job_id else {}
     cancel_status, _ = http("POST", "{}/jobs/{}/cancel".format(api, job_id), token=token) \
         if job_id else (0, None)
@@ -800,12 +812,15 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # The cap is the user's own quota_daily, read back rather than assumed, so a
     # DEFAULT_QUOTA in the caller's shell cannot fail this for the wrong reason.
     # A run that crosses 00:00 UTC refills once on its own; that would show here.
-    me = http("GET", api + "/auth/me", token=token)[1] or {}
-    cap = me.get("quota_daily")
+    if not wanted("quota refills once a day up to the cap"):
+        me, cap = {}, None
+    else:
+        me = http("GET", api + "/auth/me", token=token)[1] or {}
+        cap = me.get("quota_daily")
     q_spent = quota_now()
-    restarted = restart_api({"CLOCK_OFFSET_SECONDS": "86400"})
+    restarted = restart_api({"CLOCK_OFFSET_SECONDS": "86400"}) if cap else False
     q_first, q_second = quota_now(), quota_now()
-    job_id = start_job("a plain turn after the day changed")
+    job_id = start_job("a plain turn after the day changed") if cap else None
     wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
     q_after_job, q_again = quota_now(), quota_now()
     if (restarted and cap and q_spent is not None and q_spent < cap and q_first == cap
@@ -888,7 +903,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     q0 = quota_now()
     stopped = worker_ctl["stop"]()
     orphan = start_job("nobody is serving this one")
-    final = wait_state(orphan, ("failed", "done", "cancelled"), 45) if orphan else {}
+    final = wait_state(orphan, ("failed", "done", "cancelled"), 60) if orphan else {}
     worker_ctl["start"]()
     if (stopped and final.get("status") == "failed"
             and final.get("error_kind") == "no_worker" and quota_now() == q0):
@@ -991,7 +1006,9 @@ def main():
         "JOB_MAX_ATTEMPTS": "3",
         # A job nobody claims is failed and refunded this soon, so the check for
         # it does not have to wait out a production timeout.
-        "NO_WORKER_SECONDS": "5",
+        # Comfortably above the gate's own pacing gap, so a worker pausing
+        # between turns is never mistaken for a dead one.
+        "NO_WORKER_SECONDS": "20",
     }
 
     try:

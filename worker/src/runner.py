@@ -59,6 +59,13 @@ class Runner(threading.Thread):
             while not self._stop.is_set():
                 hold = self.pool.hold_seconds(self.provider)
                 if hold > 0:
+                    # Pausing on purpose is not being dead: say so, or the api
+                    # fails the jobs waiting for this provider as unserved.
+                    try:
+                        client.post("/internal/workers/ping",
+                                    json={"providers": [self.provider]})
+                    except Exception:
+                        pass
                     self._stop.wait(min(hold, 5.0))
                     continue
 
