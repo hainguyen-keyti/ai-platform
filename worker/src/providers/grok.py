@@ -30,6 +30,12 @@ SERVER_POLL_SECONDS = 2
 # creates the assistant row before the words arrive, and inflightResponses can
 # be empty in that gap, which is exactly how an earlier settle chose nothing.
 START_FLOOR = 4
+# A turn that finishes carrying nothing is a refusal, whatever the cause. Grok
+# says nothing about it in any endpoint: measured 2026-09-24, a spent free tier
+# leaves the assistant row finished and empty while /rest/rate-limits still
+# reports a full window, and only the page says "Free tier limit reached". So
+# the shape decides (finished and empty), and the page is quoted for the person.
+EMPTY_GRACE = 12
 OPEN_ATTEMPTS = 3
 OPEN_RETRY_SECONDS = 10
 CANCEL_THREAD_WAIT = 15
@@ -151,15 +157,17 @@ class GrokProvider(BaseProvider):
                 return True
         return False
 
-    def _dismiss_cookie_dialog(self, page):
-        # The dialog can sit over the composer. Its own reject or close control
-        # only; the platform never accepts optional cookies on someone's behalf.
+    def _dismiss_overlays(self, page):
+        # Anything that can sit over the composer: the cookie dialog and the
+        # product tips. Their own reject or dismiss control only; the platform
+        # never accepts optional cookies on someone's behalf.
         for sel in ("#onetrust-reject-all-handler", "#onetrust-close-btn-container button",
-                    "button[aria-label='Close']"):
+                    "button:has-text('Dismiss')", "button[aria-label='Close']"):
             try:
-                if page.locator(sel).count() and page.locator(sel).first.is_visible():
-                    page.locator(sel).first.click(timeout=3000)
-                    return
+                found = page.locator(sel)
+                if found.count() and found.first.is_visible():
+                    found.first.click(timeout=3000)
+                    page.wait_for_timeout(300)
             except Exception:
                 continue
 
@@ -188,7 +196,7 @@ class GrokProvider(BaseProvider):
         for attempt in range(OPEN_ATTEMPTS):
             page.goto(target, timeout=90000, wait_until="domcontentloaded")
             cleared = self._wait_for_challenge(page)
-            self._dismiss_cookie_dialog(page)
+            self._dismiss_overlays(page)
             composer = self._composer(page, 30 if cleared else 5)
             landed = self.thread_id(page.url)
             self.last_open = {"wanted": (wanted or "new")[:8], "cleared": cleared,
@@ -212,12 +220,43 @@ class GrokProvider(BaseProvider):
                 (wanted or "a new chat")[:8], (self.last_open or {}).get("cleared"),
                 (self.last_open or {}).get("landed")))
 
+    def _composer_text(self, page, composer) -> str:
+        try:
+            return (page.locator(composer).first.inner_text() or "").strip()
+        except Exception:
+            return ""
+
     def _send(self, page, composer, prompt: str):
-        box = page.locator(composer).first
-        box.click(timeout=15000)
-        page.keyboard.type(prompt)
-        page.wait_for_timeout(400)
-        page.keyboard.press("Enter")
+        """Type the turn and prove it landed before pressing Enter.
+
+        Measured 2026-09-24: a click that hits an overlay leaves the keystrokes
+        going nowhere, Enter then sends an empty turn, and grok answers it with
+        an assistant row that never fills. Reading the composer back is what
+        tells the difference between a send and a silent miss.
+        """
+        for attempt in range(3):
+            self._dismiss_overlays(page)
+            box = page.locator(composer).first
+            try:
+                box.scroll_into_view_if_needed(timeout=5000)
+            except Exception:
+                pass
+            try:
+                box.click(timeout=8000)
+            except Exception:
+                # Visible but unclickable, usually something painted over it.
+                try:
+                    box.evaluate("(el) => el.focus()")
+                except Exception:
+                    pass
+            page.keyboard.type(prompt)
+            page.wait_for_timeout(500)
+            if prompt[:40] in self._composer_text(page, composer):
+                page.keyboard.press("Enter")
+                return
+            self._phase("retrying the composer")
+            page.wait_for_timeout(1500)
+        raise ProviderError("the turn never reached grok's composer")
 
     @staticmethod
     def _turn_content(turn):
@@ -244,16 +283,17 @@ class GrokProvider(BaseProvider):
         last = answers[-1]
         if last.get("partial"):
             return last, False, status
-        text, assets = self._turn_content(last)
-        if not text and not assets:
-            # Finished-looking and empty means the words have not arrived yet.
-            return last, False, status
         node_status, node_raw = self._api(page, SERVER_NODES.format(cid))
         try:
             inflight = json.loads(node_raw).get("inflightResponses") if node_status == 200 else None
         except ValueError:
             inflight = None
-        return last, inflight == [], status
+        if inflight != []:
+            return last, "working", status
+        text, assets = self._turn_content(last)
+        # Finished and empty is not finished: either the words are a moment
+        # behind, or the provider refused. The caller waits a little, then says so.
+        return last, ("done" if (text or assets) else "empty"), status
 
     def _baseline_ids(self, page, cid):
         if not cid:
@@ -316,6 +356,16 @@ class GrokProvider(BaseProvider):
                           "size": len(blob), "mime": mime}))
         return artifacts
 
+    def _refusal_reason(self, page) -> str:
+        """What the page says about a turn that produced nothing, for the person to read."""
+        try:
+            said = page.evaluate(
+                "() => ((document.querySelector('main') || document.body).innerText || '')"
+                ".split('\\n').map(s => s.trim()).filter(Boolean).slice(-6).join(' ')")
+        except Exception:
+            said = ""
+        return (said or "no reason shown")[:200]
+
     def _run(self, prompt: str, thread_url: Optional[str] = None):
         self.last_cancelled_thread = None
         page, composer = self._open(thread_url)
@@ -330,6 +380,7 @@ class GrokProvider(BaseProvider):
             deadline = started + REPLY_TIMEOUT
             turn, settled = None, False
             announced = False
+            empty_since = None
             while time.time() < deadline:
                 page.wait_for_timeout(SERVER_POLL_SECONDS * 1000)
                 self._check_stop()
@@ -342,14 +393,22 @@ class GrokProvider(BaseProvider):
                     elif time.time() - started > THREAD_WAIT:
                         raise ProviderError("grok never opened a thread for this turn")
                     continue
-                turn, settled, status = self._server_turn(page, cid, baseline_ids)
+                turn, state, status = self._server_turn(page, cid, baseline_ids)
                 if status in (401, 403):
                     raise ProviderError(
                         "grok refused to report the turn (status {})".format(status))
                 if turn and not announced:
                     self._phase("reply started")
                     announced = True
-                if settled:
+                if state == "empty":
+                    empty_since = empty_since or time.time()
+                    if time.time() - empty_since > EMPTY_GRACE:
+                        raise ProviderError(
+                            "grok answered with nothing: {}".format(self._refusal_reason(page)))
+                    continue
+                empty_since = None
+                if state == "done":
+                    settled = True
                     break
         except JobCancelled:
             landed = self.thread_id(page.url)
