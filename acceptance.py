@@ -1038,6 +1038,11 @@ def main():
             # Real mode drives one account, and one browser, at a time. Mock mode
             # serves two so the two-provider machinery is exercised every run.
             "PROVIDERS": args.provider if args.real else "chatgpt,grok",
+            # Measured 2026-09-24: the free grok account answers a short burst
+            # and then asks for about nine minutes, so a real grok run paces
+            # itself far wider than a chatgpt one.
+            "MIN_GAP_SECONDS__GROK": "150" if args.real else "0",
+            "COOLDOWN_BASE_SECONDS__GROK": "600" if args.real else "1",
         }
         worker_health = "http://127.0.0.1:{}/health".format(worker_port)
         worker_proc, worker_log = start_service(

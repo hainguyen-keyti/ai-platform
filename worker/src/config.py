@@ -24,5 +24,27 @@ class Settings:
             p.strip() for p in os.environ.get("PROVIDERS", "chatgpt").split(",") if p.strip()
         ]
 
+    def pacing(self, provider: str) -> dict:
+        """The pacing for one provider, with per-provider overrides.
+
+        Two accounts on one worker do not share a rhythm: measured 2026-09-24, a
+        free grok account answers a short burst and then asks for about nine
+        minutes, while the chatgpt account is happy with a few seconds. Any of
+        the four values can be set per provider, for example
+        MIN_GAP_SECONDS__GROK=120.
+        """
+        suffix = "__{}".format(provider.upper())
+
+        def value(name, fallback):
+            raw = os.environ.get(name + suffix)
+            return float(raw) if raw not in (None, "") else fallback
+
+        return {
+            "min_gap": value("MIN_GAP_SECONDS", self.min_gap),
+            "image_budget": int(value("IMAGE_BUDGET_3H", self.image_budget)),
+            "cooldown_base": value("COOLDOWN_BASE_SECONDS", self.cooldown_base),
+            "cooldown_max": value("COOLDOWN_MAX_SECONDS", self.cooldown_max),
+        }
+
 
 settings = Settings()

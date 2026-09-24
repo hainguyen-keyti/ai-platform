@@ -28,7 +28,9 @@ def build_provider(name: str):
 class ProviderHealth:
     """What one provider has been doing lately, and whether to leave it alone."""
 
-    def __init__(self):
+    def __init__(self, provider="chatgpt"):
+        self.provider = provider
+        self.pacing = settings.pacing(provider)
         self.consecutive_errors = 0
         self.cooldown_until = 0.0
         self.last_turn_at = 0.0
@@ -43,8 +45,8 @@ class ProviderHealth:
             # Every consecutive failure doubles the pause. Retrying into a wall
             # is how a throttled account turns into a banned one.
             self.consecutive_errors += 1
-            pause = min(settings.cooldown_base * 2 ** (self.consecutive_errors - 1),
-                        settings.cooldown_max)
+            pause = min(self.pacing["cooldown_base"] * 2 ** (self.consecutive_errors - 1),
+                        self.pacing["cooldown_max"])
             self.cooldown_until = time.time() + pause
             self.last_provider_error = result.error
         elif result.success:
@@ -61,8 +63,9 @@ class ProviderHealth:
 
     def hold_seconds(self) -> float:
         now = time.time()
-        wait = max(0.0, self.cooldown_until - now, self.last_turn_at + settings.min_gap - now)
-        if settings.image_budget and self.images_in_window() >= settings.image_budget:
+        wait = max(0.0, self.cooldown_until - now,
+                   self.last_turn_at + self.pacing["min_gap"] - now)
+        if self.pacing["image_budget"] and self.images_in_window() >= self.pacing["image_budget"]:
             wait = max(wait, self.image_times[0] + IMAGE_WINDOW_SECONDS - now)
         return wait
 
@@ -89,7 +92,7 @@ class BrowserPool:
         self._providers = {}
         self._locks = {}
         self._errors = {}
-        self._health = {name: ProviderHealth() for name in settings.providers}
+        self._health = {name: ProviderHealth(name) for name in settings.providers}
 
     def start(self):
         for name in settings.providers:
@@ -199,6 +202,7 @@ class BrowserPool:
                 "error": self._errors.get(name),
             }
             entry.update(self._health[name].snapshot())
+            entry["pacing"] = self._health[name].pacing
             # Diagnostics the provider chooses to expose: how the last turn was
             # settled, whether the last thread open landed where it aimed, and
             # what the account's memory switch read before the last turn.
