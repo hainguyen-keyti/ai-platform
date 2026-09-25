@@ -1011,6 +1011,11 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     if real:
         c["memory on refuses the turn and refunds"].skip(
             "needs a provider that can pretend memory is on; covered in mock mode")
+        # The no-worker check above left a worker that has never sent a turn, and
+        # a worker that has not looked reports no reading at all.
+        if wanted("health reports the provider's memory setting"):
+            job_id = start_job("a plain turn after the worker came back")
+            wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
     else:
         job_id = start_job(MEMORY_PHRASE + " for this one message")
         final = wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
