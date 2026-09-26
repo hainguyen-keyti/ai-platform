@@ -8,7 +8,7 @@ editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ dur
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one.
-Prints N/12 PASSED.
+Prints N/17 PASSED.
 """
 
 import json
@@ -80,7 +80,8 @@ class Keyboard:
         self.page = page
 
     def insert_text(self, text):
-        self.page.text += text
+        # truncate: a composer that loses the end of a long paste.
+        self.page.text += text[:self.page.truncate] if self.page.truncate else text
 
     def type(self, text, *args, **kwargs):
         for ch in text:
@@ -93,13 +94,41 @@ class Keyboard:
         if key == "Enter":
             if self.page.text.strip():
                 self.page.sent.append(self.page.text)
+                self.page.on_sent()
             self.page.text = ""
         elif key == "Backspace":
             self.page.text = ""
 
 
+class Response:
+    def __init__(self, url, status=200, body=b"", ctype="application/json", method="POST"):
+        self.url = url
+        self.status = status
+        self._body = body
+        self.headers = {"content-type": ctype}
+        self.request = type("Request", (), {"method": method})()
+
+    def finished(self):
+        return None
+
+    def body(self):
+        return self._body
+
+
+class Bubbles:
+    def __init__(self, page):
+        self.page = page
+
+    def all_inner_texts(self):
+        return list(self.page.bubbles)
+
+
 class Page:
-    """A composer page, or a settings page that lands on `landed` with one switch."""
+    """A composer page, or a settings page that lands on `landed` with one switch.
+
+    A turn sent from it makes the page emit `replies` (fake responses) to its listeners, move to
+    `thread`, and paint `answer` as a new bubble.
+    """
 
     def __init__(self, clock, composer=True, landed=None, checked=None):
         self.clock = clock
@@ -109,7 +138,28 @@ class Page:
         self.url = "https://gemini.google.com/app"
         self.text = ""
         self.sent = []
+        self.truncate = None
         self.keyboard = Keyboard(self)
+        self.listeners = []
+        self.replies = []
+        self.bubbles = []
+        self.answer = ""
+        self.thread = "https://gemini.google.com/app/0123456789abcdef"
+
+    def on(self, event, handler):
+        if event == "response":
+            self.listeners.append(handler)
+
+    def remove_listener(self, event, handler):
+        if handler in self.listeners:
+            self.listeners.remove(handler)
+
+    def on_sent(self):
+        self.url = self.thread
+        self.bubbles.append(self.answer)
+        for response in self.replies:
+            for handler in list(self.listeners):
+                handler(response)
 
     def goto(self, url, *args, **kwargs):
         self.url = self.landed or url
@@ -118,6 +168,8 @@ class Page:
         self.clock.now += ms / 1000.0
 
     def locator(self, selector):
+        if "message-content" in selector:
+            return Bubbles(self)
         if "switch" in selector:
             return Box(self, self.checked is not None)
         parts = [p.strip() for p in selector.split(",")]
@@ -166,16 +218,30 @@ def main():
     record("no composer is not ready", provider_on(page)._composer_ready(page, 5) is False, "")
 
     prompt = "user: first line\n\nassistant: second line\n\nReply to this next message only:\nthird"
+
+    def send_on(page):
+        try:
+            provider_on(page)._send(page, prompt)
+            return ""
+        except Exception as exc:
+            return "{}: {}".format(type(exc).__name__, str(exc)[:60])
+
     page = Page(clock)
-    provider_on(page)._send(page, prompt)
+    err = send_on(page)
     record("a multi-line prompt leaves as exactly one turn", page.sent == [prompt],
-           "sent {}".format([len(s) for s in page.sent]))
+           "sent {} {}".format([len(s) for s in page.sent], err))
 
     page = Page(clock)
     page.text = prompt
-    provider_on(page)._send(page, prompt)
+    err = send_on(page)
     record("a prompt already in the composer is sent once, not twice", page.sent == [prompt],
-           "sent {}".format([len(s) for s in page.sent]))
+           "sent {} {}".format([len(s) for s in page.sent], err))
+
+    page = Page(clock)
+    page.truncate = 60
+    err = send_on(page)
+    record("a prompt that lands cut short is not sent", page.sent == [] and bool(err),
+           "sent {} {}".format(len(page.sent), err))
 
     cases = json.loads((ROOT / "tests" / "fixtures" / "gemini_image_responses.json").read_text())["cases"]
     wrong = []
@@ -234,6 +300,59 @@ def main():
         outcome = exc.kind
     record("a switch that never renders reads unknown and does not block",
            got == "unknown" and outcome == "sent", "read {!r}, outcome {!r}".format(got, outcome))
+
+    # Whole turns, through _run, on the fake page.
+    stream_ok = Response("https://gemini.google.com/_/BardChatUi/data/assistant.lamda."
+                         "BardFrontendService/StreamGenerate?bl=x", status=200, body=b"streamed")
+    off = lambda: Page(clock, composer=False,  # noqa: E731
+                       landed="https://gemini.google.com/personalization-settings", checked="false")
+
+    settings = Page(clock, composer=False, landed="https://gemini.google.com/personalization-settings",
+                    checked="true")
+    page = Page(clock)
+    page.replies, page.answer = [stream_ok], "should never be asked"
+    try:
+        provider_on(page, settings)._run("hello")
+        outcome = "ran"
+    except ProviderError as exc:
+        outcome = exc.kind
+    record("a turn with personal context on is refused before anything is sent",
+           outcome == "provider_misconfigured" and page.sent == [],
+           "outcome {!r}, sent {}".format(outcome, len(page.sent)))
+
+    page = Page(clock)
+    page.replies = [Response(stream_ok.url, status=500)]
+    try:
+        result = provider_on(page, off())._run("hello")
+        outcome = "returned success={}".format(result.success)
+    except ProviderError as exc:
+        outcome = "raised"
+    record("a stream that answers 500 is a provider failure, never a reply", outcome == "raised",
+           outcome)
+
+    page = Page(clock)
+    page.answer = ""
+    page.replies = [
+        Response("https://lh3.googleusercontent.com/rd-gg-dl/generated", body=b"G" * 12623,
+                 ctype="image/jpeg", method="GET"),
+        Response("https://lh3.googleusercontent.com/rd-gg/users-upload", body=b"U" * 286,
+                 ctype="image/png", method="GET"),
+        Response("https://lh3.googleusercontent.com/a/avatar", body=b"A" * 2120,
+                 ctype="image/jpeg", method="GET"),
+        stream_ok,
+    ]
+    result = provider_on(page, off())._run("Generate an image: a star")
+    sizes = [m.metadata.get("size") for m in result.media]
+    record("a picture turn keeps the generated picture and nothing else",
+           result.success and sizes == [12623], "success {} sizes {}".format(result.success, sizes))
+
+    page = Page(clock)
+    page.answer, page.replies = "a plain reply", [stream_ok]
+    result = provider_on(page, off())._run("hello")
+    record("a text turn returns the new bubble and its thread",
+           result.success and result.text == "a plain reply"
+           and (result.thread_url or "").endswith("/app/0123456789abcdef"),
+           "success {} text {!r} thread {}".format(result.success, result.text, result.thread_url))
 
     for url, expected in (("https://gemini.google.com/app/659ed82f23b56ced", "659ed82f23b56ced"),
                           ("https://gemini.google.com/app", None)):
