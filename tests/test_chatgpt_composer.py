@@ -8,7 +8,7 @@ paints textarea#pending-home-input and mounts the real composer, a ProseMirror
 div with no id, about ten seconds later; #prompt-textarea is gone; a failed first
 turn leaves /c/local-chatgpt:<uuid> in the address. The driver used to call a
 signed-in session "probably logged out" whenever the composer did not appear.
-Prints N/8 PASSED.
+Prints N/11 PASSED.
 """
 
 import sys
@@ -82,7 +82,8 @@ class Keyboard:
         self.page = page
 
     def insert_text(self, text):
-        self.page.text += text
+        # truncate: a composer that loses the end of a long paste.
+        self.page.text += text[:self.page.truncate] if self.page.truncate else text
 
     def type(self, text, *args, **kwargs):
         # What Playwright does: one key per character, and a newline is Enter.
@@ -99,7 +100,8 @@ class Keyboard:
                 self.page.sent.append(self.page.text)
             self.page.text = ""
         elif key in ("ControlOrMeta+a", "Backspace"):
-            if key == "Backspace":
+            # stuck: a composer that refuses to be cleared.
+            if key == "Backspace" and not self.page.stuck:
                 self.page.text = ""
 
 
@@ -112,6 +114,8 @@ class Page:
         self.text = ""
         self.enters = 0
         self.sent = []
+        self.truncate = None
+        self.stuck = False
         self.keyboard = Keyboard(self)
 
     def goto(self, url, *args, **kwargs):
@@ -197,6 +201,35 @@ def main():
     record("a multi-line prompt leaves as exactly one turn",
            page.enters == 1 and len(page.sent) == 1 and page.sent[0] == prompt,
            "enters {} sent {} {}".format(page.enters, len(page.sent), err))
+
+    def send_on(page):
+        try:
+            provider_on(page)._send(page, prompt)
+            return ""
+        except ProviderError as exc:
+            return str(exc)
+        except Exception as exc:
+            return "{}: {}".format(type(exc).__name__, exc)
+
+    page = Page(clock, has={PROSEMIRROR})
+    page.text = "an old draft left in the box"
+    err = send_on(page)
+    record("a draft left in the composer is not sent along",
+           page.sent == [prompt], "sent {!r} {}".format([s[:40] for s in page.sent], err))
+
+    page = Page(clock, has={PROSEMIRROR})
+    page.truncate = 60
+    err = send_on(page)
+    record("a prompt that lands cut short is not sent", page.sent == [] and bool(err),
+           "sent {} error {!r}".format(len(page.sent), err[:60]))
+
+    page = Page(clock, has={PROSEMIRROR})
+    page.text = "an old draft left in the box"
+    page.stuck = True
+    err = send_on(page)
+    record("a composer that cannot be cleared is not typed into twice",
+           page.sent == [] and bool(err), "sent {!r} error {!r}".format(
+               [s[:40] for s in page.sent], err[:60]))
 
     for url, expected in (("https://chatgpt.com/c/local-chatgpt%3A79ca01df-bb1f", None),
                           ("https://chatgpt.com/c/WEB:79ca01df-bb1f", None),

@@ -25,7 +25,7 @@ One real turn was spent (thread 6ab805cb, left in the account until the owner sa
 | Enter | sends once the ProseMirror is mounted: composer empty after 0.5s |
 | One turn or several | **one**: the page reads "You said: Reply with the single word: ok This second line belongs to the same turn." and the server holds exactly one user node |
 | Send button | `button[aria-label="Send"][type="submit"]`, no data-testid; `button[data-testid="send-button"]` is gone |
-| Stop button | `[data-testid="stop-button"]` was never seen during a turn |
+| Stop button | `[data-testid="stop-button"]` was never seen during a turn. A second real turn (a six-sentence reply, thread 6ab80afc) recorded the composer's own buttons every second: at 2.0s the last one was `button[aria-label="Stop"]` (type button, no testid); at 7.2s, the reply done, it had become `aria-label="Start Voice"`. No "Stop" stayed on the page |
 
 ## Files
 

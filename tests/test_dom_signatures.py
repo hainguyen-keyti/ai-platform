@@ -6,7 +6,7 @@
 The fixtures under tests/fixtures/ are snippets saved from the real site by
 tests/provider_probe.py. The error banner must be recognised in its own fixture
 and not in an ordinary reply, so a detector that matches everything, or nothing,
-fails here without a real failure to provoke. Prints N/7 PASSED.
+fails here without a real failure to provoke. Prints N/10 PASSED.
 """
 
 import sys
@@ -50,6 +50,13 @@ IMAGE_CASES = (
     ("chatgpt_generated_image.html", 1),
     ("chatgpt_user_attachment.html", 0),
 )
+
+# A notice that is not a failure: role alert with a button, but not the measured
+# banner. Counting it would throw a good answer away as a provider error.
+NEUTRAL_ALERT = """<main>
+<div data-turn-key="t1">an ordinary reply</div>
+<div role="alert">Memory is full<button>Manage</button></div>
+</main>"""
 
 GIVE_BLOBS = """
 async () => {
@@ -124,6 +131,27 @@ def main():
             kept = page.evaluate(COLLECT_CANDIDATE_IMAGES)
             record(name + " pictures kept", len(kept) == expected,
                    "{} img given a blob, {} kept, expected {}".format(given, len(kept), expected))
+
+        # Two turns in one thread, each with its own picture: only the last turn's
+        # picture is this turn's result, whatever its blob url happens to be.
+        picture_turn = (FIXTURES / "chatgpt_generated_image.html").read_text()
+        page.evaluate("(html) => { document.body.innerHTML = html; }", picture_turn + picture_turn)
+        given = page.evaluate(GIVE_BLOBS)
+        kept = page.evaluate(COLLECT_CANDIDATE_IMAGES)
+        record("an earlier turn's picture is not this turn's", len(kept) == 1,
+               "{} img given a blob, {} kept, expected 1".format(given, len(kept)))
+
+        page.evaluate("(html) => { document.body.innerHTML = html; }", NEUTRAL_ALERT)
+        found = page.evaluate(ERROR_BANNER_PRESENT)
+        record("a neutral alert is not a failure", not found, "detector returned {}".format(found))
+
+        from src.providers.chatgpt import ASSISTANT_TURN
+        page.evaluate("(html) => { document.body.innerHTML = html; }",
+                      (FIXTURES / "chatgpt_reply.html").read_text())
+        replies = page.locator(ASSISTANT_TURN)
+        text = replies.last.inner_text().strip() if replies.count() else ""
+        record("the reply is found in the new markup", replies.count() == 1 and bool(text),
+               "{} reply element(s), {} characters".format(replies.count(), len(text)))
     finally:
         browser.close()
     return finish()

@@ -71,13 +71,19 @@ async (url) => {
 # apart: skip the user turn, keep everything else.
 # Since 2026-09-27 both a generated picture and an upload are blob: images with
 # no role ancestor; only the generated one sits in the generated-image gallery.
+# A blob url is not a stable identity, so an earlier turn's picture is ruled out
+# by position: only a gallery after the last reply's start marker belongs to it.
 COLLECT_CANDIDATE_IMAGES = """
 () => {
     const out = [];
+    const starts = document.querySelectorAll("[data-chatgpt-agent-turn-start]");
+    const lastStart = starts.length ? starts[starts.length - 1] : null;
     for (const img of document.querySelectorAll("img")) {
         const src = img.src || "";
         if (img.naturalWidth < 256 || img.naturalHeight < 256) continue;
-        if (!img.closest('[data-testid="generated-image-gallery"]')) {
+        if (img.closest('[data-testid="generated-image-gallery"]')) {
+            if (lastStart && !(lastStart.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+        } else {
             if (!src.includes("estuary") && !src.includes("oaiusercontent")) continue;
             const turn = img.closest("[data-message-author-role]");
             if (turn && turn.getAttribute("data-message-author-role") === "user") continue;
@@ -193,7 +199,7 @@ async ([token, keys]) => {
 ERROR_BANNER_PRESENT = """
 () => {
     const found = [];
-    for (const el of document.querySelectorAll('main .text-token-text-error, main [role="alert"]')) {
+    for (const el of document.querySelectorAll('main .text-token-text-error, main aside[role="alert"]')) {
         const text = (el.textContent || '').trim();
         if (el.querySelector('button') && text) found.push(text.slice(0, 160));
     }
@@ -375,17 +381,23 @@ class ChatGPTProvider(BaseProvider):
         one job would go out as several turns.
         """
         box = page.locator(COMPOSER).first
-        wanted = self._flat(prompt)[:40]
+        whole = self._flat(prompt)
+        head, tail = whole[:40], whole[-40:]
         for attempt in range(3):
             if attempt or self._flat(box.inner_text()):
                 self._clear_composer(page, box)
+                if self._flat(box.inner_text()):
+                    # Typing into what is left would send it along with the prompt.
+                    self._phase("retrying the composer")
+                    continue
             try:
                 box.click(timeout=10000)
             except Exception:
                 box.focus()
             page.keyboard.insert_text(prompt)
             page.wait_for_timeout(300)
-            if wanted in self._flat(box.inner_text()):
+            landed = self._flat(box.inner_text())
+            if landed.startswith(head) and landed.endswith(tail):
                 break
             self._phase("retrying the composer")
         else:
