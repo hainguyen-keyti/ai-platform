@@ -463,7 +463,218 @@ def probe_cleanup(p):
         after["status"], body.get("is_visible")))
 
 
+# Measured 2026-09-27: #prompt-textarea is gone. These are hypotheses to count,
+# and the editables dump below is what decides, not this list.
+COMPOSER_CANDIDATES = (
+    "#prompt-textarea",
+    'div.ProseMirror[contenteditable="true"][aria-label="Ask ChatGPT"]',
+    'div.ProseMirror[contenteditable="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    "textarea",
+)
+USER_TURN = '[data-message-author-role="user"]'
+MULTI_LINE = "Reply with the single word: ok\n\nThis second line belongs to the same turn."
+
+EDITABLES = """
+() => Array.from(document.querySelectorAll('[contenteditable="true"], textarea'))
+    .map(n => ({tag: n.tagName.toLowerCase(), id: n.id || null,
+                label: n.getAttribute('aria-label'), role: n.getAttribute('role'),
+                cls: (n.className || '').toString().slice(0, 60),
+                visible: n.getBoundingClientRect().width > 0}))
+"""
+
+MODE_TABS = """
+() => Array.from(document.querySelectorAll('button, [role="tab"], [role="radio"], a'))
+    .filter(n => ['Chat', 'Work'].includes((n.innerText || '').trim()))
+    .map(n => ({text: n.innerText.trim(), tag: n.tagName.toLowerCase(), role: n.getAttribute('role'),
+                selected: n.getAttribute('aria-selected'), pressed: n.getAttribute('aria-pressed'),
+                checked: n.getAttribute('aria-checked'), state: n.getAttribute('data-state'),
+                current: n.getAttribute('aria-current')}))
+"""
+
+FILE_INPUTS = """
+() => Array.from(document.querySelectorAll('input[type=file]'))
+    .map(n => ({id: n.id || null, accept: (n.accept || '').slice(0, 60), multiple: n.multiple}))
+"""
+
+
+def flat(text):
+    return " ".join((text or "").split())
+
+
+def probe_composer(p):
+    """The new page, measured with one real turn at most.
+
+    fill() and a multi-line insert_text are read back from the composer before
+    anything is sent, because a composer that ignores fill() sends an empty turn
+    and a type() that maps newlines to Enter sends several.
+    """
+    from src.providers.chatgpt import HOME, SEND_BUTTON, UPLOAD_INPUT
+
+    page = p.page()
+    started = time.time()
+    page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+    # Measured 2026-09-27 morning: the page first paints textarea#pending-home-input
+    # and swaps in the ProseMirror later, so "any composer" is not "ready".
+    first_seen = {}
+    for _ in range(120):
+        page.wait_for_timeout(500)
+        for sel in COMPOSER_CANDIDATES:
+            if sel not in first_seen and page.locator(sel).count():
+                first_seen[sel] = round(time.time() - started, 1)
+        if 'div.ProseMirror[contenteditable="true"]' in first_seen:
+            break
+    say("composer: first seen after load", first_seen)
+    page.wait_for_timeout(1500)
+    for sel in COMPOSER_CANDIDATES:
+        loc = page.locator(sel)
+        say("composer: candidate", "{} count {} visible {}".format(
+            sel, loc.count(), loc.first.is_visible() if loc.count() else False))
+    for item in page.evaluate(EDITABLES):
+        say("composer: editable", item)
+    say("composer: mode tabs", page.evaluate(MODE_TABS) or "none found")
+    say("composer: file inputs", page.evaluate(FILE_INPUTS) or "none")
+    say("composer: " + UPLOAD_INPUT, page.locator(UPLOAD_INPUT).count())
+    say("composer: send button before typing", page.locator(SEND_BUTTON).count())
+    say("composer: memory", p.provider._read_memory(page))
+
+    box_sel = 'div.ProseMirror[contenteditable="true"]'
+    box = page.locator(box_sel).first
+    if not page.locator(box_sel).count():
+        say("composer", "no ProseMirror composer; stopping before spending a turn")
+        return
+
+    def clear():
+        box.click(timeout=8000)
+        page.keyboard.press("ControlOrMeta+a")
+        page.keyboard.press("Backspace")
+        page.wait_for_timeout(300)
+
+    try:
+        box.fill("fill probe text")
+        page.wait_for_timeout(500)
+        say("composer: fill() read back", repr(flat(box.inner_text())))
+    except Exception as exc:
+        say("composer: fill() raised", "{}: {}".format(type(exc).__name__, str(exc)[:160]))
+    clear()
+    say("composer: after clearing", repr(flat(box.inner_text())))
+
+    users_before = page.locator(USER_TURN).count()
+    box.click(timeout=8000)
+    page.keyboard.insert_text(MULTI_LINE)
+    page.wait_for_timeout(500)
+    say("composer: insert_text read back", repr(flat(box.inner_text())))
+    say("composer: read back matches the prompt", flat(box.inner_text()) == flat(MULTI_LINE))
+    say("composer: send button after typing", page.locator(SEND_BUTTON).count())
+    say("composer: buttons around the composer", box.evaluate("""
+        (el) => {
+            const form = el.closest('form') || el.parentElement.parentElement.parentElement;
+            return Array.from(form.querySelectorAll('button')).map(b => ({
+                testid: b.getAttribute('data-testid'), label: b.getAttribute('aria-label'),
+                id: b.id || null, type: b.getAttribute('type'), disabled: b.disabled,
+                text: (b.innerText || '').trim().slice(0, 20)}));
+        }"""))
+
+    started = time.time()
+    page.keyboard.press("Enter")
+    emptied = None
+    for _ in range(20):
+        page.wait_for_timeout(500)
+        if not flat(box.inner_text()):
+            emptied = round(time.time() - started, 1)
+            break
+    say("composer: emptied after Enter", "{}s".format(emptied))
+    if emptied is None:
+        for sel in ('button[data-testid*="send"]', 'button[aria-label*="Send"]',
+                    'button[aria-label*="send"]', 'form button[type="submit"]'):
+            if page.locator(sel).count():
+                say("composer: Enter did not send, clicking", sel)
+                page.locator(sel).first.click(timeout=8000)
+                for _ in range(20):
+                    page.wait_for_timeout(500)
+                    if not flat(box.inner_text()):
+                        emptied = round(time.time() - started, 1)
+                        break
+                say("composer: emptied after the click", "{}s".format(emptied))
+                break
+        else:
+            say("composer", "Enter did not send and no send-like button matched")
+
+    saw_stop, settled_at, last = False, None, None
+    while time.time() - started < 120:
+        page.wait_for_timeout(1000)
+        if page.locator(STOP_BUTTON).count():
+            saw_stop = True
+        answers = page.locator(ASSISTANT_TURN)
+        text = answers.last.inner_text() if answers.count() else ""
+        if text and text == last and not page.locator(STOP_BUTTON).count():
+            settled_at = round(time.time() - started, 1)
+            break
+        last = text
+    users_after = page.locator(USER_TURN).count()
+    say("composer: user turns", "{} -> {} (one turn is +1)".format(users_before, users_after))
+    bubbles = page.locator(USER_TURN)
+    say("composer: the user bubble", repr(flat(bubbles.last.inner_text()) if bubbles.count() else ""))
+    say("composer: stop button seen", saw_stop)
+    say("composer: assistant turns", "{} last {!r} settled {}s".format(
+        page.locator(ASSISTANT_TURN).count(), flat(last)[:60], settled_at))
+
+    p.thread_id = p.provider._thread_id(page)
+    say("composer: thread", p.thread_id or "none: url {}".format(page.url[:60]))
+    if p.thread_id:
+        data = p.provider._thread_nodes(page, p.thread_id) or {}
+        nodes = data.get("nodes") or []
+        say("composer: server view", "status {} nodes {}".format(data.get("status"), len(nodes)))
+        for node in nodes[-3:]:
+            say("composer: server node", {k: (str(v)[:60] if isinstance(v, str) else v)
+                                          for k, v in node.items() if k != "text"})
+
+
+TURN_MARKUP = """
+() => {
+    const out = {};
+    for (const sel of ['[data-message-author-role]', 'article', '[data-testid^="conversation-turn"]',
+                       '[data-turn]', '[data-message-id]', '[data-turn-id]', 'main [class*="markdown"]']) {
+        out[sel] = document.querySelectorAll(sel).length;
+    }
+    const attrs = {};
+    for (const n of document.querySelectorAll('main *')) {
+        for (const a of n.getAttributeNames()) {
+            if (a.startsWith('data-') && /turn|message|author|role/i.test(a)) {
+                attrs[a] = (attrs[a] || 0) + 1;
+            }
+        }
+    }
+    out.data_attrs = attrs;
+    return out;
+}
+"""
+
+
+def probe_turn_dom(p):
+    """How a finished turn is marked up now. Opens an existing thread; costs no turn."""
+    import os
+    thread = os.environ.get("PROBE_THREAD")
+    if not thread:
+        say("turn-dom", "set PROBE_THREAD to a thread id this probe made")
+        return
+    page = p.page()
+    page.goto("https://chatgpt.com/c/" + thread, timeout=90000, wait_until="domcontentloaded")
+    for _ in range(60):
+        page.wait_for_timeout(500)
+        if page.locator('div.ProseMirror[contenteditable="true"]').count():
+            break
+    page.wait_for_timeout(4000)
+    say("turn-dom: url", page.url[:70])
+    for key, value in page.evaluate(TURN_MARKUP).items():
+        say("turn-dom: " + key, value)
+    say("turn-dom: main text head", repr(flat(page.evaluate(
+        "() => (document.querySelector('main') || document.body).innerText"))[:300]))
+
+
 PROBES = (
+    ("composer", probe_composer),
+    ("turn-dom", probe_turn_dom),
     ("send", probe_send),
     ("dom-settle", probe_dom_settle),
     ("memory", probe_memory),
@@ -472,7 +683,7 @@ PROBES = (
     ("memory-toggle", probe_memory_toggle),
 )
 # Changes an account setting for a few seconds; run it by name, on purpose.
-NOT_IN_ALL = {"memory-toggle"}
+NOT_IN_ALL = {"memory-toggle", "composer"}
 
 
 def main():
