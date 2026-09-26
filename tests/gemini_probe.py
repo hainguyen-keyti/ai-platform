@@ -1,0 +1,432 @@
+#!/usr/bin/env python3
+"""Measure the Gemini behaviours a provider would depend on, against the real site.
+
+    ~/cloakbrowser-env/bin/python tests/gemini_probe.py <probe>[,<probe>] [ids]
+
+Each probe prints what it saw; nothing here asserts a wish. Costs:
+  open, session, settings-read, banner, list, peek   no turn
+  settle                                              one turn
+  persist                                             two turns (a picture, an upload)
+  recall                                              three turns
+  purge <id,id>                                       deletes exactly the named threads
+Every turn leaves a thread in the owner's account; they are deleted only by name, with the owner's
+yes. Reads storage/sessions/gemini.json. Never changes an account setting.
+Measured first on 2026-09-25 with a throwaway copy of this file; see docs/research.
+"""
+
+import base64
+import json
+import sys
+import time
+from pathlib import Path
+
+import cloakbrowser
+
+ROOT = Path(__file__).resolve().parents[1]
+SESSION = ROOT / "storage" / "sessions" / "gemini.json"
+HOME = "https://gemini.google.com/app"
+COMPOSER = 'rich-textarea .ql-editor[contenteditable="true"]'
+SIGN_IN = ("sign in", "đăng nhập")
+
+CONVERSATIONS = """
+() => Array.from(document.querySelectorAll('a[href^="/app/"]')).map(a => ({
+    href: a.getAttribute('href'), title: (a.innerText || '').trim().slice(0, 60)}))
+"""
+
+MENU_ITEMS = """
+() => Array.from(document.querySelectorAll('[role="menuitem"], button.mat-mdc-menu-item'))
+    .map(n => ({test: n.getAttribute('data-test-id'), label: (n.innerText || '').trim().slice(0, 40)}))
+"""
+
+# gstatic serves the product's own decorations; they are on the page before any turn.
+BIG_IMAGES = """
+() => Array.from(document.querySelectorAll('img'))
+    .map(n => ({src: (n.src || '').slice(0, 130), w: n.naturalWidth, h: n.naturalHeight}))
+    .filter(o => o.w > 120 && o.src.indexOf('gstatic.com') === -1)
+"""
+
+# An 8x8 grey and white checker, the picture the 2026-09-25 upload probe used.
+REFERENCE_PNG = ("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAIAQMAAAD+wSzIAAAABlBMVEX///+/v7+jQ3Y5AAAADklEQVQI"
+                 "12P4AIX8EAgALgAD/aNpbtEAAAAASUVORK5CYII=")
+
+crashed = []
+
+
+def say(tag, message):
+    print("[{}] {}".format(tag, message), flush=True)
+
+
+def flat(text):
+    return " ".join((text or "").split())
+
+
+def open_page(browser, url=HOME, stored=True):
+    context = browser.new_context(storage_state=str(SESSION)) if stored else browser.new_context()
+    page = context.new_page()
+    t0 = time.time()
+    page.goto(url, wait_until="domcontentloaded", timeout=90000)
+    for _ in range(40):
+        page.wait_for_timeout(500)
+        if page.locator(COMPOSER).count():
+            break
+    page.wait_for_timeout(1500)
+    say("open", "{} after {:.0f}s, composer {}".format(page.url, time.time() - t0,
+                                                        page.locator(COMPOSER).count()))
+    return page
+
+
+def bubbles(page):
+    try:
+        return page.locator("message-content, model-response").all_inner_texts()
+    except Exception:
+        return []
+
+
+def send(page, prompt):
+    page.locator(COMPOSER).first.click(timeout=15000)
+    page.keyboard.insert_text(prompt)
+    page.wait_for_timeout(300)
+    page.keyboard.press("Enter")
+
+
+def wait_new_bubble(page, had, budget=120):
+    """The answer to THIS turn: a bubble that was not there before, then held still."""
+    t0, last = time.time(), None
+    while time.time() - t0 < budget:
+        page.wait_for_timeout(1000)
+        now = bubbles(page)
+        if len(now) <= had:
+            continue
+        text = now[-1].strip()
+        if text and text == last:
+            return text, round(time.time() - t0, 1)
+        last = text
+    return (last or ""), None
+
+
+def wait_picture(page, budget=240):
+    """A picture, not words: the reply text says it is working long before one exists."""
+    t0 = time.time()
+    while time.time() - t0 < budget:
+        page.wait_for_timeout(3000)
+        found = page.evaluate(BIG_IMAGES)
+        if found:
+            return found, round(time.time() - t0, 1)
+    return [], None
+
+
+def thread_of(page):
+    tail = page.url.rsplit("/app/", 1)[-1] if "/app/" in page.url else ""
+    return tail.split("?")[0] or None
+
+
+# --- no turn ---------------------------------------------------------------
+
+def probe_open(browser):
+    page = open_page(browser)
+    body = (page.inner_text("body") or "").lower()
+    say("open", "sign-in wording: {}".format([w for w in SIGN_IN if w in body] or "none"))
+    say("open", "sidebar threads: {}".format(len(page.evaluate(CONVERSATIONS))))
+
+
+# Candidate proofs that only a signed-in session can pass, fetched from the page
+# itself. redirect 'manual' turns a bounce to the sign-in page into status 0.
+PROOF = """
+async (path) => {
+    try {
+        const r = await fetch(path, {credentials: 'include', redirect: 'manual'});
+        let text = ''; try { text = await r.text(); } catch (e) {}
+        return {status: r.status, type: r.type, bytes: text.length};
+    } catch (e) { return {error: String(e).slice(0, 60)}; }
+}
+"""
+PROOF_PATHS = ("/app", "/usage", "/personalization-settings")
+
+
+def probe_session(browser):
+    """What a proof of sign-in could be: the same fetches, signed in and anonymous."""
+    for stored in (True, False):
+        page = open_page(browser, stored=stored)
+        who = "signed in" if stored else "anonymous"
+        body = (page.inner_text("body") or "").lower()
+        say("session", "{}: sign-in wording {}".format(who, [w for w in SIGN_IN if w in body] or "none"))
+        for path in PROOF_PATHS:
+            say("session", "{}: {} -> {}".format(who, path, page.evaluate(PROOF, path)))
+        # Every path answers 200 either way (measured 2026-09-27), so the proof has to be
+        # something only an account's page renders: its own settings switch.
+        page.goto("https://gemini.google.com/personalization-settings",
+                  wait_until="domcontentloaded", timeout=90000)
+        page.wait_for_timeout(6000)
+        say("session", "{}: settings page lands on {}, role=switch count {}".format(
+            who, page.url, page.locator('button[role="switch"]').count()))
+        page.context.close()
+
+
+def probe_settings_read(browser):
+    """What reading the personal context switch costs, and what the page asks the server."""
+    context = browser.new_context(storage_state=str(SESSION))
+    page = context.new_page()
+    rpcs = []
+    page.on("response", lambda r: rpcs.append(
+        (r.url.split("rpcids=", 1)[-1].split("&")[0], r.status))
+        if "batchexecute" in r.url else None)
+    t0 = time.time()
+    page.goto("https://gemini.google.com/personalization-settings",
+              wait_until="domcontentloaded", timeout=90000)
+    state = None
+    for _ in range(60):
+        page.wait_for_timeout(500)
+        switches = page.evaluate("""() => Array.from(document.querySelectorAll('button[role="switch"]'))
+            .map(n => ({label: (n.getAttribute('aria-label') || '').slice(0, 70),
+                        checked: n.getAttribute('aria-checked')}))""")
+        if switches:
+            state = switches
+            break
+    say("settings-read", "switches after {:.1f}s: {}".format(time.time() - t0, state))
+    say("settings-read", "batchexecute rpcids while loading: {}".format(rpcs))
+
+
+def probe_banner(browser):
+    """The error the page paints when a turn request fails, provoked from inside the page:
+    the turn request is answered 500, so the server never sees a turn."""
+    page = open_page(browser)
+    hits = {"n": 0, "urls": []}
+
+    def fail(route):
+        if route.request.method == "POST":
+            hits["n"] += 1
+            hits["urls"].append(route.request.url.split("?")[0][-60:])
+            route.fulfill(status=500, content_type="application/json", body="{}")
+        else:
+            route.continue_()
+
+    pattern = "**/*StreamGenerate*"
+    page.route(pattern, fail)
+    try:
+        send(page, "probe: this request is made to fail on purpose")
+        page.wait_for_timeout(12000)
+        say("banner", "requests failed on purpose: {} {}".format(hits["n"], hits["urls"]))
+        found = page.evaluate("""() => Array.from(document.querySelectorAll(
+            '[role="alert"], snack-bar-container, .mat-mdc-snack-bar-container, [class*="error"]'))
+            .map(n => ({tag: n.tagName.toLowerCase(), role: n.getAttribute('role'),
+                        cls: (n.className || '').toString().slice(0, 80),
+                        text: (n.innerText || '').trim().slice(0, 120)}))""")
+        for item in found:
+            say("banner", "element {}".format(item))
+        say("banner", "last bubble {!r}".format((bubbles(page) or [""])[-1][:160]))
+        say("banner", "url after the failure {}".format(page.url))
+    finally:
+        page.unroute(pattern, fail)
+
+
+def probe_list(browser):
+    page = open_page(browser)
+    for item in page.evaluate(CONVERSATIONS):
+        say("list", item)
+
+
+def probe_peek(browser, ids):
+    """Does a thread exist, whatever the sidebar shows. A dead id lands back on /app."""
+    context = browser.new_context(storage_state=str(SESSION))
+    page = context.new_page()
+    for cid in ids:
+        page.goto("https://gemini.google.com/app/{}".format(cid), wait_until="domcontentloaded",
+                  timeout=90000)
+        page.wait_for_timeout(7000)
+        body = bubbles(page)
+        say("peek", "{} -> lands on {} with {} bubble(s)".format(cid, page.url.rsplit("/", 1)[-1],
+                                                                len(body)))
+
+
+# --- turns -----------------------------------------------------------------
+
+def probe_settle(browser):
+    """Which response carries the finished answer, and when, against when the page settles."""
+    page = open_page(browser)
+    token = "teal-{}".format(int(time.time()) % 100000)
+    t0 = time.time()
+    seen = []
+
+    def on_response(r):
+        if r.request.method != "POST" or "google" not in r.url:
+            return
+        try:
+            body = r.body()
+        except Exception:
+            body = b""
+        seen.append({"at": round(time.time() - t0, 1), "url": r.url.split("?")[0][-70:],
+                     "rpc": r.url.split("rpcids=", 1)[-1].split("&")[0] if "rpcids=" in r.url else None,
+                     "status": r.status, "bytes": len(body), "has_token": token.encode() in body})
+
+    page.on("response", on_response)
+    had = len(bubbles(page))
+    t0 = time.time()
+    send(page, "Write two short sentences, and end the second one with the word {}.".format(token))
+    text, at = wait_new_bubble(page, had)
+    say("settle", "page held still at {}s: {!r}".format(at, text[:120]))
+    page.wait_for_timeout(3000)
+    for item in seen:
+        say("settle", "response {}".format(item))
+    carriers = [s for s in seen if s["has_token"]]
+    say("settle", "responses whose body carries the token: {}".format(
+        [(c["url"], c["rpc"], c["at"]) for c in carriers] or "none"))
+    say("settle", "thread {}".format(thread_of(page)))
+
+
+def probe_persist(browser):
+    """Do a picture turn's and an upload turn's threads survive? Measured 2026-09-25: both were
+    gone minutes later, while chat threads survived; those probes closed the page seconds after
+    the picture appeared. This one keeps the page open and reloads before closing."""
+    made = []
+    page = open_page(browser)
+    send(page, "Generate an image of a plain green triangle on a white background.")
+    found, at = wait_picture(page)
+    say("persist", "picture after {}s: {}".format(at, [(f["w"], f["h"]) for f in found]))
+    page.wait_for_timeout(30000)
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_timeout(8000)
+    say("persist", "picture thread after 30s open and a reload: url {} bubbles {}".format(
+        page.url, len(bubbles(page))))
+    made.append(thread_of(page))
+    page.context.close()
+
+    path = Path("/tmp/gemini-reference.png")
+    path.write_bytes(base64.b64decode(REFERENCE_PNG))
+    page = open_page(browser)
+    for sel in ("button[aria-label*='Nội dung tải lên']", "button[aria-label*='Upload']"):
+        if page.locator(sel).count():
+            page.locator(sel).first.click(timeout=10000)
+            break
+    page.wait_for_timeout(2000)
+    page.set_input_files('input[type=file][accept="image/*"]', str(path))
+    page.wait_for_timeout(6000)
+    had = len(bubbles(page))
+    send(page, "In one short sentence, what colours are in this picture?")
+    text, at = wait_new_bubble(page, had, budget=180)
+    say("persist", "upload reply at {}s: {!r}".format(at, text[:120]))
+    page.wait_for_timeout(30000)
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_timeout(8000)
+    say("persist", "upload thread after 30s open and a reload: url {} bubbles {}".format(
+        page.url, len(bubbles(page))))
+    made.append(thread_of(page))
+    say("persist", "threads made: {} (peek them again in a few minutes)".format(made))
+
+
+def probe_recall(browser):
+    """Does one conversation leak into another. Personal context must be off for 'Unknown'."""
+    page = open_page(browser)
+    token = "violet-{}".format(int(time.time()) % 100000)
+    had = len(bubbles(page))
+    send(page, "Remember this word for later, just acknowledge it: {}".format(token))
+    first, _ = wait_new_bubble(page, had)
+    thread_a = thread_of(page)
+    had = len(bubbles(page))
+    send(page, "What word did I ask you to remember?")
+    same, _ = wait_new_bubble(page, had)
+    say("recall", "A {} recalls its own word: {} {!r}".format(thread_a, token in same, same[:80]))
+    page.goto(HOME, wait_until="domcontentloaded", timeout=90000)
+    page.wait_for_timeout(8000)
+    had = len(bubbles(page))
+    send(page, "Earlier I asked you to remember a word. What was it? If you do not know, say Unknown.")
+    other, _ = wait_new_bubble(page, had)
+    say("recall", "B {} leaked the word: {} {!r}".format(thread_of(page), token in other, other[:80]))
+
+
+# --- cleanup, by name only -------------------------------------------------
+
+def open_row_menu(page, ident):
+    link = page.locator('a[href="/app/{}"]'.format(ident)).first
+    if not link.count():
+        say("purge", "{} is not in the list".format(ident))
+        return False
+    title = (link.inner_text() or "").strip()
+    link.hover(timeout=10000)
+    page.wait_for_timeout(500)
+    # This conversation's own row: a plain div ancestor holds every row in the list.
+    row = link.locator('xpath=ancestor::*[@data-test-id="conversation"][1]')
+    buttons = row.locator("button")
+    for i in range(buttons.count()):
+        b = buttons.nth(i)
+        if not b.is_visible():
+            continue
+        label = b.get_attribute("aria-label") or ""
+        if title and title not in label:
+            say("purge", "refusing: the button says {!r}, the row is {!r}".format(label, title))
+            return False
+        b.click(timeout=10000)
+        page.wait_for_timeout(1200)
+        return True
+    return False
+
+
+def probe_purge(browser, ids):
+    page = open_page(browser)
+    here = {c["href"].rsplit("/", 1)[-1]: c["title"] for c in page.evaluate(CONVERSATIONS)}
+    for cid in ids:
+        say("purge", "target {} titled {!r}".format(cid, here.get(cid, "NOT IN LIST")))
+    for cid in ids:
+        if not open_row_menu(page, cid):
+            continue
+        hit = '[role="menuitem"][data-test-id*="delete"]'
+        if not page.locator(hit).count():
+            page.keyboard.press("Escape")
+            continue
+        # The confirm button repeats the menu item's own word, whatever the language.
+        word = (page.locator(hit).first.inner_text() or "").strip()
+        page.locator(hit).first.click(timeout=10000)
+        page.wait_for_timeout(1500)
+        buttons = page.locator("mat-dialog-container").first.locator("button")
+        for i in range(buttons.count()):
+            if (buttons.nth(i).inner_text() or "").strip() == word:
+                buttons.nth(i).click(timeout=10000)
+                say("purge", "deleted {}".format(cid))
+                page.wait_for_timeout(2500)
+                break
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_timeout(6000)
+    left = page.evaluate(CONVERSATIONS)
+    say("purge", "still present: {}".format(
+        [c for c in ids if any(c in x["href"] for x in left)] or "none"))
+
+
+PROBES = {"open": probe_open, "session": probe_session, "settings-read": probe_settings_read,
+          "banner": probe_banner, "list": probe_list, "settle": probe_settle,
+          "persist": probe_persist, "recall": probe_recall}
+WITH_IDS = {"peek": probe_peek, "purge": probe_purge}
+# "all" runs only what costs no turn and changes nothing.
+FREE = ("open", "session", "settings-read", "banner", "list")
+
+
+def main():
+    if not SESSION.exists():
+        sys.exit("no session at {}; run scripts/login_provider.py gemini".format(SESSION))
+    wanted = (sys.argv[1] if len(sys.argv) > 1 else "open").split(",")
+    ids = [x for x in (sys.argv[2] if len(sys.argv) > 2 else "").split(",") if x]
+    names = list(FREE) if wanted == ["all"] else wanted
+    unknown = [n for n in names if n not in PROBES and n not in WITH_IDS]
+    if unknown:
+        sys.exit("unknown probe(s) {}; one of {} or all".format(
+            unknown, ", ".join(list(PROBES) + list(WITH_IDS))))
+    browser = cloakbrowser.launch(headless=True)
+    try:
+        for name in names:
+            say(name, "starting")
+            try:
+                if name in WITH_IDS:
+                    WITH_IDS[name](browser, ids)
+                else:
+                    PROBES[name](browser)
+            except Exception as exc:
+                crashed.append(name)
+                say(name, "PROBE CRASHED {}: {}".format(type(exc).__name__, str(exc)[:220]))
+    finally:
+        browser.close()
+    print("=" * 50)
+    print("{} probe(s) ran, {} crashed{}".format(
+        len(names), len(crashed), ": " + ", ".join(crashed) if crashed else ""))
+    return 1 if crashed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

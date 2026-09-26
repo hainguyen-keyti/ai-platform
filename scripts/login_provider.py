@@ -38,6 +38,10 @@ PROVIDERS = {
         "home": "https://gemini.google.com/",
         "domain": "google.com",
         "cookies": ("__Secure-1PSID",),
+        # Measured 2026-09-27: every gemini path answers 200 signed out too, so no
+        # status can prove anything. The account's own settings page stays put for an
+        # account and sends anyone else to /saved-info.
+        "proves_page": "https://gemini.google.com/personalization-settings",
     },
 }
 
@@ -69,6 +73,9 @@ def signed_in(context, spec, page=None):
             break
     if not found:
         return None
+    landing = spec.get("proves_page")
+    if landing:
+        return "{} and {} stayed put".format(found, landing) if page_stays(context, landing) else None
     proof = spec.get("proves_it")
     if proof and page is not None:
         try:
@@ -78,6 +85,24 @@ def signed_in(context, spec, page=None):
             return None
         return "{} and {} answered".format(found, proof.split("?")[0])
     return found
+
+
+def page_stays(context, url):
+    """Open url in a tab of its own and say whether it stayed on its own path.
+
+    A tab of its own, so the window the person is signing in with is never moved.
+    """
+    wanted = url.split("://", 1)[-1].split("/", 1)[-1]
+    probe = context.new_page()
+    try:
+        probe.goto(url, wait_until="domcontentloaded", timeout=60000)
+        probe.wait_for_timeout(6000)
+        landed = probe.url.split("://", 1)[-1].split("/", 1)[-1].split("?")[0]
+        return landed.rstrip("/") == wanted.rstrip("/")
+    except Exception:
+        return False
+    finally:
+        probe.close()
 
 
 def summarise(context, spec):
