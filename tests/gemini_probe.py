@@ -229,13 +229,18 @@ def probe_peek(browser, ids):
     """Does a thread exist, whatever the sidebar shows. A dead id lands back on /app."""
     context = browser.new_context(storage_state=str(SESSION))
     page = context.new_page()
+    t0 = [time.time()]
+    seen = image_responses(page, t0)
     for cid in ids:
+        del seen[:]
         page.goto("https://gemini.google.com/app/{}".format(cid), wait_until="domcontentloaded",
                   timeout=90000)
         page.wait_for_timeout(7000)
         body = bubbles(page)
         say("peek", "{} -> lands on {} with {} bubble(s)".format(cid, page.url.rsplit("/", 1)[-1],
                                                                 len(body)))
+        say("peek", "{} images fetched on opening: {}".format(
+            cid, [(s["host"], s["prefix"][:12], s["bytes"]) for s in seen]))
 
 
 # --- turns -----------------------------------------------------------------
@@ -311,6 +316,64 @@ def probe_persist(browser):
         page.url, len(bubbles(page))))
     made.append(thread_of(page))
     say("persist", "threads made: {} (peek them again in a few minutes)".format(made))
+
+
+def image_responses(page, t0):
+    """Every image the page downloads, by host and first path segment only: an lh3 url is a
+    capability, so the whole url is never printed or stored."""
+    seen = []
+
+    def on_response(r):
+        ctype = (r.headers or {}).get("content-type", "")
+        if not ctype.startswith("image/") or "gstatic.com" in r.url:
+            return
+        rest = r.url.split("://", 1)[-1]
+        host, _, path = rest.partition("/")
+        try:
+            size = len(r.body())
+        except Exception:
+            size = None
+        seen.append({"at": round(time.time() - t0[0], 1), "host": host,
+                     "prefix": "/" + path.split("/", 1)[0] + "/", "type": ctype[:20], "bytes": size})
+
+    page.on("response", on_response)
+    return seen
+
+
+def probe_pictures(browser):
+    """Where a user's upload and a generated picture come from during the turn, so the driver
+    can keep one and never the other. Two turns."""
+    path = Path("/tmp/gemini-reference.png")
+    path.write_bytes(base64.b64decode(REFERENCE_PNG))
+    for kind in ("upload", "generate"):
+        page = open_page(browser)
+        t0 = [time.time()]
+        seen = image_responses(page, t0)
+        if kind == "upload":
+            for sel in ("button[aria-label*='Nội dung tải lên']", "button[aria-label*='Upload']"):
+                if page.locator(sel).count():
+                    page.locator(sel).first.click(timeout=10000)
+                    break
+            page.wait_for_timeout(2000)
+            page.set_input_files('input[type=file][accept="image/*"]', str(path))
+            page.wait_for_timeout(6000)
+            say("pictures", "upload: before sending, image responses {}".format(list(seen)))
+            del seen[:]
+            t0[0] = time.time()
+            had = len(bubbles(page))
+            send(page, "In one short sentence, what colours are in this picture?")
+            wait_new_bubble(page, had, budget=180)
+        else:
+            t0[0] = time.time()
+            send(page, "Generate an image of a plain orange square on a white background.")
+            wait_picture(page)
+        page.wait_for_timeout(8000)
+        say("pictures", "{}: image responses during the turn {}".format(kind, seen))
+        say("pictures", "{}: big images on the page {}".format(
+            kind, [(f["w"], f["h"], f["src"].split(":", 1)[0]) for f in page.evaluate(BIG_IMAGES)]))
+        say("pictures", "{}: thread {}".format(kind, thread_of(page)))
+        page.wait_for_timeout(20000)
+        page.context.close()
 
 
 def probe_recall(browser):
@@ -392,7 +455,7 @@ def probe_purge(browser, ids):
 
 PROBES = {"open": probe_open, "session": probe_session, "settings-read": probe_settings_read,
           "banner": probe_banner, "list": probe_list, "settle": probe_settle,
-          "persist": probe_persist, "recall": probe_recall}
+          "persist": probe_persist, "recall": probe_recall, "pictures": probe_pictures}
 WITH_IDS = {"peek": probe_peek, "purge": probe_purge}
 # "all" runs only what costs no turn and changes nothing.
 FREE = ("open", "session", "settings-read", "banner", "list")

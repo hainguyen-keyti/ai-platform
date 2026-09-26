@@ -98,6 +98,20 @@ REAL_SKIPS = {
         "the provider's error banner is recognised by shape":
             "the fixtures are chatgpt's own markup",
     },
+    # Gemini's account has room (its usage page read 0% on 2026-09-27), so unlike grok it runs
+    # the provider-agnostic checks too; only what was never measured on it is skipped.
+    "gemini": {
+        "non image deliverable is kept":
+            "asks the provider to build a file; unmeasured on gemini",
+        "non image deliverable is kept when asked in vietnamese":
+            "asks the provider to build a file; unmeasured on gemini",
+        "a follow-up turn packages what the first one made":
+            "asks the provider to build a file; unmeasured on gemini",
+        "a conversation's media downloads as one zip":
+            "its second media is the packaging turn's file, skipped on gemini",
+        "the provider's error banner is recognised by shape":
+            "the fixtures are chatgpt's own markup; gemini's failure is read from StreamGenerate",
+    },
 }
 
 # Phrases the mock provider reacts to, so failure modes can be exercised on purpose.
@@ -1124,7 +1138,7 @@ def main():
             "MIN_GAP_SECONDS": "6" if args.real else "0",
             # Real mode drives one account, and one browser, at a time. Mock mode
             # serves two so the two-provider machinery is exercised every run.
-            "PROVIDERS": args.provider if args.real else "chatgpt,grok",
+            "PROVIDERS": args.provider if args.real else "chatgpt,grok,gemini",
             # Measured 2026-09-24: the free grok account answers a short burst
             # and then asks for about nine minutes, so a real grok run paces
             # itself far wider than a chatgpt one.

@@ -1,0 +1,15 @@
+{
+  "measured": "2026-09-27, tests/gemini_probe.py pictures and peek; host and first path segment only, an lh3 url is a capability and is never stored whole",
+  "cases": [
+    {"situation": "upload turn, the user's picture before sending", "host": "gemini.google.com", "prefix": "/5031731a-73d7-4ecf-a37d-ae03cb275974/", "scheme": "blob", "type": "image/png", "bytes": 89, "generated": false},
+    {"situation": "account avatar", "host": "lh3.googleusercontent.com", "prefix": "/a/", "scheme": "https", "type": "image/png", "bytes": 18013, "generated": false},
+    {"situation": "account avatar", "host": "lh3.googleusercontent.com", "prefix": "/a/", "scheme": "https", "type": "image/jpeg", "bytes": 2120, "generated": false},
+    {"situation": "account badge", "host": "lh3.googleusercontent.com", "prefix": "/ogw/", "scheme": "https", "type": "image/png", "bytes": 2864, "generated": false},
+    {"situation": "advert pixel", "host": "www.googleadservices.com", "prefix": "/ccm/", "scheme": "https", "type": "image/gif", "bytes": 35, "generated": false},
+    {"situation": "generate turn, the picture itself", "host": "lh3.googleusercontent.com", "prefix": "/rd-gg-dl/", "scheme": "https", "type": "image/jpeg", "bytes": 12623, "generated": true},
+    {"situation": "generate turn, a repeat fetch with no body", "host": "lh3.googleusercontent.com", "prefix": "/rd-gg-dl/", "scheme": "https", "type": "image/jpeg", "bytes": 0, "generated": false},
+    {"situation": "generate turn, the page's own blob of the picture", "host": "gemini.google.com", "prefix": "/ad6e0b3b-b7a1-4b0b-ac21-33d71e381478/", "scheme": "blob", "type": "image/jpeg", "bytes": 12623, "generated": false},
+    {"situation": "reopened upload thread, the user's picture from the server", "host": "lh3.googleusercontent.com", "prefix": "/rd-gg/", "scheme": "https", "type": "image/png", "bytes": 286, "generated": false},
+    {"situation": "reopened picture thread, the old picture", "host": "lh3.googleusercontent.com", "prefix": "/rd-gg/", "scheme": "https", "type": "image/jpeg", "bytes": 0, "generated": false}
+  ]
+}
