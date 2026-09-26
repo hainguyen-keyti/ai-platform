@@ -61,3 +61,25 @@ on still holds.
 - `:17` `UPLOAD_INPUT`, set at `:681`: video script cannot attach its picture
 - `tests/fixtures/chatgpt_*.html`, read by `tests/test_dom_signatures.py` and `acceptance.py`, are
   the old markup
+
+**Correction, same day:** `:216` above is not the banner detector but `SNAPSHOT_DOWNLOADS`, the
+file download buttons of the DOM fallback. The banner detector is `ERROR_BANNER_PRESENT`, which
+never used the role attribute; it breaks for a different reason, measured below.
+
+## Measured during T2, without spending a turn
+
+Three existing gate threads were opened by id (`probe_fixtures`, `turn-dom`), and the error banner
+was provoked by answering the turn request with a 500 from inside the page.
+
+| Thing | Measured |
+|---|---|
+| A turn in the DOM | ONE `div[data-turn-key]` holds the user's bubble and the reply together |
+| The user's words | `div[data-user-message-bubble="true"]` |
+| The reply's words | `div[data-chatgpt-selection-message-id="<message id>"]`; absent for a picture-only reply |
+| The reply's start | `span[data-chatgpt-agent-turn-start]` and a hidden `h4[data-conversation-role="assistant"]` |
+| A generated picture | `img` with a **`blob:`** src inside `button[data-testid="generated-image-preview"]` inside `div[data-testid="generated-image-gallery"]`, after the reply's start marker; the blob reads back from the page (image/png 813947 bytes) |
+| A user's upload | `img` with a `blob:` src inside the turn but outside both the bubble and the reply, before the reply's start marker |
+| Consequence | `COLLECT_CANDIDATE_IMAGES` only accepts estuary and oaiusercontent urls, so **no generated picture is collected at all** |
+| Files | no `button.behavior-btn` in a zip thread; the files still come from the server path (`_fetch_sandbox_files`), the button click is only its fallback |
+| The error banner | `aside[role="alert"]` with `text-danger` classes, the server's message and a Retry button; `.text-token-text-error` is gone, so **`ERROR_BANNER_PRESENT` no longer recognises a failure** |
+| A failed first turn | the address becomes `/c/local-chatgpt%3A<uuid>`, not `/c/WEB:<uuid>`, so `_thread_id` would hand back a thread the server does not know |

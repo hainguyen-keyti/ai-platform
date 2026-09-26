@@ -670,11 +670,187 @@ def probe_turn_dom(p):
         say("turn-dom: " + key, value)
     say("turn-dom: main text head", repr(flat(page.evaluate(
         "() => (document.querySelector('main') || document.body).innerText"))[:300]))
+    for item in page.evaluate(MARKER_VALUES):
+        say("turn-dom: marker", item)
+    # Pictures load late and below the fold: scroll, wait, then say where each one sits.
+    page.evaluate("() => { const m = document.querySelector('main'); if (m) m.scrollIntoView(false); }")
+    page.mouse.wheel(0, 20000)
+    page.wait_for_timeout(8000)
+    for item in page.evaluate(IMAGE_PLACES):
+        say("turn-dom: image", item)
+    for item in page.evaluate(DOWNLOAD_PLACES):
+        say("turn-dom: download button", item)
+    for item in page.evaluate(IMAGE_ORDER):
+        say("turn-dom: image order", item)
+    for item in page.evaluate(ASSISTANT_BUTTONS):
+        say("turn-dom: assistant button", item)
+
+
+# Where each picture sits relative to the assistant's own start marker, which is
+# shape, not wording; and whether its blob can still be read from the page.
+IMAGE_ORDER = """
+async () => {
+    const marker = document.querySelector('[data-chatgpt-agent-turn-start]')
+        || document.querySelector('[data-conversation-role="assistant"]');
+    const out = [];
+    for (const img of document.querySelectorAll('main img')) {
+        if (img.naturalWidth < 256) continue;
+        let after = null;
+        if (marker) after = !!(marker.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING);
+        let read = null;
+        try { const b = await (await fetch(img.src)).blob(); read = b.type + ' ' + b.size; }
+        catch (e) { read = 'failed ' + String(e).slice(0, 40); }
+        out.push({scheme: img.src.split(':')[0], afterAssistantStart: after, blobRead: read,
+                  parents: (() => { const t = []; let n = img.parentElement;
+                      for (let i = 0; i < 6 && n; i++, n = n.parentElement)
+                          t.push(n.tagName.toLowerCase() + (n.getAttribute('data-testid') ? '#' + n.getAttribute('data-testid') : ''));
+                      return t.join('<'); })()});
+    }
+    return out;
+}
+"""
+
+ASSISTANT_BUTTONS = """
+() => Array.from(document.querySelectorAll('[data-chatgpt-selection-message-id] button, [data-chatgpt-selection-message-id] a'))
+    .map(b => ({tag: b.tagName.toLowerCase(), cls: (b.className || '').toString().slice(0, 60),
+                testid: b.getAttribute('data-testid'), href: b.tagName === 'A' ? (b.getAttribute('href') || '').slice(0, 30) : null,
+                textLen: (b.innerText || '').trim().length}))
+"""
+
+
+IMAGE_PLACES = """
+() => {
+    const out = [];
+    for (const img of document.querySelectorAll('main img')) {
+        let host = '';
+        try { host = new URL(img.src).host + new URL(img.src).pathname.slice(0, 18); } catch (e) { host = img.src.slice(0, 30); }
+        out.push({host: host, w: img.naturalWidth, h: img.naturalHeight,
+                  inUserBubble: !!img.closest('[data-user-message-bubble]'),
+                  inAssistantMessage: !!img.closest('[data-chatgpt-selection-message-id]'),
+                  inTurn: !!img.closest('[data-turn-key]'),
+                  alt: (img.alt || '').slice(0, 30)});
+    }
+    out.push({canvases: document.querySelectorAll('main canvas').length,
+              backgroundImages: Array.from(document.querySelectorAll('main *'))
+                  .filter(n => (getComputedStyle(n).backgroundImage || 'none') !== 'none').length});
+    return out;
+}
+"""
+
+DOWNLOAD_PLACES = """
+() => Array.from(document.querySelectorAll('main button.behavior-btn')).map(b => ({
+    textLen: (b.innerText || '').trim().length,
+    inAssistantMessage: !!b.closest('[data-chatgpt-selection-message-id]'),
+    inUserBubble: !!b.closest('[data-user-message-bubble]')}))
+"""
+
+
+# Values, tags and what each marked element contains; never the text itself.
+MARKER_VALUES = """
+() => {
+    const names = ['data-conversation-role', 'data-user-message-bubble', 'data-chatgpt-agent-turn-start',
+                   'data-turn-key', 'data-thread-user-message-navigation-content',
+                   'data-chatgpt-selection-message-id', 'data-content-search-turn-key'];
+    const out = [];
+    for (const name of names) {
+        for (const el of document.querySelectorAll('[' + name + ']')) {
+            out.push({attr: name, value: (el.getAttribute(name) || '').slice(0, 40), tag: el.tagName.toLowerCase(),
+                      imgs: el.querySelectorAll('img').length, buttons: el.querySelectorAll('button').length,
+                      textLen: (el.innerText || '').length,
+                      holdsBubble: !!el.querySelector('[data-user-message-bubble]'),
+                      insideRole: (el.closest('[data-conversation-role]') || {getAttribute: () => null})
+                          .getAttribute('data-conversation-role')});
+        }
+    }
+    return out;
+}
+"""
+
+
+NEW_COMPOSER = 'div.ProseMirror[contenteditable="true"]'
+
+
+def open_mounted(page, url):
+    page.goto(url, timeout=90000, wait_until="domcontentloaded")
+    for _ in range(90):
+        page.wait_for_timeout(500)
+        if page.locator(NEW_COMPOSER).count():
+            break
+    page.mouse.wheel(0, 20000)
+    page.wait_for_timeout(6000)
+
+
+def probe_fixtures(p):
+    """Capture the new page's markup for tests/test_dom_signatures.py.
+
+    Reads existing threads named by id (FIXTURE_REPLY, FIXTURE_IMAGE,
+    FIXTURE_ATTACHMENT), which costs no turn, and provokes the error banner by
+    answering the turn request with a 500 from inside the page, which the server
+    never sees as a turn.
+    """
+    import os
+    page = p.page()
+    last_turn = "() => { const t = document.querySelectorAll('[data-turn-key]'); " \
+                "return t.length ? t[t.length - 1].outerHTML : null; }"
+    for env, name in (("FIXTURE_REPLY", "chatgpt_reply.html"),
+                      ("FIXTURE_IMAGE", "chatgpt_generated_image.html"),
+                      ("FIXTURE_ATTACHMENT", "chatgpt_user_attachment.html")):
+        thread = os.environ.get(env)
+        if not thread:
+            say("fixtures", "{} not set, {} skipped".format(env, name))
+            continue
+        open_mounted(page, "https://chatgpt.com/c/" + thread)
+        html = page.evaluate(last_turn)
+        if html:
+            save_fixture(name, html)
+        else:
+            say("fixtures", "{}: no [data-turn-key] on {}".format(name, thread[:8]))
+        if env == "FIXTURE_REPLY":
+            main_html = page.evaluate("() => (document.querySelector('main') || {}).outerHTML || ''")
+            save_fixture("chatgpt_main_reply.html", main_html)
+
+    from src.providers.chatgpt import HOME
+    open_mounted(page, HOME)
+    before = page.evaluate(ELEMENT_KEYS)
+    pattern = re.compile(r"/backend-api/.*conversation")
+    hits = {"n": 0}
+
+    def fail_send(route):
+        if route.request.method == "POST":
+            hits["n"] += 1
+            route.fulfill(status=500, content_type="application/json",
+                          body='{"detail": "probe: the model is unwell"}')
+        else:
+            route.continue_()
+
+    page.route(pattern, fail_send)
+    try:
+        page.locator(NEW_COMPOSER).first.click(timeout=8000)
+        page.keyboard.insert_text("probe: this request is made to fail on purpose")
+        page.wait_for_timeout(500)
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(12000)
+        say("fixtures: requests failed on purpose", hits["n"])
+        for el in page.evaluate(NEW_ELEMENTS, before)[:25]:
+            say("fixtures: appeared", json.dumps(el, ensure_ascii=False)[:300])
+        errorish = page.evaluate(ERRORISH_HTML)
+        say("fixtures: error-like elements", len(errorish))
+        snippet = "\n".join(errorish) + "\n" + (page.evaluate(last_turn) or "")
+        if errorish:
+            save_fixture("chatgpt_error_banner.html", snippet)
+        else:
+            Path("/tmp/chatgpt_banner_main.html").write_text(
+                sanitize(page.evaluate("() => (document.querySelector('main') || {}).outerHTML || ''")))
+            say("fixtures", "no error-like element; the whole main is in /tmp/chatgpt_banner_main.html")
+        say("fixtures: url after the failure", page.url[:80])
+    finally:
+        page.unroute(pattern, fail_send)
 
 
 PROBES = (
     ("composer", probe_composer),
     ("turn-dom", probe_turn_dom),
+    ("fixtures", probe_fixtures),
     ("send", probe_send),
     ("dom-settle", probe_dom_settle),
     ("memory", probe_memory),
