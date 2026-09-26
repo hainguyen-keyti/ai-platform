@@ -8,7 +8,7 @@ paints textarea#pending-home-input and mounts the real composer, a ProseMirror
 div with no id, about ten seconds later; #prompt-textarea is gone; a failed first
 turn leaves /c/local-chatgpt:<uuid> in the address. The driver used to call a
 signed-in session "probably logged out" whenever the composer did not appear.
-Prints N/11 PASSED.
+Prints N/12 PASSED.
 """
 
 import sys
@@ -216,6 +216,14 @@ def main():
     err = send_on(page)
     record("a draft left in the composer is not sent along",
            page.sent == [prompt], "sent {!r} {}".format([s[:40] for s in page.sent], err))
+
+    # The draft that matters most is the prompt itself, typed by an attempt that
+    # never sent: typed again on top, both ends still match and it goes out twice.
+    page = Page(clock, has={PROSEMIRROR})
+    page.text = prompt
+    err = send_on(page)
+    record("a prompt already in the composer is sent once, not twice",
+           page.sent == [prompt], "sent {} chars {}".format([len(s) for s in page.sent], err))
 
     page = Page(clock, has={PROSEMIRROR})
     page.truncate = 60
