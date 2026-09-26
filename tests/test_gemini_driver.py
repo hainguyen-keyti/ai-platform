@@ -208,17 +208,32 @@ def main():
     record("personal context on refuses the turn", outcome == "provider_misconfigured" and p.memory == "on",
            "outcome {!r}, health memory {!r}".format(outcome, p.memory))
 
-    settings = Page(clock, composer=False, landed="https://gemini.google.com/saved-info", checked="true")
+    # Measured 2026-09-27: a signed-out session is sent to /saved-info, which shows switches of its
+    # own. Reading one of those as the leak switch would be wrong, and sending would talk into an
+    # anonymous Gemini: that is a signed-out session, refused.
+    settings = Page(clock, composer=False, landed="https://gemini.google.com/saved-info", checked="false")
+    p = provider_on(Page(clock), settings)
+    try:
+        p._guard()
+        outcome, said = "sent", ""
+    except ProviderError as exc:
+        outcome, said = exc.kind, str(exc)
+    record("a settings page bounced to /saved-info is a signed-out session, refused",
+           outcome == "provider_misconfigured" and "signed out" in said,
+           "outcome {!r} {!r}".format(outcome, said[:60]))
+
+    # Anything else that stops the reading is unknown, and unknown does not block (DECISIONS).
+    settings = Page(clock, composer=False, landed="https://gemini.google.com/personalization-settings",
+                    checked=None)
     p = provider_on(Page(clock), settings)
     got = p._read_personal_context()
-    record("a switch read off another page is unknown, never on or off", got == "unknown",
-           "read {!r} on /saved-info".format(got))
     try:
         p._guard()
         outcome = "sent"
     except ProviderError as exc:
         outcome = exc.kind
-    record("unknown does not block", outcome == "sent", "outcome {!r}".format(outcome))
+    record("a switch that never renders reads unknown and does not block",
+           got == "unknown" and outcome == "sent", "read {!r}, outcome {!r}".format(got, outcome))
 
     for url, expected in (("https://gemini.google.com/app/659ed82f23b56ced", "659ed82f23b56ced"),
                           ("https://gemini.google.com/app", None)):

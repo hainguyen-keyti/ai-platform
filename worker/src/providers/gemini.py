@@ -1,0 +1,428 @@
+import re
+import time
+import uuid
+from typing import Optional
+from urllib.parse import urlparse
+
+from src.providers.base import (BaseProvider, FeatureType, GenerationResult, JobCancelled,
+                                MediaArtifact, ProviderError)
+
+# Everything below was measured on the owner's account on 2026-09-25 and 2026-09-27; see
+# docs/research/2026-09-27-gemini.md. The interface is Vietnamese, so nothing keys on words.
+HOME = "https://gemini.google.com/app"
+COMPOSER = 'rich-textarea .ql-editor[contenteditable="true"]'
+# The turn is this streamed request, not the batchexecute rpcs around it: its body carries the
+# answer and it finishes after any picture has arrived (13.1s picture, 15.0s stream).
+STREAM = "BardFrontendService/StreamGenerate"
+# A generated picture is fetched from here during its turn and nowhere else. A user's upload is a
+# blob during the turn and /rd-gg/ when reopened, so the match is exact, never a prefix of this.
+PICTURE_HOST = "lh3.googleusercontent.com"
+PICTURE_PATH = "/rd-gg-dl/"
+SETTINGS_URL = "https://gemini.google.com/personalization-settings"
+SETTINGS_PATH = "/personalization-settings"
+# Where a signed-out session is sent instead of the settings page.
+SIGNED_OUT_PATH = "/saved-info"
+SWITCH = 'button[role="switch"]'
+# The upload control carries no data-test-id, only a localised label: the weakest selector here.
+UPLOAD_CONTROL = ("button[aria-label*='Nội dung tải lên']", "button[aria-label*='Upload']")
+UPLOAD_INPUT = 'input[type="file"][accept="image/*"]'
+THREAD = re.compile(r"/app/([0-9a-f]{8,})(?:[/?#]|$)")
+
+REPLY_TIMEOUT = 300
+THREAD_WAIT = 30
+OPEN_ATTEMPTS = 2
+UPLOAD_WAIT = 30
+SETTINGS_WAIT = 15
+
+SIGNED_OUT = "the gemini session is signed out; run scripts/login_provider.py gemini"
+PERSONAL_CONTEXT_ON = ("the shared Gemini account has personal context switched on, so this turn "
+                       "was not sent; ask the account owner to turn it off "
+                       "(gemini.google.com/personalization-settings) and try again")
+
+
+def is_generated_picture(url: str, content_type: str, size) -> bool:
+    """A picture generated in this turn, by where it came from; never by what it looks like."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return (parsed.scheme == "https" and parsed.hostname == PICTURE_HOST
+            and parsed.path.startswith(PICTURE_PATH)
+            and (content_type or "").startswith("image/") and bool(size))
+
+
+class GeminiProvider(BaseProvider):
+    """Drives the owner's gemini.google.com session through cloakbrowser.
+
+    The page signs its own calls (a WAA handshake), so turns are typed into it. The server's word
+    that a turn is over is its StreamGenerate response finishing; pictures are caught from the
+    network while the turn runs, because reopening the thread does not fetch them again.
+    """
+
+    name = "gemini"
+    supported_features = (FeatureType.CHAT, FeatureType.IMAGE, FeatureType.VIDEO_SCRIPT)
+
+    def __init__(self, media_path, sessions_path):
+        super().__init__(media_path, sessions_path)
+        self.session_file = self.sessions_path / "gemini.json"
+        self._browser = None
+        self._context = None
+        self._page = None
+        self.last_settle = None
+        self.last_open = None
+        self.last_cancelled_thread = None
+        self.memory = None
+
+    def start(self) -> None:
+        if not self.session_file.exists():
+            raise RuntimeError(
+                "no saved session at {}; run scripts/login_provider.py gemini".format(self.session_file))
+
+    def stop(self) -> None:
+        if self._context is not None:
+            try:
+                self._context.storage_state(path=str(self.session_file))
+            except Exception:
+                pass
+        if self._browser is not None:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+        self._browser = self._context = self._page = None
+
+    def _ensure_page(self):
+        if self._page is not None:
+            return self._page
+        import cloakbrowser
+
+        self._browser = cloakbrowser.launch(headless=True)
+        self._context = self._browser.new_context(storage_state=str(self.session_file))
+        self._page = self._context.new_page()
+        return self._page
+
+    @staticmethod
+    def _thread_id(page) -> Optional[str]:
+        found = THREAD.search(getattr(page, "url", "") or "")
+        return found.group(1) if found else None
+
+    @staticmethod
+    def _flat(text: str) -> str:
+        return " ".join((text or "").split())
+
+    def _composer_ready(self, page, seconds: float) -> bool:
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            page.wait_for_timeout(500)
+            if page.locator(COMPOSER).count() and page.locator(COMPOSER).first.is_visible():
+                return True
+        return False
+
+    # --- the leak switch -------------------------------------------------------------
+
+    def _read_personal_context(self) -> str:
+        """The personal context switch as the settings page shows it: on, off, unknown or signed-out.
+
+        Read in a tab of its own, so the conversation's page is never moved. Only a page that
+        stayed on /personalization-settings is read: a signed-out session lands on /saved-info,
+        whose own switches are not this one.
+        """
+        self.memory = "unknown"
+        page = self._context.new_page()
+        try:
+            page.goto(SETTINGS_URL, timeout=60000, wait_until="domcontentloaded")
+            deadline = time.time() + SETTINGS_WAIT
+            while time.time() < deadline:
+                page.wait_for_timeout(500)
+                path = urlparse(page.url or "").path.rstrip("/")
+                if path == SIGNED_OUT_PATH:
+                    self.memory = "signed-out"
+                    return self.memory
+                if path != SETTINGS_PATH:
+                    continue
+                switches = page.locator(SWITCH)
+                if switches.count() == 1:
+                    checked = switches.first.get_attribute("aria-checked")
+                    self.memory = {"true": "on", "false": "off"}.get(checked, "unknown")
+                    return self.memory
+            return self.memory
+        except Exception:
+            return self.memory
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
+
+    def _guard(self):
+        """Look before speaking. On refuses; signed out refuses; unknown does not block."""
+        state = self._read_personal_context()
+        if state == "signed-out":
+            raise ProviderError(SIGNED_OUT, kind="provider_misconfigured")
+        if state == "on":
+            raise ProviderError(PERSONAL_CONTEXT_ON, kind="provider_misconfigured")
+
+    # --- opening and typing ------------------------------------------------------------
+
+    def _open(self, thread_url: Optional[str] = None):
+        page = self._ensure_page()
+        wanted = self._thread_id(type("AtUrl", (), {"url": thread_url or ""})())
+        target = "{}/{}".format(HOME, wanted) if wanted else HOME
+        for attempt in range(OPEN_ATTEMPTS):
+            page.goto(target, timeout=90000, wait_until="domcontentloaded")
+            ready = self._composer_ready(page, 30)
+            landed = self._thread_id(page)
+            self.last_open = {"wanted": (wanted or "new")[:8], "composer": ready,
+                              "landed": (landed or page.url)[:60], "attempt": attempt + 1}
+            if ready and (not wanted or landed == wanted):
+                return page
+            if ready and wanted and not landed and attempt + 1 == OPEN_ATTEMPTS:
+                # Measured: a thread that no longer exists lands back on /app, twice in a row
+                # here. That is Gemini's "gone"; anything else is a failure, never a fresh chat.
+                target, wanted = HOME, None
+                page.goto(target, timeout=90000, wait_until="domcontentloaded")
+                if self._composer_ready(page, 30):
+                    return page
+        raise ProviderError("gemini did not open {}: composer {} landed {}".format(
+            (wanted or "a new chat")[:8], (self.last_open or {}).get("composer"),
+            (self.last_open or {}).get("landed")))
+
+    def _clear_composer(self, page, box):
+        try:
+            box.click(timeout=5000)
+            page.keyboard.press("ControlOrMeta+a")
+            page.keyboard.press("Backspace")
+        except Exception:
+            pass
+
+    def _send(self, page, prompt: str):
+        """Type the turn and prove it landed before pressing Enter.
+
+        insert_text, never keyboard.type: type() maps a newline to Enter, and a replayed history
+        is full of newlines. Both ends of the read-back must match, and a box that will not clear
+        is never typed into, or a prompt left over from a failed attempt goes out twice.
+        """
+        box = page.locator(COMPOSER).first
+        whole = self._flat(prompt)
+        head, tail = whole[:40], whole[-40:]
+        for attempt in range(3):
+            if attempt or self._flat(box.inner_text()):
+                self._clear_composer(page, box)
+                if self._flat(box.inner_text()):
+                    self._phase("retrying the composer")
+                    continue
+            try:
+                box.click(timeout=10000)
+            except Exception:
+                box.focus()
+            page.keyboard.insert_text(prompt)
+            page.wait_for_timeout(300)
+            landed = self._flat(box.inner_text())
+            if landed.startswith(head) and landed.endswith(tail):
+                break
+            self._phase("retrying the composer")
+        else:
+            raise ProviderError("the prompt never reached gemini's composer")
+        page.keyboard.press("Enter")
+
+    def _attach(self, page, filename: str):
+        path = self.media_path / filename
+        if not path.exists():
+            raise ProviderError("reference image {} not found".format(filename), kind="worker_error")
+        if not page.locator(UPLOAD_INPUT).count():
+            for sel in UPLOAD_CONTROL:
+                if page.locator(sel).count():
+                    page.locator(sel).first.click(timeout=10000)
+                    break
+            page.wait_for_timeout(1500)
+        if not page.locator(UPLOAD_INPUT).count():
+            raise ProviderError("gemini's upload control did not open")
+        with page.expect_response(lambda r: "ProcessFile" in r.url, timeout=UPLOAD_WAIT * 1000):
+            page.locator(UPLOAD_INPUT).first.set_input_files(str(path))
+        page.wait_for_timeout(1000)
+
+    # --- one turn --------------------------------------------------------------------
+
+    def _bubbles(self, page):
+        try:
+            return page.locator("message-content, model-response").all_inner_texts()
+        except Exception:
+            return []
+
+    def _run(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
+        self.last_cancelled_thread = None
+        page = self._open(thread_url)
+        self._guard()
+        if upload:
+            self._attach(page, upload)
+
+        # The handler only collects: reading a streamed body inside it blocks the dispatcher until
+        # the stream ends, and the picture events queued behind it were lost (measured 2026-09-27).
+        streams, candidates = [], []
+
+        def on_response(r):
+            if STREAM in r.url and r.request.method == "POST":
+                streams.append(r)
+            elif PICTURE_HOST in r.url:
+                candidates.append(r)
+
+        had = len(self._bubbles(page))
+        page.on("response", on_response)
+        started = time.time()
+        stream = {"status": None}
+        self.last_cancelled_thread = thread_url
+        self._phase("waiting")
+        try:
+            self._send(page, prompt)
+            while not streams and time.time() - started < REPLY_TIMEOUT:
+                page.wait_for_timeout(1000)
+                self._check_stop()
+            if streams:
+                self._phase("reply started")
+                while time.time() - started < REPLY_TIMEOUT:
+                    try:
+                        streams[0].finished()
+                        stream["status"] = streams[0].status
+                        break
+                    except Exception:
+                        page.wait_for_timeout(1000)
+                    self._check_stop()
+            # Let the events that queued while the stream ran be delivered.
+            page.wait_for_timeout(2000)
+            waited = 0
+            while not self._thread_id(page) and waited < THREAD_WAIT:
+                page.wait_for_timeout(1000)
+                waited += 1
+        except JobCancelled:
+            if self._thread_id(page):
+                self.last_cancelled_thread = page.url
+            raise
+        finally:
+            try:
+                page.remove_listener("response", on_response)
+            except Exception:
+                pass
+
+        landed = "{}/{}".format(HOME, self._thread_id(page)) if self._thread_id(page) else None
+        if stream["status"] is None:
+            self.last_settle = "timeout"
+            return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
+                                    error="gemini did not finish within {}s".format(REPLY_TIMEOUT))
+        self.last_settle = "server"
+        if stream["status"] != 200:
+            raise ProviderError("gemini refused the turn: its stream answered {}".format(stream["status"]))
+
+        # The server says the turn is over; the words are read from the new bubble the page
+        # painted for it, after it holds still for a second.
+        text, last = "", None
+        for _ in range(10):
+            now = self._bubbles(page)
+            text = now[-1].strip() if len(now) > had else ""
+            if text and text == last:
+                break
+            last = text
+            page.wait_for_timeout(1000)
+
+        pictures = []
+        for r in candidates:
+            try:
+                body = r.body()
+            except Exception:
+                continue
+            ctype = (r.headers or {}).get("content-type", "")
+            if is_generated_picture(r.url, ctype, len(body)) and body not in pictures:
+                pictures.append(body)
+        media = []
+        for body in pictures:
+            filename = "gemini-{}.jpg".format(uuid.uuid4().hex)
+            (self.media_path / filename).write_bytes(body)
+            media.append(MediaArtifact(filename=filename, type="image",
+                                       metadata={"prompt": prompt[:500], "source": "gemini",
+                                                 "size": len(body)}))
+        if media:
+            self._phase("picture appeared")
+        if not text and not media:
+            return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
+                                    error="gemini's turn carried neither words nor a picture")
+        return GenerationResult(success=True, text=text, media=media, thread_url=landed)
+
+    # --- threads ---------------------------------------------------------------------
+
+    def delete_thread(self, thread_url: str) -> bool:
+        """The row's own menu, its delete item and the dialog's matching button (measured).
+
+        A thread that no longer exists opens back on /app, which counts as gone.
+        """
+        cid = self._thread_id(type("AtUrl", (), {"url": thread_url or ""})())
+        if not cid:
+            return True
+        page = self._ensure_page()
+        page.goto("{}/{}".format(HOME, cid), timeout=90000, wait_until="domcontentloaded")
+        self._composer_ready(page, 30)
+        if self._thread_id(page) != cid:
+            return True
+        link = page.locator('a[href="/app/{}"]'.format(cid)).first
+        if not link.count():
+            raise ProviderError("gemini thread {} has no row to delete from".format(cid[:8]))
+        title = (link.inner_text() or "").strip()
+        link.hover(timeout=10000)
+        page.wait_for_timeout(500)
+        # This conversation's own row: a plain div ancestor holds every row in the list.
+        row = link.locator('xpath=ancestor::*[@data-test-id="conversation"][1]')
+        opened = False
+        buttons = row.locator("button")
+        for i in range(buttons.count()):
+            button = buttons.nth(i)
+            if not button.is_visible():
+                continue
+            if title and title not in (button.get_attribute("aria-label") or ""):
+                raise ProviderError("gemini's row menu for {} did not name it".format(cid[:8]))
+            button.click(timeout=10000)
+            opened = True
+            break
+        item = page.locator('[role="menuitem"][data-test-id*="delete"]')
+        if not opened or not item.count():
+            raise ProviderError("gemini offered no delete for {}".format(cid[:8]))
+        # The confirm button repeats the menu item's own word, whatever the language.
+        word = (item.first.inner_text() or "").strip()
+        item.first.click(timeout=10000)
+        page.wait_for_timeout(1500)
+        confirm = page.locator("mat-dialog-container").first.locator("button")
+        for i in range(confirm.count()):
+            if (confirm.nth(i).inner_text() or "").strip() == word:
+                confirm.nth(i).click(timeout=10000)
+                page.wait_for_timeout(2500)
+                page.goto("{}/{}".format(HOME, cid), timeout=90000, wait_until="domcontentloaded")
+                self._composer_ready(page, 30)
+                if self._thread_id(page) != cid:
+                    return True
+                raise ProviderError("gemini thread {} still opens after delete".format(cid[:8]))
+        raise ProviderError("gemini's delete dialog for {} had no matching button".format(cid[:8]))
+
+    # --- the three job kinds ---------------------------------------------------------
+
+    def chat(self, message: str, history: Optional[list] = None,
+             thread_url: Optional[str] = None) -> GenerationResult:
+        prompt = message
+        if history and not thread_url:
+            lines = ["{}: {}".format(turn["role"], turn["content"]) for turn in history]
+            prompt = ("Here is our conversation so far.\n\n" + "\n\n".join(lines)
+                      + "\n\nReply to this next message only:\n" + message)
+        return self._run(prompt, thread_url=thread_url)
+
+    def generate_image(self, prompt: str, reference_filename: Optional[str] = None,
+                       thread_url: Optional[str] = None) -> GenerationResult:
+        instruction = "Generate an image: {}".format(prompt)
+        if reference_filename:
+            instruction = ("Using the attached image as the character reference, generate a new "
+                           "image: {}").format(prompt)
+        return self._run(instruction, upload=reference_filename, thread_url=thread_url)
+
+    def generate_video_script(self, image_filename: str, duration: int = 5,
+                              thread_url: Optional[str] = None) -> GenerationResult:
+        instruction = (
+            "Write a Wan 2.2 video prompt of {} seconds for the attached image. "
+            "Describe camera movement, character animation and ambient motion. "
+            "Answer with a single paragraph under 150 words and nothing else."
+        ).format(duration)
+        return self._run(instruction, upload=image_filename, thread_url=thread_url)

@@ -245,14 +245,20 @@ def probe_peek(browser, ids):
 
 # --- turns -----------------------------------------------------------------
 
-def probe_settle(browser):
-    """Which response carries the finished answer, and when, against when the page settles."""
+def probe_settle(browser, picture=False):
+    """Which response carries the finished answer, and when, against when the page settles.
+    With picture=True, also when the picture arrives against when the stream ends."""
     page = open_page(browser)
     token = "teal-{}".format(int(time.time()) % 100000)
     t0 = time.time()
     seen = []
 
     def on_response(r):
+        ctype = (r.headers or {}).get("content-type", "")
+        if picture and "lh3.googleusercontent.com/rd-gg-dl/" in r.url and ctype.startswith("image/"):
+            seen.append({"at": round(time.time() - t0, 1), "url": "lh3/rd-gg-dl/ (picture)",
+                         "status": r.status})
+            return
         if r.request.method != "POST" or "google" not in r.url:
             return
         try:
@@ -261,18 +267,25 @@ def probe_settle(browser):
             body = b""
         seen.append({"at": round(time.time() - t0, 1), "url": r.url.split("?")[0][-70:],
                      "rpc": r.url.split("rpcids=", 1)[-1].split("&")[0] if "rpcids=" in r.url else None,
-                     "status": r.status, "bytes": len(body), "has_token": token.encode() in body})
+                     "status": r.status, "bytes": len(body), "has_token": token.encode() in body,
+                     "names_rd_gg": b"rd-gg" in body, "names_googleusercontent": b"googleusercontent" in body})
 
     page.on("response", on_response)
     had = len(bubbles(page))
     t0 = time.time()
-    send(page, "Write two short sentences, and end the second one with the word {}.".format(token))
-    text, at = wait_new_bubble(page, had)
+    if picture:
+        send(page, "Generate an image of a plain purple circle on a white background.")
+        found, at = wait_picture(page)
+        text = "picture {}".format([(f["w"], f["h"]) for f in found])
+        page.wait_for_timeout(6000)
+    else:
+        send(page, "Write two short sentences, and end the second one with the word {}.".format(token))
+        text, at = wait_new_bubble(page, had)
     say("settle", "page held still at {}s: {!r}".format(at, text[:120]))
     page.wait_for_timeout(3000)
     for item in seen:
         say("settle", "response {}".format(item))
-    carriers = [s for s in seen if s["has_token"]]
+    carriers = [s for s in seen if s.get("has_token")]
     say("settle", "responses whose body carries the token: {}".format(
         [(c["url"], c["rpc"], c["at"]) for c in carriers] or "none"))
     say("settle", "thread {}".format(thread_of(page)))
@@ -455,7 +468,8 @@ def probe_purge(browser, ids):
 
 PROBES = {"open": probe_open, "session": probe_session, "settings-read": probe_settings_read,
           "banner": probe_banner, "list": probe_list, "settle": probe_settle,
-          "persist": probe_persist, "recall": probe_recall, "pictures": probe_pictures}
+          "persist": probe_persist, "recall": probe_recall, "pictures": probe_pictures,
+          "settle-picture": lambda b: probe_settle(b, picture=True)}
 WITH_IDS = {"peek": probe_peek, "purge": probe_purge}
 # "all" runs only what costs no turn and changes nothing.
 FREE = ("open", "session", "settings-read", "banner", "list")
