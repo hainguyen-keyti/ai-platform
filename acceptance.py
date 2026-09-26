@@ -308,7 +308,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         code, output = -1, "timed out after 180s"
     lines = [l for l in output.splitlines() if l.strip()]
     summary = next((l for l in reversed(lines) if "PASSED" in l), "")
-    if code == 0 and summary.startswith("4/4"):
+    counts = re.match(r"(\d+)/(\d+) PASSED", summary)
+    if code == 0 and counts and counts.group(1) == counts.group(2) and int(counts.group(2)) >= 7:
         c["the provider's error banner is recognised by shape"].passed(summary)
     else:
         c["the provider's error banner is recognised by shape"].failed(
