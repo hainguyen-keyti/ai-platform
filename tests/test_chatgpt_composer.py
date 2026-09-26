@@ -121,10 +121,12 @@ class Page:
         self.clock.now += ms / 1000.0
 
     def locator(self, selector):
-        composer = (PROSEMIRROR in self.has and ("ProseMirror" in selector
-                                                 or 'contenteditable="true"' in selector))
-        placeholder = (PLACEHOLDER in self.has and (PLACEHOLDER in selector
-                                                    or selector.strip() == "textarea"))
+        # A comma is a list of alternatives, as in the browser: any part may match.
+        parts = [p.strip() for p in selector.split(",")]
+        composer = PROSEMIRROR in self.has and any(
+            "ProseMirror" in p or 'contenteditable="true"' in p for p in parts)
+        placeholder = PLACEHOLDER in self.has and any(
+            PLACEHOLDER in p or p.startswith("textarea") for p in parts)
         return Box(self, composer or placeholder)
 
     def evaluate(self, script, *args):
