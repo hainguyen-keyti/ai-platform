@@ -66,6 +66,10 @@ class Runner(threading.Thread):
                                     json={"providers": [self.provider]})
                     except Exception:
                         pass
+                    # A thread deletion is one call, not a turn: a pacing gap
+                    # must not starve it. An error cooldown still does.
+                    if not self.pool.cooling_down(self.provider):
+                        self._maybe_delete_one_thread(client)
                     self._stop.wait(min(hold, 5.0))
                     continue
 
@@ -76,12 +80,7 @@ class Runner(threading.Thread):
                     self.last_error = "claim failed, {}: {}".format(type(exc).__name__, exc)
 
                 if job is None:
-                    if time.time() >= self._next_tombstone_check:
-                        self._next_tombstone_check = time.time() + TOMBSTONE_INTERVAL_SECONDS
-                        try:
-                            self._delete_one_thread(client)
-                        except Exception as exc:
-                            self.last_error = "tombstone failed, {}: {}".format(type(exc).__name__, exc)
+                    self._maybe_delete_one_thread(client)
                     self._stop.wait(settings.poll_interval)
                     continue
 
@@ -99,6 +98,15 @@ class Runner(threading.Thread):
             return None
         response.raise_for_status()
         return response.json()
+
+    def _maybe_delete_one_thread(self, client):
+        if time.time() < self._next_tombstone_check:
+            return
+        self._next_tombstone_check = time.time() + TOMBSTONE_INTERVAL_SECONDS
+        try:
+            self._delete_one_thread(client)
+        except Exception as exc:
+            self.last_error = "tombstone failed, {}: {}".format(type(exc).__name__, exc)
 
     def _delete_one_thread(self, client):
         response = client.post("/internal/tombstones/claim", json={"providers": [self.provider]})

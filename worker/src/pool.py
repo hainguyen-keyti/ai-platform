@@ -123,6 +123,11 @@ class BrowserPool:
             return health.hold_seconds() if health else 0.0
         return max([h.hold_seconds() for h in self._health.values()] or [0.0])
 
+    def cooling_down(self, provider: str) -> bool:
+        """An error cooldown, as opposed to a pacing gap: the site is unwell now."""
+        health = self._health.get(provider)
+        return bool(health) and health.cooldown_until > time.time()
+
     def pacing(self, provider: str) -> dict:
         health = self._health.get(provider)
         return dict(health.pacing) if health else {}
