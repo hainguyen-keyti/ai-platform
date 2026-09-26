@@ -5,16 +5,23 @@ import uuid
 from collections import Counter
 from pathlib import PurePosixPath
 from typing import Optional
+from urllib.parse import unquote
 
 from src.providers.base import (MEMORY_ON_ERROR, BaseProvider, FeatureType, GenerationResult,
                                 JobCancelled, MediaArtifact, ProviderError)
 
 HOME = "https://chatgpt.com/"
-TEXTAREA = "#prompt-textarea"
-SEND_BUTTON = 'button[data-testid="send-button"]'
-STOP_BUTTON = '[data-testid="stop-button"]'
-ASSISTANT_TURN = '[data-message-author-role="assistant"]'
-UPLOAD_INPUT = "#upload-files"
+# Measured 2026-09-27 (docs/research/2026-09-27-chatgpt-composer.md): the page
+# changed overnight. Each selector lists the new page first and keeps the old one
+# in case both are still served. The page first paints textarea#pending-home-input
+# and mounts the real composer about ten seconds later: that placeholder is not ready.
+COMPOSER = 'div.ProseMirror[contenteditable="true"], #prompt-textarea'
+SEND_BUTTON = 'button[data-testid="send-button"], button[aria-label="Send"]'
+# Only an economy: while it shows, the server is not asked. Without it the
+# server is simply asked every poll, so a relabelled button costs reads, not truth.
+STOP_BUTTON = '[data-testid="stop-button"], button[aria-label="Stop"]'
+ASSISTANT_TURN = '[data-message-author-role="assistant"], [data-chatgpt-selection-message-id]'
+UPLOAD_INPUT = '#upload-files, input[type="file"][accept="image/*"]'
 
 # One ceiling for every request. A short answer still returns as soon as it
 # settles, so the generous bound only costs anything when a picture is actually
@@ -62,15 +69,19 @@ async (url) => {
 # turn, and it comes back with a fresh url and re-encoded bytes, so neither a
 # url snapshot nor a content hash recognises it. Position is what tells them
 # apart: skip the user turn, keep everything else.
+# Since 2026-09-27 both a generated picture and an upload are blob: images with
+# no role ancestor; only the generated one sits in the generated-image gallery.
 COLLECT_CANDIDATE_IMAGES = """
 () => {
     const out = [];
     for (const img of document.querySelectorAll("img")) {
         const src = img.src || "";
-        if (!src.includes("estuary") && !src.includes("oaiusercontent")) continue;
         if (img.naturalWidth < 256 || img.naturalHeight < 256) continue;
-        const turn = img.closest("[data-message-author-role]");
-        if (turn && turn.getAttribute("data-message-author-role") === "user") continue;
+        if (!img.closest('[data-testid="generated-image-gallery"]')) {
+            if (!src.includes("estuary") && !src.includes("oaiusercontent")) continue;
+            const turn = img.closest("[data-message-author-role]");
+            if (turn && turn.getAttribute("data-message-author-role") === "user") continue;
+        }
         if (!out.includes(src)) out.push(src);
     }
     return out;
@@ -176,10 +187,13 @@ async ([token, keys]) => {
 # server's own message and a Retry button, and no ordinary reply uses that
 # token. Shape, not words: the message comes from the server in whatever
 # language and wording the failure had.
+#
+# Measured 2026-09-27 the same way: the banner is now an aside with role alert,
+# text-danger classes, the server's message and a Retry button.
 ERROR_BANNER_PRESENT = """
 () => {
     const found = [];
-    for (const el of document.querySelectorAll('main .text-token-text-error')) {
+    for (const el of document.querySelectorAll('main .text-token-text-error, main [role="alert"]')) {
         const text = (el.textContent || '').trim();
         if (el.querySelector('button') && text) found.push(text.slice(0, 160));
     }
@@ -213,7 +227,7 @@ SANDBOX_PATH = re.compile(r"/mnt/data/[^\s\"'`)\]}>,]+")
 # behavior-btn class inside an assistant turn.
 SNAPSHOT_DOWNLOADS = """
 () => Array.from(document.querySelectorAll("button.behavior-btn"))
-        .filter((b) => b.closest('[data-message-author-role="assistant"]'))
+        .filter((b) => b.closest('[data-message-author-role="assistant"], [data-chatgpt-selection-message-id]'))
         .map((b) => (b.textContent || "").trim())
         .filter((t) => t.length > 0 && t.length < 200)
 """
@@ -281,7 +295,7 @@ class ChatGPTProvider(BaseProvider):
         deadline = time.time() + seconds
         while time.time() < deadline:
             page.wait_for_timeout(500)
-            if page.locator(TEXTAREA).count() and page.locator(TEXTAREA).first.is_visible():
+            if page.locator(COMPOSER).count() and page.locator(COMPOSER).first.is_visible():
                 return True
         return False
 
@@ -326,16 +340,56 @@ class ChatGPTProvider(BaseProvider):
         page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
         if self._composer_ready(page, 45):
             return page
-        raise ProviderError("composer never appeared; the session is probably logged out")
+        # Measured 2026-09-27: a signed-in session met a changed page and was
+        # reported as logged out, which sent the diagnosis the wrong way.
+        try:
+            token = page.evaluate(SESSION_TOKEN)
+        except Exception as exc:
+            raise ProviderError("composer never appeared and the session could not be read: "
+                                "{}".format(type(exc).__name__))
+        if not token:
+            raise ProviderError("composer never appeared and there is no session token: the "
+                                "session is logged out; run scripts/login_provider.py chatgpt")
+        raise ProviderError("composer never appeared although the session is signed in: "
+                            "chatgpt.com has changed its page; measure it with "
+                            "tests/provider_probe.py composer")
+
+    @staticmethod
+    def _flat(text: str) -> str:
+        """One line of single spaces, so raw prompt and rendered text compare."""
+        return " ".join((text or "").split())
+
+    def _clear_composer(self, page, box):
+        try:
+            box.click(timeout=5000)
+            page.keyboard.press("ControlOrMeta+a")
+            page.keyboard.press("Backspace")
+        except Exception:
+            pass
 
     def _send(self, page, prompt: str):
-        box = page.locator(TEXTAREA).first
-        try:
-            box.click(timeout=10000)
-        except Exception:
-            box.focus()
-        box.fill(prompt)
-        page.wait_for_timeout(300)
+        """Type the turn and prove it landed before pressing Enter.
+
+        insert_text, never keyboard.type: type() presses a key per character and
+        maps a newline to Enter, and a replayed history is full of newlines, so
+        one job would go out as several turns.
+        """
+        box = page.locator(COMPOSER).first
+        wanted = self._flat(prompt)[:40]
+        for attempt in range(3):
+            if attempt or self._flat(box.inner_text()):
+                self._clear_composer(page, box)
+            try:
+                box.click(timeout=10000)
+            except Exception:
+                box.focus()
+            page.keyboard.insert_text(prompt)
+            page.wait_for_timeout(300)
+            if wanted in self._flat(box.inner_text()):
+                break
+            self._phase("retrying the composer")
+        else:
+            raise ProviderError("the prompt never reached the composer")
 
         # Enter rather than the send button: with an attachment in the composer
         # the preview panel is painted over the button and swallows the click,
@@ -356,8 +410,9 @@ class ChatGPTProvider(BaseProvider):
             return None
         tail = url.rsplit("/c/", 1)[1].split("?")[0].split("#")[0]
         # A turn whose first request failed leaves a client-side placeholder in
-        # the address (measured: /c/WEB:<uuid>); the server knows no such thread.
-        if not tail or tail.startswith("WEB:"):
+        # the address (measured: /c/WEB:<uuid>, and since 2026-09-27
+        # /c/local-chatgpt%3A<uuid>); the server knows no such thread.
+        if not tail or ":" in unquote(tail):
             return None
         return tail
 
@@ -678,7 +733,7 @@ class ChatGPTProvider(BaseProvider):
             path = self.media_path / upload
             if not path.exists():
                 return GenerationResult.failure("reference image {} not found".format(upload))
-            page.locator(UPLOAD_INPUT).set_input_files(str(path))
+            page.locator(UPLOAD_INPUT).first.set_input_files(str(path))
             page.wait_for_timeout(3000)
 
         seen_before = set(page.evaluate(SNAPSHOT_IMAGES))

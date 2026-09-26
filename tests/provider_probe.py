@@ -473,7 +473,8 @@ COMPOSER_CANDIDATES = (
     "textarea",
 )
 USER_TURN = '[data-message-author-role="user"]'
-MULTI_LINE = "Reply with the single word: ok\n\nThis second line belongs to the same turn."
+MULTI_LINE = ("Write six short sentences about the sea, plain text, no list.\n\n"
+              "This second line belongs to the same turn.")
 
 EDITABLES = """
 () => Array.from(document.querySelectorAll('[contenteditable="true"], textarea'))
@@ -601,8 +602,24 @@ def probe_composer(p):
             say("composer", "Enter did not send and no send-like button matched")
 
     saw_stop, settled_at, last = False, None, None
+    # What the composer's own buttons say while the model works, second by
+    # second: the old stop button is gone and something must replace it.
+    form_buttons = """(el) => {
+        const form = el.closest('form') || el.parentElement.parentElement.parentElement;
+        return Array.from(form.querySelectorAll('button')).map(b =>
+            (b.getAttribute('aria-label') || '') + '|' + (b.getAttribute('data-testid') || '') +
+            '|' + b.getAttribute('type') + '|' + (b.disabled ? 'disabled' : ''));
+    }"""
+    timeline, previous = [], None
     while time.time() - started < 120:
         page.wait_for_timeout(1000)
+        try:
+            now = page.locator(box_sel).first.evaluate(form_buttons)
+        except Exception:
+            now = ["unreadable"]
+        if now != previous:
+            timeline.append((round(time.time() - started, 1), now))
+            previous = now
         if page.locator(STOP_BUTTON).count():
             saw_stop = True
         answers = page.locator(ASSISTANT_TURN)
@@ -611,6 +628,8 @@ def probe_composer(p):
             settled_at = round(time.time() - started, 1)
             break
         last = text
+    for at, buttons in timeline:
+        say("composer: buttons at {}s".format(at), buttons)
     users_after = page.locator(USER_TURN).count()
     say("composer: user turns", "{} -> {} (one turn is +1)".format(users_before, users_after))
     bubbles = page.locator(USER_TURN)
