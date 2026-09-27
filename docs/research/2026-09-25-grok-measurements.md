@@ -163,6 +163,13 @@ Behavior section's "Require Cmd+Enter To Submit" is off, so Enter sends, as the 
 Whether memory actually carries a fact from one conversation into another was not tried while it
 was on: a leak test would have written into the account's memory.
 
+With it off, two real turns through the driver after the guard went in (a9e03c1): a new
+conversation was told "Remember this word for later: teal-...", answered "ok" (17.3s); a second new
+conversation asked for the word and answered "Unknown" (15.5s). Both turns read `memory=off` before
+sending. The response to `GET /rest/user-settings` carries no `cache-control`, `expires`, `pragma`,
+`etag` or `last-modified` header (only `vary: Origin, ...`), so nothing marks it as reusable from
+the browser's cache; the driver fetches it again before every turn.
+
 ## Still unmeasured
 
 - whether `partial` and `inflightResponses` behave the same on a long streaming answer, a search
