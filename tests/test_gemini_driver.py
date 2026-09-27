@@ -8,7 +8,7 @@ editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ dur
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one.
-Prints N/26 PASSED.
+Prints N/29 PASSED.
 """
 
 import json
@@ -118,13 +118,17 @@ class Response:
     None (it never ends)."""
 
     def __init__(self, url, status=200, body=b"", ctype="application/json", method="POST",
-                 outcome="finished"):
+                 outcome="finished", fleeting=False):
         self.url = url
         self.status = status
         self._body = body
         self.headers = {"content-type": ctype}
         self.request = Request(url, method)
         self.outcome = outcome
+        # fleeting: the body can be read while the response is being delivered, not afterwards
+        # (a picture turn on 2026-09-27 came back empty while one read at arrival never did).
+        self.fleeting = fleeting
+        self.page = None
 
     def finished(self):
         if self.outcome != "finished":
@@ -132,6 +136,8 @@ class Response:
         return None
 
     def body(self):
+        if self.fleeting and not (self.page and self.page.dispatching):
+            raise RuntimeError("No resource with given identifier found")
         return self._body
 
 
@@ -191,6 +197,7 @@ class Page:
         self.thread = "https://gemini.google.com/app/0123456789abcdef"
         self.file_input = False
         self.process_file = 200
+        self.dispatching = False
 
     def on(self, event, handler):
         self.listeners.setdefault(event, []).append(handler)
@@ -200,8 +207,14 @@ class Page:
             self.listeners[event].remove(handler)
 
     def emit(self, event, arg):
-        for handler in list(self.listeners.get(event, [])):
-            handler(arg)
+        if isinstance(arg, Response):
+            arg.page = self
+        self.dispatching = True
+        try:
+            for handler in list(self.listeners.get(event, [])):
+                handler(arg)
+        finally:
+            self.dispatching = False
 
     def on_sent(self):
         self.url = self.thread
@@ -246,9 +259,34 @@ class Page:
         return lambda *args, **kwargs: None
 
 
+class Fetched:
+    def __init__(self, status, body):
+        self.status = status
+        self.ok = status == 200
+        self._body = body
+
+    def body(self):
+        return self._body
+
+
+class Session:
+    """context.request: fetches inside the session, from `served` (url -> bytes)."""
+
+    def __init__(self):
+        self.served = {}
+        self.asked = []
+
+    def get(self, url, *args, **kwargs):
+        self.asked.append(url)
+        if url in self.served:
+            return Fetched(200, self.served[url])
+        return Fetched(404, b"")
+
+
 class Context:
     def __init__(self, settings_page):
         self.settings_page = settings_page
+        self.request = Session()
 
     def new_page(self):
         return self.settings_page
@@ -494,6 +532,39 @@ def main():
         what, result = run_on(page, off(), prompt="describe it", upload=reference.name)
         record("{} stops the turn as a provider failure".format(label),
                what.startswith("refused") and page.sent == [], "{} sent {}".format(what, len(page.sent)))
+
+    picture_url = "https://lh3.googleusercontent.com/rd-gg-dl/generated-now"
+    page = Page(clock)
+    page.answer = ""
+    page.replies = [Response(picture_url, body=b"P" * 11909, ctype="image/jpeg", method="GET",
+                             fleeting=True), stream_ok]
+    p = provider_on(page, off())
+    result = p._run("Generate an image: a hexagon")
+    sizes = [m.metadata.get("size") for m in result.media]
+    record("a picture whose body is readable only as it arrives is still kept",
+           result.success and sizes == [11909], "success {} sizes {} seen {}".format(
+               result.success, sizes, getattr(p, "last_pictures", None)))
+
+    page = Page(clock)
+    page.answer = ""
+    page.replies = [Response(picture_url, body=b"", ctype="image/jpeg", method="GET"), stream_ok]
+    p = provider_on(page, off())
+    p._context.request.served[picture_url] = b"R" * 9000
+    result = p._run("Generate an image: a hexagon")
+    sizes = [m.metadata.get("size") for m in result.media]
+    record("a picture that arrived without its bytes is fetched again inside the session",
+           result.success and sizes == [9000], "success {} sizes {}".format(result.success, sizes))
+
+    upload_url = "https://lh3.googleusercontent.com/rd-gg/users-upload"
+    page = Page(clock)
+    page.answer = "a reply about the picture"
+    page.replies = [Response(upload_url, body=b"", ctype="image/png", method="GET"), stream_ok]
+    p = provider_on(page, off())
+    p._context.request.served[upload_url] = b"U" * 286
+    result = p._run("describe it")
+    record("only a generated picture is ever fetched again, never a user's",
+           result.success and result.media == [] and upload_url not in p._context.request.asked,
+           "media {} asked {}".format(len(result.media), p._context.request.asked))
 
     for url, expected in (("https://gemini.google.com/app/659ed82f23b56ced", "659ed82f23b56ced"),
                           ("https://gemini.google.com/app", None)):

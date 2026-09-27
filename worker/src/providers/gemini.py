@@ -74,6 +74,8 @@ class GeminiProvider(BaseProvider):
         self.last_settle = None
         self.last_open = None
         self.last_cancelled_thread = None
+        self.last_stream = None
+        self.last_pictures = []
         self.memory = None
 
     def start(self) -> None:
@@ -298,7 +300,17 @@ class GeminiProvider(BaseProvider):
             if STREAM in r.url and r.request.method == "POST":
                 streams.append(r)
             elif PICTURE_HOST in r.url:
-                candidates.append(r)
+                ctype = (r.headers or {}).get("content-type", "")
+                entry = {"url": r.url, "type": ctype, "body": b"", "note": ""}
+                # A picture's body is read the moment it arrives: read after the turn, the one
+                # response that carried the bytes has come back unreadable (2026-09-27). Pictures
+                # are small; the long stream is never read here.
+                if urlparse(r.url).path.startswith(PICTURE_PATH) and ctype.startswith("image/"):
+                    try:
+                        entry["body"] = r.body()
+                    except Exception as exc:
+                        entry["note"] = type(exc).__name__
+                candidates.append(entry)
 
         def on_finished(req):
             if STREAM in req.url and req.method == "POST":
@@ -343,6 +355,8 @@ class GeminiProvider(BaseProvider):
                 except Exception:
                     pass
 
+        self.last_stream = {"how": ended.get("how"), "streams": len(streams),
+                            "pictures seen": len(candidates)}
         landed = "{}/{}".format(HOME, self._thread_id(page)) if self._thread_id(page) else None
         if "how" not in ended:
             self.last_settle = "timeout"
@@ -369,14 +383,23 @@ class GeminiProvider(BaseProvider):
             page.wait_for_timeout(1000)
 
         pictures = []
-        for r in candidates:
-            try:
-                body = r.body()
-            except Exception:
-                continue
-            ctype = (r.headers or {}).get("content-type", "")
-            if is_generated_picture(r.url, ctype, len(body)) and body not in pictures:
-                pictures.append(body)
+        self.last_pictures = [(urlparse(e["url"]).path[:11], e["type"][:12], e["note"] or len(e["body"]))
+                              for e in candidates]
+        for e in candidates:
+            if is_generated_picture(e["url"], e["type"], len(e["body"])) and e["body"] not in pictures:
+                pictures.append(e["body"])
+        if not pictures:
+            # Every generated picture arrived without its bytes: fetch those urls again inside
+            # this session. Only /rd-gg-dl/ urls, which only a picture generated here uses.
+            for url in dict.fromkeys(e["url"] for e in candidates
+                                     if is_generated_picture(e["url"], e["type"], 1)):
+                try:
+                    fetched = self._context.request.get(url, timeout=30000)
+                    body = fetched.body() if fetched.ok else b""
+                except Exception:
+                    body = b""
+                if body and body not in pictures:
+                    pictures.append(body)
         media = []
         for body in pictures:
             filename = "gemini-{}.jpg".format(uuid.uuid4().hex)
