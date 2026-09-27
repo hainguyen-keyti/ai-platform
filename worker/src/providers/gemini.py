@@ -24,6 +24,10 @@ SETTINGS_URL = "https://gemini.google.com/personalization-settings"
 SETTINGS_PATH = "/personalization-settings"
 # Where a signed-out session is sent instead of the settings page.
 SIGNED_OUT_PATH = "/saved-info"
+# Where Google sends a machine it suspects of automated traffic (measured 2026-09-27); its query's
+# token holds the network's address, so that url never goes into an error.
+BLOCK_HOST = "www.google.com"
+BLOCK_PATH = "/sorry/"
 SWITCH = 'button[role="switch"]'
 # The upload control carries no data-test-id, only a localised label: the weakest selector here.
 UPLOAD_CONTROL = ("button[aria-label*='Nội dung tải lên']", "button[aria-label*='Upload']")
@@ -69,6 +73,9 @@ UPLOAD_WAIT = 30
 SETTINGS_WAIT = 15
 
 SIGNED_OUT = "the gemini session is signed out; run scripts/login_provider.py gemini"
+BLOCKED = ("Google is showing this machine its unusual-traffic check for Gemini "
+           "(www.google.com/sorry), so the worker backs off; wait for it to lift, logging in "
+           "again will not help")
 PERSONAL_CONTEXT_ON = ("the shared Gemini account has personal context switched on, so this turn "
                        "was not sent; ask the account owner to turn it off "
                        "(gemini.google.com/personalization-settings) and try again")
@@ -99,6 +106,15 @@ def is_generated_picture(url: str, content_type: str, size) -> bool:
     return (parsed.scheme == "https" and parsed.hostname == PICTURE_HOST
             and parsed.path.startswith(PICTURE_PATH)
             and (content_type or "").startswith("image/") and bool(size))
+
+
+def is_blocked(url: str) -> bool:
+    """Google's unusual-traffic check: no waiting on the page clears it, and nothing may solve it."""
+    try:
+        parsed = urlparse(url or "")
+    except ValueError:
+        return False
+    return parsed.hostname == BLOCK_HOST and parsed.path.startswith(BLOCK_PATH)
 
 
 class GeminiProvider(BaseProvider):
@@ -173,7 +189,8 @@ class GeminiProvider(BaseProvider):
     # --- the leak switch -------------------------------------------------------------
 
     def _read_personal_context(self) -> str:
-        """The personal context switch as the settings page shows it: on, off, unknown or signed-out.
+        """The personal context switch as the settings page shows it: on, off, unknown, signed-out
+        or blocked (Google's unusual-traffic check).
 
         Read in a tab of its own, so the conversation's page is never moved. Only a page that
         stayed on /personalization-settings is read: a signed-out session lands on /saved-info,
@@ -187,6 +204,9 @@ class GeminiProvider(BaseProvider):
             off_site = False
             while time.time() < deadline:
                 page.wait_for_timeout(500)
+                if is_blocked(page.url):
+                    self.memory = "blocked"
+                    return self.memory
                 landed = urlparse(page.url or "")
                 path = landed.path.rstrip("/")
                 # Sent to /saved-info (measured): no account.
@@ -215,8 +235,11 @@ class GeminiProvider(BaseProvider):
                 pass
 
     def _guard(self):
-        """Look before speaking. On refuses; signed out refuses; unknown does not block."""
+        """Look before speaking. On refuses; signed out refuses; blocked refuses as a provider error,
+        so the pool backs off; unknown does not block."""
         state = self._read_personal_context()
+        if state == "blocked":
+            raise ProviderError(BLOCKED)
         if state == "signed-out":
             raise ProviderError(SIGNED_OUT, kind="provider_misconfigured")
         if state == "on":
@@ -230,10 +253,14 @@ class GeminiProvider(BaseProvider):
         target = "{}/{}".format(HOME, wanted) if wanted else HOME
         for attempt in range(OPEN_ATTEMPTS):
             page.goto(target, timeout=90000, wait_until="domcontentloaded")
-            ready = self._composer_ready(page, 30)
+            blocked = is_blocked(page.url)
+            ready = not blocked and self._composer_ready(page, 30)
             landed = self._thread_id(page)
             self.last_open = {"wanted": (wanted or "new")[:8], "composer": ready,
-                              "landed": (landed or page.url)[:60], "attempt": attempt + 1}
+                              "landed": (landed or page.url.split("?")[0])[:60],
+                              "attempt": attempt + 1}
+            if blocked:
+                raise ProviderError(BLOCKED)
             if ready and (not wanted or landed == wanted):
                 return page
         # A deleted thread lands back on /app, and so could a slow one: nothing tells them apart,
@@ -512,6 +539,8 @@ class GeminiProvider(BaseProvider):
             return True
         page = self._ensure_page()
         page.goto("{}/{}".format(HOME, cid), timeout=90000, wait_until="domcontentloaded")
+        if is_blocked(page.url):
+            raise ProviderError(BLOCKED)
         self._composer_ready(page, 30)
         shows = self._thread_shows(page)
         if shows is False:
@@ -547,6 +576,8 @@ class GeminiProvider(BaseProvider):
                 confirm.nth(i).click(timeout=10000)
                 page.wait_for_timeout(2500)
                 page.goto("{}/{}".format(HOME, cid), timeout=90000, wait_until="domcontentloaded")
+                if is_blocked(page.url):
+                    raise ProviderError(BLOCKED)
                 self._composer_ready(page, 30)
                 if self._thread_shows(page) is False:
                     return True
