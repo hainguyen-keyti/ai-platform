@@ -41,7 +41,8 @@ class StubPage:
 
     def evaluate(self, script, arg=None):
         path = arg[0] if isinstance(arg, (list, tuple)) else arg
-        self.asked.append(path)
+        # (path, method, body): the read must stay a read, never a write to the shared account.
+        self.asked.append(tuple(arg) if isinstance(arg, (list, tuple)) else (arg, None, None))
         if path == "/rest/user-settings":
             if isinstance(self.settings, Exception):
                 raise self.settings
@@ -90,6 +91,7 @@ def main():
         ("a value that is not true or false reads unknown", (200, '{"enableMemory":"yes"}'), "unknown"),
         ("a failed read reads unknown", (500, ""), "unknown"),
         ("a body that is not json reads unknown", (200, "<html>just a moment</html>"), "unknown"),
+        ("json that is not an object reads unknown", (200, "[]"), "unknown"),
         ("a fetch that throws reads unknown", RuntimeError("Execution context was destroyed"), "unknown"),
     )
     for name, settings, expected in readings:
@@ -122,6 +124,40 @@ def main():
     record("a turn whose reading failed is not blocked (unknown does not block)",
            what == "sent" and sent == ["hello"] and getattr(p, "memory", None) == "unknown",
            "{} sent {} memory {!r}".format(what[:90], sent, getattr(p, "memory", None)))
+
+    what, sent, p = turn_with((200, "[]"))
+    record("a turn whose settings are not an object is not blocked and does not crash",
+           what == "sent" and sent == ["hello"], "{} sent {}".format(what[:90], sent))
+
+    # The review of 7555b93: one provider serves many turns, so the switch is read again before
+    # each one, and a failed read never keeps the previous turn's answer (its mutants M5 and M6).
+    p, pages, sent, seen = provider(), [], [], []
+    for settings in (OFF, ON, OFF, (500, "")):
+        pages.append(StubPage(settings))
+    queue = list(pages)
+
+    def send(_page, _composer, prompt):
+        sent.append(prompt)
+        raise Sent()
+
+    p._open = lambda thread_url=None: (queue.pop(0), "composer")
+    p._send = send
+    for prompt in ("one", "two", "three", "four"):
+        try:
+            p._run(prompt)
+        except (Sent, ProviderError):
+            pass
+        seen.append(getattr(p, "memory", None))
+    record("the switch is read again before every turn of one provider",
+           sent == ["one", "three", "four"], "sent {}".format(sent))
+    record("each turn's reading is its own, never the previous one's",
+           seen == ["off", "on", "off", "unknown"], "readings {}".format(seen))
+
+    # The review's mutant M9: a read turned into a POST would write the shared account's setting.
+    reads = [ask for page in pages for ask in page.asked if ask[0] == "/rest/user-settings"]
+    record("the read is a GET with no body, never a write",
+           len(reads) == 4 and all(ask[1] == "GET" and ask[2] is None for ask in reads),
+           "requests {}".format(reads))
 
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))
