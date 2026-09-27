@@ -225,6 +225,64 @@ def probe_list(browser):
         say("list", item)
 
 
+TURN_ORDER = """
+() => {
+    const out = [];
+    const tags = ['user-query', 'model-response', 'message-content'];
+    for (const n of document.querySelectorAll(tags.join(','))) {
+        out.push({tag: n.tagName.toLowerCase(), textLen: (n.innerText || '').trim().length,
+                  head: (n.innerText || '').trim().slice(0, 24),
+                  insideResponse: !!(n.parentElement && n.parentElement.closest('model-response'))});
+    }
+    return out;
+}
+"""
+
+
+def probe_turn_order(browser, ids):
+    """How a thread's turns sit in the page, in document order. Opens a thread; costs no turn."""
+    context = browser.new_context(storage_state=str(SESSION))
+    page = context.new_page()
+    for cid in ids:
+        page.goto("https://gemini.google.com/app/{}".format(cid), wait_until="domcontentloaded",
+                  timeout=90000)
+        page.wait_for_timeout(8000)
+        for item in page.evaluate(TURN_ORDER):
+            say("turn-order", "{} {}".format(cid[:8], item))
+
+
+SMALLEST_TURNS_BLOCK = """
+() => {
+    const turns = document.querySelectorAll('user-query, model-response');
+    if (!turns.length) return null;
+    let node = turns[0].parentElement;
+    while (node && Array.from(turns).some((t) => !node.contains(t))) node = node.parentElement;
+    return node ? node.outerHTML : null;
+}
+"""
+
+
+def probe_capture(browser, ids):
+    """Save one thread's turns, and nothing around them, as tests/fixtures/gemini_thread.html.
+    Opens a thread; costs no turn. Scripts and every url are stripped before saving."""
+    import re
+    context = browser.new_context(storage_state=str(SESSION))
+    page = context.new_page()
+    page.goto("https://gemini.google.com/app/{}".format(ids[0]), wait_until="domcontentloaded",
+              timeout=90000)
+    page.wait_for_timeout(8000)
+    html = page.evaluate(SMALLEST_TURNS_BLOCK)
+    if not html:
+        say("capture", "no turns on {}".format(ids[0]))
+        return
+    html = re.sub(r"<script.*?</script>", "", html, flags=re.S)
+    html = re.sub(r'\s(src|srcset|href|jslog|data-ved)="[^"]*"', "", html)
+    path = ROOT / "tests" / "fixtures" / "gemini_thread.html"
+    path.write_text("<main>\n{}\n</main>\n".format(html))
+    say("capture", "{} written, {} chars, {} user-query, {} model-response".format(
+        path.name, len(html), html.count("<user-query"), html.count("<model-response")))
+
+
 def probe_peek(browser, ids):
     """Does a thread exist, whatever the sidebar shows. A dead id lands back on /app."""
     context = browser.new_context(storage_state=str(SESSION))
@@ -470,7 +528,8 @@ PROBES = {"open": probe_open, "session": probe_session, "settings-read": probe_s
           "banner": probe_banner, "list": probe_list, "settle": probe_settle,
           "persist": probe_persist, "recall": probe_recall, "pictures": probe_pictures,
           "settle-picture": lambda b: probe_settle(b, picture=True)}
-WITH_IDS = {"peek": probe_peek, "purge": probe_purge}
+WITH_IDS = {"peek": probe_peek, "purge": probe_purge, "turn-order": probe_turn_order,
+            "capture": probe_capture}
 # "all" runs only what costs no turn and changes nothing.
 FREE = ("open", "session", "settings-read", "banner", "list")
 

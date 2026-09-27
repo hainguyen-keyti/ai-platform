@@ -8,7 +8,7 @@ editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ dur
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one.
-Prints N/29 PASSED.
+Prints N/35 PASSED.
 """
 
 import json
@@ -100,6 +100,12 @@ class Keyboard:
             self.page.text = ""
 
 
+class StillReading(BaseException):
+    """A handler whose body() has not returned when the turn is read: the real dispatcher keeps
+    that handler suspended in its greenlet while the rest of the page goes on (tier 1 re-review,
+    2026-09-27, a picture landing 2s after the stream)."""
+
+
 class BlocksForever(BaseException):
     """What Playwright's Response.finished() does on a stream that failed after its headers: it
     never returns (shown by the tier 1 review, 2026-09-27, against localhost). A BaseException,
@@ -118,7 +124,7 @@ class Response:
     None (it never ends)."""
 
     def __init__(self, url, status=200, body=b"", ctype="application/json", method="POST",
-                 outcome="finished", fleeting=False):
+                 outcome="finished", fleeting=False, slow=False):
         self.url = url
         self.status = status
         self._body = body
@@ -128,6 +134,7 @@ class Response:
         # fleeting: the body can be read while the response is being delivered, not afterwards
         # (a picture turn on 2026-09-27 came back empty while one read at arrival never did).
         self.fleeting = fleeting
+        self.slow = slow
         self.page = None
 
     def finished(self):
@@ -136,20 +143,25 @@ class Response:
         return None
 
     def body(self):
+        if self.slow:
+            raise StillReading()
         if self.fleeting and not (self.page and self.page.dispatching):
             raise RuntimeError("No resource with given identifier found")
         return self._body
 
 
 class Bubbles:
+    """The page's `message-content, model-response` elements: two per answer, as measured."""
+
     def __init__(self, page):
         self.page = page
 
     def all_inner_texts(self):
-        # A reopened thread paints its earlier turns a moment after the composer shows.
-        late = self.page.late if (self.page.late_at is not None
-                                  and self.page.clock.now >= self.page.late_at) else []
-        return list(late) + list(self.page.bubbles)
+        out = []
+        for kind, text in self.page.items():
+            if kind == "answer":
+                out += ["Gemini đã nói " + text, text]
+        return out
 
 
 class Expected:
@@ -175,8 +187,12 @@ class Expected:
 class Page:
     """A composer page, or a settings page that lands on `landed` with one switch.
 
-    A turn sent from it makes the page emit `replies` (fake responses) to its listeners, move to
-    `thread`, and paint `answer` as a new bubble.
+    The conversation is kept in document order, as measured on 2026-09-27: each turn is a
+    `user-query` followed by a `model-response` holding a `message-content`. A turn sent from the
+    page appends the query, paints `answer` after it (None paints nothing), emits `replies` (fake
+    responses) to its listeners and moves to `thread`. `late` holds batches of earlier turns that
+    paint above everything, each at its own time, the way a reopened thread paints its history.
+    `schedule` makes a page walk through urls over time, like a redirect chain.
     """
 
     def __init__(self, clock, composer=True, landed=None, checked=None):
@@ -191,13 +207,21 @@ class Page:
         self.keyboard = Keyboard(self)
         self.listeners = {}
         self.replies = []
-        self.bubbles = []
-        self.late, self.late_at = [], None
+        self.dom = []
+        self.late = []
         self.answer = ""
         self.thread = "https://gemini.google.com/app/0123456789abcdef"
         self.file_input = False
         self.process_file = 200
         self.dispatching = False
+        self.schedule, self.went_at = [], None
+
+    def items(self):
+        earlier = []
+        for due, batch in sorted(self.late, key=lambda b: -b[0]):
+            if self.clock.now >= due:
+                earlier = list(batch) + earlier
+        return earlier + list(self.dom)
 
     def on(self, event, handler):
         self.listeners.setdefault(event, []).append(handler)
@@ -212,14 +236,18 @@ class Page:
         self.dispatching = True
         try:
             for handler in list(self.listeners.get(event, [])):
-                handler(arg)
+                try:
+                    handler(arg)
+                except StillReading:
+                    pass
         finally:
             self.dispatching = False
 
     def on_sent(self):
         self.url = self.thread
+        self.dom.append(("query", "Bạn đã nói " + self.sent[-1]))
         if self.answer is not None:
-            self.bubbles.append(self.answer)
+            self.dom.append(("answer", self.answer))
         for response in self.replies:
             self.emit("response", response)
             if response.request.method == "POST" and "StreamGenerate" in response.url:
@@ -234,9 +262,16 @@ class Page:
 
     def goto(self, url, *args, **kwargs):
         self.url = self.landed or url
+        if self.schedule:
+            self.went_at = self.clock.now
+            self.url = self.schedule[0][1]
 
     def wait_for_timeout(self, ms):
         self.clock.now += ms / 1000.0
+        if self.schedule and self.went_at is not None:
+            for after, url in self.schedule:
+                if self.clock.now - self.went_at >= after:
+                    self.url = url
 
     def locator(self, selector):
         if "message-content" in selector:
@@ -249,7 +284,16 @@ class Page:
         return Box(self, self.composer and any("ql-editor" in p or "contenteditable" in p
                                                 for p in parts))
 
-    def evaluate(self, *args, **kwargs):
+    def evaluate(self, script, *args, **kwargs):
+        # The driver's "answer after my own question" read, answered from the document order.
+        if "user-query" in script:
+            head = args[0] if args else ""
+            items = self.items()
+            queries = [i for i, (kind, _) in enumerate(items) if kind == "query"]
+            if not queries or head not in " ".join(items[queries[-1]][1].split()):
+                return {"query": False, "text": ""}
+            answers = [text for kind, text in items[queries[-1] + 1:] if kind == "answer"]
+            return {"query": True, "text": answers[-1].strip() if answers else ""}
         return None
 
     def close(self, *args, **kwargs):
@@ -292,6 +336,41 @@ class Context:
         return self.settings_page
 
 
+def markup_cases(gemini):
+    """ANSWER_AFTER_QUERY itself, run in a real browser on a thread captured from the site
+    (tests/fixtures/gemini_thread.html: two turns, 'Remember this word ... teal-99016' answered
+    'ok', then 'What word did I ask you to remember? ...' answered 'teal-99016'). The fake page
+    above only imitates this script; these cases hold the script to the markup."""
+    import cloakbrowser
+
+    head = lambda text: " ".join(text.split())[:40]  # noqa: E731
+    html = (ROOT / "tests" / "fixtures" / "gemini_thread.html").read_text()
+    browser = cloakbrowser.launch(headless=True)
+    try:
+        page = browser.new_context().new_page()
+        page.evaluate("(html) => { document.body.innerHTML = html; }", html)
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
+                            head("What word did I ask you to remember? Reply with that word only."))
+        record("the real markup: the answer after this turn's own question",
+               got.get("query") is True and got.get("text", "").strip() == "teal-99016", repr(got))
+
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
+                            head("Remember this word for later: teal-99016. Reply with just: ok"))
+        record("the real markup: an older question with these words is never used",
+               got.get("query") is False and got.get("text") == "", repr(got))
+
+        page.evaluate("""(text) => {
+            const q = document.createElement('user-query');
+            q.innerText = 'Bạn đã nói ' + text;
+            document.querySelector('main').appendChild(q);
+        }""", "Tell me something new, please.")
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, head("Tell me something new, please."))
+        record("the real markup: a question with no answer yet reads nothing, not the last answer",
+               got.get("query") is True and got.get("text") == "", repr(got))
+    finally:
+        browser.close()
+
+
 def main():
     try:
         from src.providers import gemini
@@ -299,6 +378,8 @@ def main():
     except ImportError as exc:
         record("the driver exists", False, "no driver to test: {}".format(exc))
         return finish()
+
+    markup_cases(gemini)
 
     clock = Clock()
     gemini.time = clock
@@ -483,7 +564,8 @@ def main():
     # them at once let an earlier answer pass for this turn's when the turn painted nothing.
     thread = "https://gemini.google.com/app/0123456789abcdef"
     page = Page(clock)
-    page.late, page.late_at = ["an earlier question", "an earlier answer from yesterday"], clock.now + 3
+    page.late = [(clock.now + 3, [("query", "an earlier question"),
+                                  ("answer", "an earlier answer from yesterday")])]
     page.answer, page.replies = None, [stream_ok]
     what, result = run_on(page, off(), thread_url=thread)
     record("a turn that paints nothing new never returns an earlier answer",
@@ -491,12 +573,47 @@ def main():
            "{} text {!r}".format(what, result and result.text))
 
     page = Page(clock)
-    page.late, page.late_at = ["an earlier question", "an earlier answer"], clock.now
+    page.late = [(clock.now, [("query", "an earlier question"), ("answer", "an earlier answer")])]
     page.answer, page.replies = "the new answer", [stream_ok]
     what, result = run_on(page, off(), thread_url=thread)
     record("a reopened thread returns this turn's answer",
            what == "returned" and result.success and result.text == "the new answer",
            "{} text {!r}".format(what, result and result.text))
+
+    # Tier 1 re-review, 2026-09-27: counting bubbles cannot tell old from new when the earlier
+    # turns paint in two steps; only the answer after this turn's own question is this turn's.
+    page = Page(clock)
+    page.late = [(clock.now + 3, [("query", "a later earlier question"), ("answer", "its answer")]),
+                 (clock.now + 9, [("query", "the first question"), ("answer", "yesterday's answer")])]
+    page.answer, page.replies = None, [stream_ok]
+    what, result = run_on(page, off(), thread_url=thread)
+    record("earlier turns painting in two steps never pass for this turn's answer",
+           what != "returned" or (not result.success and "answer" not in (result.text or "")),
+           "{} text {!r}".format(what, result and result.text))
+
+    # Tier 1 re-review: a picture whose body is still arriving when the turn is read must not be
+    # dropped with its url, or the second fetch can never find it.
+    page = Page(clock)
+    page.answer = ""
+    slow_url = "https://lh3.googleusercontent.com/rd-gg-dl/still-arriving"
+    page.replies = [Response(slow_url, body=b"S" * 7000, ctype="image/jpeg", method="GET", slow=True),
+                    stream_ok]
+    p = provider_on(page, off())
+    p._context.request.served[slow_url] = b"S" * 7000
+    result = p._run("Generate an image: a square")
+    sizes = [m.metadata.get("size") for m in result.media]
+    record("a picture still arriving when the turn is read is fetched again, not lost",
+           result.success and sizes == [7000], "success {} sizes {}".format(result.success, sizes))
+
+    # Tier 1 re-review: a pass through Google's sign-in that comes back is not a signed-out session.
+    settings = Page(clock, composer=False, checked="false")
+    settings.schedule = [(0, "https://accounts.google.com/CheckCookie?continue=x"),
+                         (2, "https://gemini.google.com/personalization-settings")]
+    page = Page(clock)
+    page.answer, page.replies = "a plain reply", [stream_ok]
+    what, result = run_on(page, settings)
+    record("a redirect through Google that comes back to the settings page is not signed out",
+           what == "returned" and result.success, "{} {}".format(what, result and result.text))
 
     page = Page(clock)
     page.answer, page.replies = "should never be asked", [stream_ok]

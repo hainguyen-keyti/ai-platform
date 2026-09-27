@@ -29,6 +29,23 @@ UPLOAD_CONTROL = ("button[aria-label*='Nội dung tải lên']", "button[aria-la
 UPLOAD_INPUT = 'input[type="file"][accept="image/*"]'
 THREAD = re.compile(r"/app/([0-9a-f]{8,})(?:[/?#]|$)")
 
+# Measured 2026-09-27: each turn is a user-query, then a model-response holding a message-content,
+# in document order. The answer to a turn is the model-response after the NEWEST user-query, and
+# only if that query holds this turn's own words: an older query with the same words is never used.
+ANSWER_AFTER_QUERY = """
+(head) => {
+    const flat = (s) => (s || '').split(/\\s+/).join(' ').trim();
+    const queries = document.querySelectorAll('user-query');
+    const mine = queries.length ? queries[queries.length - 1] : null;
+    if (!mine || !flat(mine.innerText).includes(head)) return {query: false, text: ''};
+    const after = Array.from(document.querySelectorAll('model-response'))
+        .filter((r) => mine.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING);
+    if (!after.length) return {query: true, text: ''};
+    const content = after[after.length - 1].querySelector('message-content');
+    return {query: true, text: content ? (content.innerText || '') : ''};
+}
+"""
+
 REPLY_TIMEOUT = 300
 THREAD_WAIT = 30
 # A reopened thread paints its earlier turns a moment after the composer shows.
@@ -137,14 +154,18 @@ class GeminiProvider(BaseProvider):
         try:
             page.goto(SETTINGS_URL, timeout=60000, wait_until="domcontentloaded")
             deadline = time.time() + SETTINGS_WAIT
+            off_site = False
             while time.time() < deadline:
                 page.wait_for_timeout(500)
                 landed = urlparse(page.url or "")
                 path = landed.path.rstrip("/")
-                # Sent to /saved-info (measured), or off the site to Google's sign-in: no account.
-                if path == SIGNED_OUT_PATH or (landed.hostname and landed.hostname != GEMINI_HOST):
+                # Sent to /saved-info (measured): no account.
+                if path == SIGNED_OUT_PATH:
                     self.memory = "signed-out"
                     return self.memory
+                # Off the site, to Google's sign-in: no account, unless it comes back, which a
+                # cookie refresh passing through Google would (re-review, 2026-09-27).
+                off_site = bool(landed.hostname and landed.hostname != GEMINI_HOST)
                 if path != SETTINGS_PATH:
                     continue
                 switches = page.locator(SWITCH)
@@ -152,6 +173,8 @@ class GeminiProvider(BaseProvider):
                     checked = switches.first.get_attribute("aria-checked")
                     self.memory = {"true": "on", "false": "off"}.get(checked, "unknown")
                     return self.memory
+            if off_site:
+                self.memory = "signed-out"
             return self.memory
         except Exception:
             return self.memory
@@ -262,11 +285,11 @@ class GeminiProvider(BaseProvider):
             return []
 
     def _history(self, page, reopened: bool) -> int:
-        """How many bubbles the thread already shows, counted only once they have all painted.
+        """Wait until a reopened thread shows its earlier turns and holds still.
 
-        A reopened thread paints its earlier turns a moment after the composer shows; counted too
-        early, an earlier answer would pass for this turn's when the turn paints nothing (found in
-        review, 2026-09-27). A reopened thread always has a turn, so none at all is refused.
+        A reopened thread always has a turn, so one that never paints any did not load, and
+        nothing is typed into it. Which answer is this turn's is decided by ANSWER_AFTER_QUERY,
+        not by this count.
         """
         if not reopened:
             return len(self._bubbles(page))
@@ -288,7 +311,8 @@ class GeminiProvider(BaseProvider):
         self._guard()
         if upload:
             self._attach(page, upload)
-        had = self._history(page, reopened=bool(self._thread_id(page)))
+        # A reopened thread must show that it loaded before anything is typed into it.
+        self._history(page, reopened=bool(self._thread_id(page)))
 
         # The handlers only collect. Reading a streamed body inside one blocks the dispatcher and
         # the picture events queued behind it were lost; and Response.finished() never returns on
@@ -302,15 +326,16 @@ class GeminiProvider(BaseProvider):
             elif PICTURE_HOST in r.url:
                 ctype = (r.headers or {}).get("content-type", "")
                 entry = {"url": r.url, "type": ctype, "body": b"", "note": ""}
-                # A picture's body is read the moment it arrives: read after the turn, the one
-                # response that carried the bytes has come back unreadable (2026-09-27). Pictures
-                # are small; the long stream is never read here.
+                # Listed before its body is read, so a picture still arriving when the turn is
+                # read keeps its url for the second fetch (re-review, 2026-09-27).
+                candidates.append(entry)
+                # Read the moment it arrives: after the turn the body can be evicted from the
+                # inspector cache (measured). Pictures are small; the stream is never read here.
                 if urlparse(r.url).path.startswith(PICTURE_PATH) and ctype.startswith("image/"):
                     try:
                         entry["body"] = r.body()
                     except Exception as exc:
                         entry["note"] = type(exc).__name__
-                candidates.append(entry)
 
         def on_finished(req):
             if STREAM in req.url and req.method == "POST":
@@ -371,12 +396,14 @@ class GeminiProvider(BaseProvider):
         if status != 200:
             raise ProviderError("gemini refused the turn: its stream answered {}".format(status))
 
-        # The server says the turn is over; the words are read from the new bubble the page
-        # painted for it, after it holds still for a second.
+        # The server says the turn is over; the words are the answer the page painted after THIS
+        # turn's own question, once they hold still for a second. Earlier turns sit above that
+        # question however late they paint, so none of them can pass for this turn's answer.
+        head = self._flat(prompt)[:40]
         text, last = "", None
         for _ in range(10):
-            now = self._bubbles(page)
-            text = now[-1].strip() if len(now) > had else ""
+            found = page.evaluate(ANSWER_AFTER_QUERY, head) or {}
+            text = (found.get("text") or "").strip()
             if text and text == last:
                 break
             last = text
