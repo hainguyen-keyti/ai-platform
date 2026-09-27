@@ -1,5 +1,6 @@
 import re
 import time
+import unicodedata
 import uuid
 from typing import Optional
 from urllib.parse import urlparse
@@ -30,14 +31,24 @@ UPLOAD_INPUT = 'input[type="file"][accept="image/*"]'
 THREAD = re.compile(r"/app/([0-9a-f]{8,})(?:[/?#]|$)")
 
 # Measured 2026-09-27: each turn is a user-query, then a model-response holding a message-content,
-# in document order. The answer to a turn is the model-response after the NEWEST user-query, and
-# only if that query holds this turn's own words: an older query with the same words is never used.
+# in document order. Words alone cannot say which question is this turn's (every video script job
+# opens with the same ones), so the questions already on the page are marked before the send, and
+# this turn's question is the newest one that is NOT marked. Its words are then only a check.
+MARK_QUERIES = """
+() => {
+    const queries = document.querySelectorAll('user-query');
+    queries.forEach((q) => q.setAttribute('data-platform-before', ''));
+    return queries.length;
+}
+"""
+
 ANSWER_AFTER_QUERY = """
-(head) => {
-    const flat = (s) => (s || '').split(/\\s+/).join(' ').trim();
+(words) => {
     const queries = document.querySelectorAll('user-query');
     const mine = queries.length ? queries[queries.length - 1] : null;
-    if (!mine || !flat(mine.innerText).includes(head)) return {query: false, text: ''};
+    if (!mine || mine.hasAttribute('data-platform-before')) return {query: false, text: ''};
+    const shown = (mine.innerText || '').normalize('NFC').toLowerCase();
+    if (!words.every((w) => shown.includes(w))) return {query: false, text: ''};
     const after = Array.from(document.querySelectorAll('model-response'))
         .filter((r) => mine.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING);
     if (!after.length) return {query: true, text: ''};
@@ -58,6 +69,22 @@ SIGNED_OUT = "the gemini session is signed out; run scripts/login_provider.py ge
 PERSONAL_CONTEXT_ON = ("the shared Gemini account has personal context switched on, so this turn "
                        "was not sent; ask the account owner to turn it off "
                        "(gemini.google.com/personalization-settings) and try again")
+
+
+def query_words(prompt: str) -> list:
+    """A few words of the prompt that every way of showing it keeps.
+
+    Compared in NFC and lower case, because a prompt typed in decomposed Vietnamese is shown
+    composed; letters only, because a list is shown without its numbers and emoji as pictures
+    (tier 1 re-review, 2026-09-27).
+    """
+    words = []
+    for word in re.findall(r"\w+", unicodedata.normalize("NFC", prompt or "").lower()):
+        if len(word) >= 3 and not word.isdigit() and word not in words:
+            words.append(word)
+        if len(words) == 3:
+            break
+    return words
 
 
 def is_generated_picture(url: str, content_type: str, size) -> bool:
@@ -347,6 +374,13 @@ class GeminiProvider(BaseProvider):
                 ended.setdefault("request", req)
                 ended.setdefault("how", "failed: {}".format(getattr(req, "failure", None)))
 
+        # Every question already on the page is marked; this turn's is the one that is not.
+        try:
+            page.evaluate(MARK_QUERIES)
+        except Exception as exc:
+            raise ProviderError("gemini's page could not be read before sending: {}".format(
+                type(exc).__name__))
+
         listeners = (("response", on_response), ("requestfinished", on_finished),
                      ("requestfailed", on_failed))
         for event, handler in listeners:
@@ -399,10 +433,14 @@ class GeminiProvider(BaseProvider):
         # The server says the turn is over; the words are the answer the page painted after THIS
         # turn's own question, once they hold still for a second. Earlier turns sit above that
         # question however late they paint, so none of them can pass for this turn's answer.
-        head = self._flat(prompt)[:40]
+        words = query_words(prompt)
         text, last = "", None
         for _ in range(10):
-            found = page.evaluate(ANSWER_AFTER_QUERY, head) or {}
+            try:
+                found = page.evaluate(ANSWER_AFTER_QUERY, words) or {}
+            except Exception as exc:
+                raise ProviderError("gemini's page went away while the answer was read: {}".format(
+                    type(exc).__name__))
             text = (found.get("text") or "").strip()
             if text and text == last:
                 break

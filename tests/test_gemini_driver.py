@@ -8,11 +8,13 @@ editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ dur
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one.
-Prints N/35 PASSED.
+Prints N/43 PASSED.
 """
 
 import json
+import re
 import sys
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -215,6 +217,13 @@ class Page:
         self.process_file = 200
         self.dispatching = False
         self.schedule, self.went_at = [], None
+        # How the page shows a sent question (it may normalise text or render a list without its
+        # numbers), whether it shows it at all, which question elements were marked before the
+        # send, and whether reading the answer finds the page gone.
+        self.display = lambda text: text
+        self.paint_query = True
+        self.marked = set()
+        self.context_gone = False
 
     def items(self):
         earlier = []
@@ -245,7 +254,8 @@ class Page:
 
     def on_sent(self):
         self.url = self.thread
-        self.dom.append(("query", "Bạn đã nói " + self.sent[-1]))
+        if self.paint_query:
+            self.dom.append(("query", "Bạn đã nói " + self.display(self.sent[-1])))
         if self.answer is not None:
             self.dom.append(("answer", self.answer))
         for response in self.replies:
@@ -285,12 +295,24 @@ class Page:
                                                 for p in parts))
 
     def evaluate(self, script, *args, **kwargs):
-        # The driver's "answer after my own question" read, answered from the document order.
+        # The driver's two page scripts, answered from the document order: marking the questions
+        # already on the page, then reading the answer after the newest, unmarked question that
+        # holds this turn's words. The scripts themselves run for real in markup_cases below.
+        if "user-query" in script and "setAttribute" in script:
+            for item in self.items():
+                if item[0] == "query":
+                    self.marked.add(id(item))
+            return len(self.marked)
         if "user-query" in script:
-            head = args[0] if args else ""
+            if self.context_gone:
+                raise RuntimeError("Execution context was destroyed")
+            words = args[0] if args else []
             items = self.items()
-            queries = [i for i, (kind, _) in enumerate(items) if kind == "query"]
-            if not queries or head not in " ".join(items[queries[-1]][1].split()):
+            queries = [i for i, item in enumerate(items) if item[0] == "query"]
+            if not queries or id(items[queries[-1]]) in self.marked:
+                return {"query": False, "text": ""}
+            shown = unicodedata.normalize("NFC", items[queries[-1]][1]).lower()
+            if not all(word in shown for word in words):
                 return {"query": False, "text": ""}
             answers = [text for kind, text in items[queries[-1] + 1:] if kind == "answer"]
             return {"query": True, "text": answers[-1].strip() if answers else ""}
@@ -343,30 +365,62 @@ def markup_cases(gemini):
     above only imitates this script; these cases hold the script to the markup."""
     import cloakbrowser
 
-    head = lambda text: " ".join(text.split())[:40]  # noqa: E731
+    mark, words_of = getattr(gemini, "MARK_QUERIES", None), getattr(gemini, "query_words", None)
+    if mark is None or words_of is None:
+        record("the real markup: the driver marks the questions it did not send", False,
+               "no MARK_QUERIES or query_words in the driver")
+        return
+    add_query = """(html) => {
+        const q = document.createElement('user-query');
+        q.innerHTML = html;
+        document.querySelector('main').appendChild(q);
+    }"""
+    second = "What word did I ask you to remember? Reply with that word only."
     html = (ROOT / "tests" / "fixtures" / "gemini_thread.html").read_text()
     browser = cloakbrowser.launch(headless=True)
     try:
         page = browser.new_context().new_page()
         page.evaluate("(html) => { document.body.innerHTML = html; }", html)
-        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
-                            head("What word did I ask you to remember? Reply with that word only."))
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, words_of(second))
         record("the real markup: the answer after this turn's own question",
                got.get("query") is True and got.get("text", "").strip() == "teal-99016", repr(got))
 
-        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
-                            head("Remember this word for later: teal-99016. Reply with just: ok"))
-        record("the real markup: an older question with these words is never used",
+        # The questions on the page before this turn's send are marked; if this turn's own never
+        # paints, the newest is an old one with the very same words, and it must not be used.
+        page.evaluate(mark)
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, words_of(second))
+        record("the real markup: a question from before the send is never this turn's",
                got.get("query") is False and got.get("text") == "", repr(got))
 
-        page.evaluate("""(text) => {
-            const q = document.createElement('user-query');
-            q.innerText = 'Bạn đã nói ' + text;
-            document.querySelector('main').appendChild(q);
-        }""", "Tell me something new, please.")
-        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, head("Tell me something new, please."))
+        page.evaluate(add_query, "Bạn đã nói Tell me something new, please.")
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, words_of("Tell me something new, please."))
         record("the real markup: a question with no answer yet reads nothing, not the last answer",
                got.get("query") is True and got.get("text") == "", repr(got))
+
+        page.evaluate(add_query, "Bạn đã nói <ol><li>first item</li><li>second item</li></ol>"
+                                 "Reply with just: ok")
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
+                            words_of("1. first item\n2. second item\nReply with just: ok"))
+        record("the real markup: a list shown without its numbers is still found",
+               got.get("query") is True, repr(got))
+
+        page.evaluate(add_query, "Bạn đã nói " + unicodedata.normalize("NFC", "Viết một câu chào."))
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
+                            words_of(unicodedata.normalize("NFD", "Viết một câu chào.")))
+        record("the real markup: decomposed Vietnamese matches the page's composed text",
+               got.get("query") is True, repr(got))
+
+        page.evaluate(add_query, "Bạn đã nói " + unicodedata.normalize("NFD", "Chào buổi sáng nhé."))
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
+                            words_of(unicodedata.normalize("NFC", "Chào buổi sáng nhé.")))
+        record("the real markup: a page that shows decomposed text still matches",
+               got.get("query") is True, repr(got))
+
+        # Unmarked but not this turn's: what a page that rebuilt its elements would show.
+        page.evaluate(add_query, "Bạn đã nói Something else entirely, from another turn.")
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, words_of("Tell me something new, please."))
+        record("the real markup: an unmarked question without this turn's words is not used",
+               got.get("query") is False, repr(got))
     finally:
         browser.close()
 
@@ -614,6 +668,46 @@ def main():
     what, result = run_on(page, settings)
     record("a redirect through Google that comes back to the settings page is not signed out",
            what == "returned" and result.success, "{} {}".format(what, result and result.text))
+
+    # Tier 1 re-review of 734fcc5: every video script job opens with the same words, so words alone
+    # cannot say which question is this turn's. A question that never painted must not borrow the
+    # answer of an identical earlier one.
+    script_prompt = ("Write a Wan 2.2 video prompt of 5 seconds for the attached image. Describe "
+                     "camera movement, character animation and ambient motion. Answer with a single "
+                     "paragraph under 150 words and nothing else.")
+    page = Page(clock)
+    page.late = [(clock.now, [("query", "Bạn đã nói " + script_prompt),
+                              ("answer", "an older video script")])]
+    page.paint_query, page.answer, page.replies = False, None, [stream_ok]
+    what, result = run_on(page, off(), prompt=script_prompt, thread_url=thread)
+    record("a question that never painted never borrows an identical earlier one's answer",
+           what != "returned" or (not result.success and "older" not in (result.text or "")),
+           "{} text {!r}".format(what, result and result.text))
+
+    # Tier 1 re-review: the anchor failed closed on a decomposed Vietnamese prompt and on a list.
+    decomposed = unicodedata.normalize("NFD", "Viết cho tôi một câu chào bằng tiếng Việt.")
+    page = Page(clock)
+    page.display = lambda text: unicodedata.normalize("NFC", text)
+    page.answer, page.replies = "Xin chào!", [stream_ok]
+    what, result = run_on(page, off(), prompt=decomposed)
+    record("a question typed in decomposed Vietnamese is found once the page composes it",
+           what == "returned" and result.success and result.text == "Xin chào!",
+           "{} text {!r}".format(what, result and result.text))
+
+    page = Page(clock)
+    page.display = lambda text: re.sub(r"(?m)^\d+\.\s*", "", text)
+    page.answer, page.replies = "ok", [stream_ok]
+    what, result = run_on(page, off(), prompt="1. first item\n2. second item\nReply with just: ok")
+    record("a numbered list shown without its numbers is still this turn's question",
+           what == "returned" and result.success and result.text == "ok",
+           "{} text {!r}".format(what, result and result.text))
+
+    page = Page(clock)
+    page.context_gone = True
+    page.answer, page.replies = "an answer", [stream_ok]
+    what, result = run_on(page, off())
+    record("a page that goes away while the answer is read is a provider failure",
+           what.startswith("refused: provider_error"), what)
 
     page = Page(clock)
     page.answer, page.replies = "should never be asked", [stream_ok]
