@@ -489,10 +489,23 @@ class GeminiProvider(BaseProvider):
 
     # --- threads ---------------------------------------------------------------------
 
+    def _thread_shows(self, page) -> Optional[bool]:
+        """Whether the thread just opened is there: its turns paint (True), or the page sends it
+        back to /app (False), 0.5 to 0.9s after the composer shows (measured 2026-09-27). None if
+        neither happens, as when the session is sent to Google's sign-in."""
+        deadline = time.time() + HISTORY_WAIT
+        while time.time() < deadline:
+            if page.locator("user-query").count():
+                return True
+            if page.url.split("?")[0].rstrip("/") == HOME:
+                return False
+            page.wait_for_timeout(250)
+        return None
+
     def delete_thread(self, thread_url: str) -> bool:
         """The row's own menu, its delete item and the dialog's matching button (measured).
 
-        A thread that no longer exists opens back on /app, which counts as gone.
+        A thread that no longer exists is sent back to /app, which counts as gone.
         """
         cid = self._thread_id(type("AtUrl", (), {"url": thread_url or ""})())
         if not cid:
@@ -500,8 +513,11 @@ class GeminiProvider(BaseProvider):
         page = self._ensure_page()
         page.goto("{}/{}".format(HOME, cid), timeout=90000, wait_until="domcontentloaded")
         self._composer_ready(page, 30)
-        if self._thread_id(page) != cid:
+        shows = self._thread_shows(page)
+        if shows is False:
             return True
+        if shows is None:
+            raise ProviderError("gemini thread {} neither opened nor went back to /app".format(cid[:8]))
         link = page.locator('a[href="/app/{}"]'.format(cid)).first
         deadline = time.time() + LIST_WAIT
         while not link.count() and time.time() < deadline:
@@ -532,7 +548,7 @@ class GeminiProvider(BaseProvider):
                 page.wait_for_timeout(2500)
                 page.goto("{}/{}".format(HOME, cid), timeout=90000, wait_until="domcontentloaded")
                 self._composer_ready(page, 30)
-                if self._thread_id(page) != cid:
+                if self._thread_shows(page) is False:
                     return True
                 raise ProviderError("gemini thread {} still opens after delete".format(cid[:8]))
         raise ProviderError("gemini's delete dialog for {} had no matching button".format(cid[:8]))

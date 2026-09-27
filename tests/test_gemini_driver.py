@@ -8,7 +8,7 @@ editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ dur
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one.
-Prints N/55 PASSED.
+Prints N/58 PASSED.
 """
 
 import json
@@ -436,28 +436,46 @@ class Lazy:
 
 class ListPage:
     """A thread's page with the conversation list, for delete_thread, as measured on 2026-09-27:
-    the rows paint `rows_after` seconds after the composer shows (0.4 to 2.4s); a row's only
-    button is its menu, labelled "Lựa chọn khác cho <title>" and hidden unless the pointer rests on
-    the row, which the list moving after it paints defeated in three loads of four; a click sent
-    to the button itself opened the menu in three of three. The menu's delete item opens a dialog
-    whose confirm button repeats the item's word."""
+    the rows paint `rows_after` seconds after the page opens (0.3 to 2.4s after the composer); a
+    row's only button is its menu, labelled "Lựa chọn khác cho <title>" and hidden unless the
+    pointer rests on the row, which the list moving after it paints defeated in three loads of
+    four; a click sent to the button itself opened the menu in three of three. The menu's delete
+    item opens a dialog whose confirm button repeats the item's word. A thread that is there
+    paints its turns `turns_after` seconds after the page opens (1.0 to 1.7s after the composer);
+    one that is not keeps its address until `gone_after`, then the page sends it back to /app
+    (0.5 to 0.9s after the composer). `redirect` sends every page elsewhere, as a signed-out
+    session is sent to Google's sign-in."""
 
     def __init__(self, clock, cid, title="Secret Word Storage", label=None, rows_after=0.0,
-                 hidden=True):
+                 hidden=True, exists=True, turns_after=1.5, gone_after=1.2, redirect=None):
         self.clock, self.cid, self.title = clock, cid, title
         self.label = "Lựa chọn khác cho " + title if label is None else label
         self.rows_after, self.hidden = rows_after, hidden
+        self.exists, self.turns_after, self.gone_after = exists, turns_after, gone_after
+        self.redirect = redirect
         self.url = "https://gemini.google.com/app"
         self.loaded = clock.now
         self.menu = self.dialog = self.deleted = False
 
+    def there(self):
+        return self.exists and not self.deleted
+
     def goto(self, url, *args, **kwargs):
         self.loaded, self.menu, self.dialog = self.clock.now, False, False
-        gone = self.deleted or not url.endswith("/" + self.cid)
-        self.url = "https://gemini.google.com/app" if gone else url
+        self.url = url
+        self.settle()
+
+    def settle(self):
+        if self.clock.now - self.loaded < self.gone_after:
+            return
+        if self.redirect:
+            self.url = self.redirect
+        elif self.url.endswith("/" + self.cid) and not self.there():
+            self.url = "https://gemini.google.com/app"
 
     def wait_for_timeout(self, ms):
         self.clock.now += ms / 1000.0
+        self.settle()
 
     def open_menu(self):
         self.menu = True
@@ -477,8 +495,12 @@ class ListPage:
     def match(self, selector):
         if "ql-editor" in selector:
             return Node()
+        if selector == "user-query":
+            shown = (self.there() and self.url.endswith("/" + self.cid)
+                     and self.clock.now - self.loaded >= self.turns_after)
+            return Nodes(Node(text="Bạn đã nói hello")) if shown else Nodes()
         if selector == 'a[href="/app/{}"]'.format(self.cid):
-            if self.clock.now - self.loaded < self.rows_after:
+            if not self.there() or self.clock.now - self.loaded < self.rows_after:
                 return Nodes()
             menu = Node(label=self.label, visible=not self.hidden, on_click=self.open_menu)
             row = Node(inside={"button": Nodes(menu)})
@@ -1007,10 +1029,29 @@ def main():
         except Exception as exc:
             return "crashed: {}: {}".format(type(exc).__name__, str(exc)[:60])
 
-    page = ListPage(clock, cid, rows_after=1.5, hidden=False)
+    page = ListPage(clock, cid, rows_after=3.0, hidden=False)
     what = delete_on(page)
     record("a thread whose row paints after the composer is still deleted",
            what == "returned True" and page.deleted, "{} deleted {}".format(what, page.deleted))
+
+    # The second real gate kept its database: one thread was deleted yet reported "still opens
+    # after delete", and a cancelled turn's thread, which Gemini never kept, "has no row". The
+    # address of a thread that is not there only goes back to /app a moment after the composer.
+    page = ListPage(clock, cid, hidden=False)
+    what = delete_on(page)
+    record("a deleted thread whose address lingers a moment is not reported as still there",
+           what == "returned True" and page.deleted, "{} deleted {}".format(what, page.deleted))
+
+    page = ListPage(clock, cid, exists=False)
+    what = delete_on(page)
+    record("a thread that is not there counts as removed once the page sends it back to /app",
+           what == "returned True" and not page.menu, "{} menu opened {}".format(what, page.menu))
+
+    page = ListPage(clock, cid, hidden=False, gone_after=0,
+                    redirect="https://accounts.google.com/v3/signin/identifier?continue=x")
+    what = delete_on(page)
+    record("a thread page sent to Google's sign-in is never counted as removed",
+           what.startswith("refused") and not page.deleted, "{} deleted {}".format(what, page.deleted))
 
     page = ListPage(clock, cid)
     what = delete_on(page)
