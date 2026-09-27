@@ -62,6 +62,8 @@ REPLY_TIMEOUT = 300
 THREAD_WAIT = 30
 # A reopened thread paints its earlier turns a moment after the composer shows.
 HISTORY_WAIT = 20
+# So does the conversation list its rows (0.3 to 2.4s, measured 2026-09-27).
+LIST_WAIT = 15
 OPEN_ATTEMPTS = 2
 UPLOAD_WAIT = 30
 SETTINGS_WAIT = 15
@@ -405,6 +407,11 @@ class GeminiProvider(BaseProvider):
                 page.wait_for_timeout(1000)
                 waited += 1
         except JobCancelled:
+            # Already sent: wait for the thread's address so the api can remove it, not leave it.
+            waited = 0
+            while not self._thread_id(page) and waited < THREAD_WAIT:
+                page.wait_for_timeout(1000)
+                waited += 1
             if self._thread_id(page):
                 self.last_cancelled_thread = page.url
             raise
@@ -496,26 +503,23 @@ class GeminiProvider(BaseProvider):
         if self._thread_id(page) != cid:
             return True
         link = page.locator('a[href="/app/{}"]'.format(cid)).first
+        deadline = time.time() + LIST_WAIT
+        while not link.count() and time.time() < deadline:
+            page.wait_for_timeout(250)
         if not link.count():
             raise ProviderError("gemini thread {} has no row to delete from".format(cid[:8]))
         title = (link.inner_text() or "").strip()
-        link.hover(timeout=10000)
-        page.wait_for_timeout(500)
         # This conversation's own row: a plain div ancestor holds every row in the list.
         row = link.locator('xpath=ancestor::*[@data-test-id="conversation"][1]')
-        opened = False
         buttons = row.locator("button")
-        for i in range(buttons.count()):
-            button = buttons.nth(i)
-            if not button.is_visible():
-                continue
-            if title and title not in (button.get_attribute("aria-label") or ""):
-                raise ProviderError("gemini's row menu for {} did not name it".format(cid[:8]))
-            button.click(timeout=10000)
-            opened = True
-            break
+        if not buttons.count():
+            raise ProviderError("gemini offered no delete for {}".format(cid[:8]))
+        if title and title not in (buttons.first.get_attribute("aria-label") or ""):
+            raise ProviderError("gemini's row menu for {} did not name it".format(cid[:8]))
+        # Shown only under the pointer, which the list moving after it paints defeats (measured).
+        buttons.first.dispatch_event("click")
         item = page.locator('[role="menuitem"][data-test-id*="delete"]')
-        if not opened or not item.count():
+        if not item.count():
             raise ProviderError("gemini offered no delete for {}".format(cid[:8]))
         # The confirm button repeats the menu item's own word, whatever the language.
         word = (item.first.inner_text() or "").strip()

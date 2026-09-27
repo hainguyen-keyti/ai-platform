@@ -8,7 +8,7 @@ editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ dur
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one.
-Prints N/43 PASSED.
+Prints N/55 PASSED.
 """
 
 import json
@@ -227,6 +227,9 @@ class Page:
         # A page that rebuilds its question elements when a turn is sent: the rebuilt ones are new
         # elements and carry no mark (the case the last re-review left open).
         self.rebuild_on_send = False
+        # Seconds after the send before the address becomes the thread's; 0 is at once.
+        self.thread_after = 0
+        self.sent_at = None
 
     def items(self):
         earlier = []
@@ -256,7 +259,9 @@ class Page:
             self.dispatching = False
 
     def on_sent(self):
-        self.url = self.thread
+        self.sent_at = self.clock.now
+        if not self.thread_after:
+            self.url = self.thread
         if self.rebuild_on_send:
             # (kind, text) builds a new tuple; tuple(item) would hand back the same object.
             self.late = [(due, [(kind, text) for kind, text in batch]) for due, batch in self.late]
@@ -285,6 +290,9 @@ class Page:
 
     def wait_for_timeout(self, ms):
         self.clock.now += ms / 1000.0
+        if self.thread_after and self.sent_at is not None \
+                and self.clock.now - self.sent_at >= self.thread_after:
+            self.url = self.thread
         if self.schedule and self.went_at is not None:
             for after, url in self.schedule:
                 if self.clock.now - self.went_at >= after:
@@ -342,6 +350,148 @@ class Fetched:
 
     def body(self):
         return self._body
+
+
+class Node:
+    """One element of the conversation list: its text, its aria-label, whether it shows, and what
+    a click on it does. A hidden element cannot be clicked (Playwright waits for it to show, then
+    times out), but an event sent to it still reaches its handler."""
+
+    def __init__(self, text="", label=None, visible=True, on_click=None, inside=None):
+        self.text, self.label, self.visible = text, label, visible
+        self.on_click = on_click or (lambda: None)
+        self.inside = inside or {}
+
+    def count(self):
+        return 1
+
+    @property
+    def first(self):
+        return self
+
+    def nth(self, i):
+        return self
+
+    def is_visible(self):
+        return self.visible
+
+    def inner_text(self, *args, **kwargs):
+        return self.text
+
+    def get_attribute(self, name):
+        return self.label if name == "aria-label" else None
+
+    def hover(self, *args, **kwargs):
+        return None
+
+    def click(self, *args, **kwargs):
+        if not self.visible:
+            raise RuntimeError("Timeout 10000ms exceeded: element is not visible")
+        self.on_click()
+
+    def dispatch_event(self, kind, *args, **kwargs):
+        if kind == "click":
+            self.on_click()
+
+    def locator(self, selector):
+        for key, found in self.inside.items():
+            if key in selector:
+                return found
+        return Nodes()
+
+
+class Nodes:
+    """What one selector matches, in document order; nothing by default."""
+
+    def __init__(self, *nodes):
+        self.nodes = list(nodes)
+
+    def count(self):
+        return len(self.nodes)
+
+    def nth(self, i):
+        return self.nodes[i]
+
+    @property
+    def first(self):
+        return self.nodes[0] if self.nodes else self
+
+
+class Lazy:
+    """A Playwright locator: it looks again every time it is asked, as the real one does."""
+
+    def __init__(self, find):
+        self.find = find
+
+    @property
+    def first(self):
+        return Lazy(lambda: self.find().first)
+
+    def nth(self, i):
+        return Lazy(lambda: self.find().nth(i))
+
+    def __getattr__(self, name):
+        return getattr(self.find(), name)
+
+
+class ListPage:
+    """A thread's page with the conversation list, for delete_thread, as measured on 2026-09-27:
+    the rows paint `rows_after` seconds after the composer shows (0.4 to 2.4s); a row's only
+    button is its menu, labelled "Lựa chọn khác cho <title>" and hidden unless the pointer rests on
+    the row, which the list moving after it paints defeated in three loads of four; a click sent
+    to the button itself opened the menu in three of three. The menu's delete item opens a dialog
+    whose confirm button repeats the item's word."""
+
+    def __init__(self, clock, cid, title="Secret Word Storage", label=None, rows_after=0.0,
+                 hidden=True):
+        self.clock, self.cid, self.title = clock, cid, title
+        self.label = "Lựa chọn khác cho " + title if label is None else label
+        self.rows_after, self.hidden = rows_after, hidden
+        self.url = "https://gemini.google.com/app"
+        self.loaded = clock.now
+        self.menu = self.dialog = self.deleted = False
+
+    def goto(self, url, *args, **kwargs):
+        self.loaded, self.menu, self.dialog = self.clock.now, False, False
+        gone = self.deleted or not url.endswith("/" + self.cid)
+        self.url = "https://gemini.google.com/app" if gone else url
+
+    def wait_for_timeout(self, ms):
+        self.clock.now += ms / 1000.0
+
+    def open_menu(self):
+        self.menu = True
+
+    def open_dialog(self):
+        self.menu, self.dialog = False, True
+
+    def confirm(self):
+        self.dialog, self.deleted = False, True
+
+    def cancel(self):
+        self.dialog = False
+
+    def locator(self, selector):
+        return Lazy(lambda: self.match(selector))
+
+    def match(self, selector):
+        if "ql-editor" in selector:
+            return Node()
+        if selector == 'a[href="/app/{}"]'.format(self.cid):
+            if self.clock.now - self.loaded < self.rows_after:
+                return Nodes()
+            menu = Node(label=self.label, visible=not self.hidden, on_click=self.open_menu)
+            row = Node(inside={"button": Nodes(menu)})
+            return Nodes(Node(text=self.title, inside={"ancestor": row}))
+        if "menuitem" in selector and "delete" in selector:
+            return Nodes(Node(text="Xoá", on_click=self.open_dialog)) if self.menu else Nodes()
+        if "mat-dialog-container" in selector:
+            if not self.dialog:
+                return Nodes()
+            buttons = Nodes(Node(text="Huỷ", on_click=self.cancel),
+                            Node(text="Xoá", on_click=self.confirm))
+            return Nodes(Node(inside={"button": buttons}))
+        return Nodes()
 
 
 class Session:
@@ -843,6 +993,65 @@ def main():
     record("only a generated picture is ever fetched again, never a user's",
            result.success and result.media == [] and upload_url not in p._context.request.asked,
            "media {} asked {}".format(len(result.media), p._context.request.asked))
+
+    # The real gemini gate, 2026-09-27: no thread was ever deleted. Measured without deleting: the
+    # conversation list paints its rows after the composer, and a row's menu button shows only
+    # while the pointer rests on the row.
+    cid = "239f0ba819d9963c"
+
+    def delete_on(page):
+        try:
+            return "returned {}".format(provider_on(page).delete_thread(gemini.HOME + "/" + cid))
+        except ProviderError as exc:
+            return "refused: {}".format(str(exc)[:60])
+        except Exception as exc:
+            return "crashed: {}: {}".format(type(exc).__name__, str(exc)[:60])
+
+    page = ListPage(clock, cid, rows_after=1.5, hidden=False)
+    what = delete_on(page)
+    record("a thread whose row paints after the composer is still deleted",
+           what == "returned True" and page.deleted, "{} deleted {}".format(what, page.deleted))
+
+    page = ListPage(clock, cid)
+    what = delete_on(page)
+    record("a row whose menu button shows only under the pointer is still deleted",
+           what == "returned True" and page.deleted, "{} deleted {}".format(what, page.deleted))
+
+    page = ListPage(clock, cid, label="Lựa chọn khác cho Another conversation", hidden=False)
+    what = delete_on(page)
+    record("a row menu that names another conversation is refused, nothing deleted",
+           what.startswith("refused") and not page.deleted, "{} deleted {}".format(what, page.deleted))
+
+    page = ListPage(clock, cid, rows_after=3600, hidden=False)
+    what = delete_on(page)
+    record("a row that never paints is refused within a bounded wait",
+           what.startswith("refused") and not page.deleted, "{} deleted {}".format(what, page.deleted))
+
+    # The same gate: a turn cancelled a moment after it was sent (the lease there is 2s, so the
+    # cancel arrives within a second) named no thread, since the address becomes the thread's only
+    # a little later; the thread was left in the account with nothing to remove it.
+    def cancel_on(page):
+        p = provider_on(page, off())
+        p.bind(stop_hook=lambda: True)
+        try:
+            p._run("draw a picture, then delete me while running")
+            return "returned", p.last_cancelled_thread
+        except gemini.JobCancelled:
+            return "cancelled", p.last_cancelled_thread
+        except Exception as exc:
+            return "crashed: {}: {}".format(type(exc).__name__, str(exc)[:50]), None
+
+    page = Page(clock)
+    page.thread_after, page.replies = 3, []
+    what, named = cancel_on(page)
+    record("a turn cancelled before its address shows still names its thread",
+           what == "cancelled" and named == page.thread, "{} named {}".format(what, named))
+
+    page = Page(clock)
+    page.thread_after, page.replies = 3600, []
+    what, named = cancel_on(page)
+    record("a cancelled turn whose address never shows gives up within a bounded wait",
+           what == "cancelled" and named is None, "{} named {}".format(what, named))
 
     for url, expected in (("https://gemini.google.com/app/659ed82f23b56ced", "659ed82f23b56ced"),
                           ("https://gemini.google.com/app", None)):
