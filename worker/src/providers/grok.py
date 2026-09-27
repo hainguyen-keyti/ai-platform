@@ -50,6 +50,9 @@ GROK_RENDER = re.compile(r"<grok:render[^>]*>.*?</grok:render>|<grok:render[^>]*
 ASSET_URL = re.compile(r"https://assets\.grok\.com/users/([^/]+)/")
 
 SIGNED_OUT = "the grok session is signed out; run scripts/login_provider.py grok"
+MEMORY_ON = ("the shared Grok account has memory switched on, so this turn was not sent; ask the "
+             "account owner to turn it off (Settings, Data Controls, Personalize Grok with your "
+             "conversation history) and try again")
 
 FETCH = """
 async ([path, method, body]) => {
@@ -112,6 +115,8 @@ class GrokProvider(BaseProvider):
         self.last_settle = None
         self.last_open = None
         self.last_cancelled_thread = None
+        # What the account's memory switch read before the last turn: on, off or unknown.
+        self.memory = None
 
     def start(self) -> None:
         if not self.session_file.exists():
@@ -151,6 +156,25 @@ class GrokProvider(BaseProvider):
     def _api(self, page, path, method="GET", body=None):
         got = page.evaluate(FETCH, [path, method, json.dumps(body) if body is not None else None])
         return got.get("status"), got.get("body") or ""
+
+    def _read_memory(self, page) -> str:
+        """The account's memory switch as the server reports it: on, off or unknown.
+
+        `enableMemory` in /rest/user-settings mirrors Settings, Data Controls, "Personalize Grok
+        with your conversation history" (measured 2026-09-27). Anything but a plain true or false
+        is unknown, which does not block: the rule decided for ChatGPT and Gemini.
+        """
+        self.memory = "unknown"
+        try:
+            status, raw = self._api(page, "/rest/user-settings")
+            value = json.loads(raw).get("enableMemory") if status == 200 else None
+        except Exception:
+            value = None
+        if value is True:
+            self.memory = "on"
+        elif value is False:
+            self.memory = "off"
+        return self.memory
 
     def _wait_for_challenge(self, page) -> bool:
         deadline = time.time() + CHALLENGE_WAIT
@@ -411,6 +435,9 @@ class GrokProvider(BaseProvider):
     def _run(self, prompt: str, thread_url: Optional[str] = None):
         self.last_cancelled_thread = None
         page, composer = self._open(thread_url)
+        # Look before speaking: with memory on, this turn would be remembered for every other user.
+        if self._read_memory(page) == "on":
+            raise ProviderError(MEMORY_ON, kind="provider_misconfigured")
         self.last_cancelled_thread = thread_url
 
         cid = self.thread_id(page.url)

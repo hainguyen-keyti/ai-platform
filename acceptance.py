@@ -93,8 +93,6 @@ REAL_SKIPS = {
             "provider-agnostic, covered in mock mode; costs a turn",
         "quota refills once a day up to the cap":
             "provider-agnostic, covered in mock mode; costs a turn",
-        "health reports the provider's memory setting":
-            "the memory switch is a chatgpt account setting",
         "the provider's error banner is recognised by shape":
             "the fixtures are chatgpt's own markup",
     },
