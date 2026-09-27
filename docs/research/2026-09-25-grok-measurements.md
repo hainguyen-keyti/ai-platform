@@ -143,6 +143,26 @@ in seconds as `provider_error: provider grok unavailable: not enabled on this wo
 credit is refunded (quota 100 -> 100). The api, the database and the interface are already
 provider-agnostic; only the worker lacks a driver.
 
+## Memory (2026-09-27)
+
+`GET /rest/user-settings`, fetched from inside the page with the session's cookies, answers four
+keys: `enableMemory`, `agentCustomizations` (a list), `allowGrokFinishedNotification` and
+`mutedBotPushAgentIds` (a list). `enableMemory` was **true**. The page loads it on every visit,
+beside a dozen other `/rest/` calls.
+
+The switch it mirrors is under the account menu (the sidebar's bottom button with the avatar):
+Settings, then the Data Controls section, "Personalize Grok with your conversation history"
+(marked Beta, "Allow Grok to remember details from your previous conversations"), a
+`button[role="switch"]` reading `aria-checked`. On a shared account that is the cross-user leak
+ChatGPT had, so with the owner's permission it was turned off, that switch only: the page sent
+`POST /rest/user-settings {"enableMemory": false}`, the switch then read `false`, and a fresh
+`GET /rest/user-settings` said `false`. The same section holds two more switches, both on and left
+alone: "Improve the Model" (training on the account's data) and "Allow chat link sharing". The
+Behavior section's "Require Cmd+Enter To Submit" is off, so Enter sends, as the driver expects.
+
+Whether memory actually carries a fact from one conversation into another was not tried while it
+was on: a leak test would have written into the account's memory.
+
 ## Still unmeasured
 
 - whether `partial` and `inflightResponses` behave the same on a long streaming answer, a search
