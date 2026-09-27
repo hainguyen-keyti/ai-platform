@@ -122,11 +122,21 @@ def thread_of(page):
 
 # --- no turn ---------------------------------------------------------------
 
+def listed(page, seconds=15):
+    """The sidebar's conversations once it has painted them (0.3 to 2.4s after the composer)."""
+    deadline = time.time() + seconds
+    found = page.evaluate(CONVERSATIONS)
+    while not found and time.time() < deadline:
+        page.wait_for_timeout(250)
+        found = page.evaluate(CONVERSATIONS)
+    return found
+
+
 def probe_open(browser):
     page = open_page(browser)
     body = (page.inner_text("body") or "").lower()
     say("open", "sign-in wording: {}".format([w for w in SIGN_IN if w in body] or "none"))
-    say("open", "sidebar threads: {}".format(len(page.evaluate(CONVERSATIONS))))
+    say("open", "sidebar threads: {}".format(len(listed(page))))
 
 
 # Candidate proofs that only a signed-in session can pass, fetched from the page
@@ -221,7 +231,7 @@ def probe_banner(browser):
 
 def probe_list(browser):
     page = open_page(browser)
-    for item in page.evaluate(CONVERSATIONS):
+    for item in listed(page):
         say("list", item)
 
 
@@ -496,7 +506,7 @@ def open_row_menu(page, ident):
 
 def probe_purge(browser, ids):
     page = open_page(browser)
-    here = {c["href"].rsplit("/", 1)[-1]: c["title"] for c in page.evaluate(CONVERSATIONS)}
+    here = {c["href"].rsplit("/", 1)[-1]: c["title"] for c in listed(page)}
     for cid in ids:
         say("purge", "target {} titled {!r}".format(cid, here.get(cid, "NOT IN LIST")))
     for cid in ids:
