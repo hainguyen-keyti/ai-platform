@@ -18,6 +18,7 @@ STREAM = "BardFrontendService/StreamGenerate"
 # blob during the turn and /rd-gg/ when reopened, so the match is exact, never a prefix of this.
 PICTURE_HOST = "lh3.googleusercontent.com"
 PICTURE_PATH = "/rd-gg-dl/"
+GEMINI_HOST = "gemini.google.com"
 SETTINGS_URL = "https://gemini.google.com/personalization-settings"
 SETTINGS_PATH = "/personalization-settings"
 # Where a signed-out session is sent instead of the settings page.
@@ -30,6 +31,8 @@ THREAD = re.compile(r"/app/([0-9a-f]{8,})(?:[/?#]|$)")
 
 REPLY_TIMEOUT = 300
 THREAD_WAIT = 30
+# A reopened thread paints its earlier turns a moment after the composer shows.
+HISTORY_WAIT = 20
 OPEN_ATTEMPTS = 2
 UPLOAD_WAIT = 30
 SETTINGS_WAIT = 15
@@ -134,8 +137,10 @@ class GeminiProvider(BaseProvider):
             deadline = time.time() + SETTINGS_WAIT
             while time.time() < deadline:
                 page.wait_for_timeout(500)
-                path = urlparse(page.url or "").path.rstrip("/")
-                if path == SIGNED_OUT_PATH:
+                landed = urlparse(page.url or "")
+                path = landed.path.rstrip("/")
+                # Sent to /saved-info (measured), or off the site to Google's sign-in: no account.
+                if path == SIGNED_OUT_PATH or (landed.hostname and landed.hostname != GEMINI_HOST):
                     self.memory = "signed-out"
                     return self.memory
                 if path != SETTINGS_PATH:
@@ -176,13 +181,8 @@ class GeminiProvider(BaseProvider):
                               "landed": (landed or page.url)[:60], "attempt": attempt + 1}
             if ready and (not wanted or landed == wanted):
                 return page
-            if ready and wanted and not landed and attempt + 1 == OPEN_ATTEMPTS:
-                # Measured: a thread that no longer exists lands back on /app, twice in a row
-                # here. That is Gemini's "gone"; anything else is a failure, never a fresh chat.
-                target, wanted = HOME, None
-                page.goto(target, timeout=90000, wait_until="domcontentloaded")
-                if self._composer_ready(page, 30):
-                    return page
+        # A deleted thread lands back on /app, and so could a slow one: nothing tells them apart,
+        # so this is a failure and a refund, never a silent fresh chat (DECISIONS 2026-09-24).
         raise ProviderError("gemini did not open {}: composer {} landed {}".format(
             (wanted or "a new chat")[:8], (self.last_open or {}).get("composer"),
             (self.last_open or {}).get("landed")))
@@ -237,8 +237,18 @@ class GeminiProvider(BaseProvider):
             page.wait_for_timeout(1500)
         if not page.locator(UPLOAD_INPUT).count():
             raise ProviderError("gemini's upload control did not open")
-        with page.expect_response(lambda r: "ProcessFile" in r.url, timeout=UPLOAD_WAIT * 1000):
-            page.locator(UPLOAD_INPUT).first.set_input_files(str(path))
+        # Without its picture the turn would still go out, and "please attach an image" would be
+        # stored as a video script: the server has to accept the picture first.
+        try:
+            with page.expect_response(lambda r: "ProcessFile" in r.url,
+                                      timeout=UPLOAD_WAIT * 1000) as uploaded:
+                page.locator(UPLOAD_INPUT).first.set_input_files(str(path))
+            status = uploaded.value.status
+        except Exception as exc:
+            raise ProviderError("gemini never confirmed the reference picture: {}".format(
+                type(exc).__name__))
+        if status != 200:
+            raise ProviderError("gemini refused the reference picture: status {}".format(status))
         page.wait_for_timeout(1000)
 
     # --- one turn --------------------------------------------------------------------
@@ -249,16 +259,40 @@ class GeminiProvider(BaseProvider):
         except Exception:
             return []
 
+    def _history(self, page, reopened: bool) -> int:
+        """How many bubbles the thread already shows, counted only once they have all painted.
+
+        A reopened thread paints its earlier turns a moment after the composer shows; counted too
+        early, an earlier answer would pass for this turn's when the turn paints nothing (found in
+        review, 2026-09-27). A reopened thread always has a turn, so none at all is refused.
+        """
+        if not reopened:
+            return len(self._bubbles(page))
+        deadline = time.time() + HISTORY_WAIT
+        last, steady = None, 0
+        while time.time() < deadline:
+            count = len(self._bubbles(page))
+            steady = steady + 1 if (count and count == last) else 0
+            if steady >= 2:
+                return count
+            last = count
+            page.wait_for_timeout(1000)
+        raise ProviderError("gemini never painted the earlier turns of thread {}".format(
+            (self._thread_id(page) or "?")[:8]))
+
     def _run(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
         self.last_cancelled_thread = None
         page = self._open(thread_url)
         self._guard()
         if upload:
             self._attach(page, upload)
+        had = self._history(page, reopened=bool(self._thread_id(page)))
 
-        # The handler only collects: reading a streamed body inside it blocks the dispatcher until
-        # the stream ends, and the picture events queued behind it were lost (measured 2026-09-27).
-        streams, candidates = [], []
+        # The handlers only collect. Reading a streamed body inside one blocks the dispatcher and
+        # the picture events queued behind it were lost; and Response.finished() never returns on
+        # a stream that breaks after its headers (both 2026-09-27). The request's own finished or
+        # failed event is what ends the wait, polled against a deadline.
+        streams, candidates, ended = [], [], {}
 
         def on_response(r):
             if STREAM in r.url and r.request.method == "POST":
@@ -266,27 +300,32 @@ class GeminiProvider(BaseProvider):
             elif PICTURE_HOST in r.url:
                 candidates.append(r)
 
-        had = len(self._bubbles(page))
-        page.on("response", on_response)
+        def on_finished(req):
+            if STREAM in req.url and req.method == "POST":
+                ended.setdefault("request", req)
+                ended.setdefault("how", "finished")
+
+        def on_failed(req):
+            if STREAM in req.url and req.method == "POST":
+                ended.setdefault("request", req)
+                ended.setdefault("how", "failed: {}".format(getattr(req, "failure", None)))
+
+        listeners = (("response", on_response), ("requestfinished", on_finished),
+                     ("requestfailed", on_failed))
+        for event, handler in listeners:
+            page.on(event, handler)
         started = time.time()
-        stream = {"status": None}
         self.last_cancelled_thread = thread_url
         self._phase("waiting")
         try:
             self._send(page, prompt)
-            while not streams and time.time() - started < REPLY_TIMEOUT:
+            announced = False
+            while "how" not in ended and time.time() - started < REPLY_TIMEOUT:
                 page.wait_for_timeout(1000)
                 self._check_stop()
-            if streams:
-                self._phase("reply started")
-                while time.time() - started < REPLY_TIMEOUT:
-                    try:
-                        streams[0].finished()
-                        stream["status"] = streams[0].status
-                        break
-                    except Exception:
-                        page.wait_for_timeout(1000)
-                    self._check_stop()
+                if streams and not announced:
+                    self._phase("reply started")
+                    announced = True
             # Let the events that queued while the stream ran be delivered.
             page.wait_for_timeout(2000)
             waited = 0
@@ -298,19 +337,25 @@ class GeminiProvider(BaseProvider):
                 self.last_cancelled_thread = page.url
             raise
         finally:
-            try:
-                page.remove_listener("response", on_response)
-            except Exception:
-                pass
+            for event, handler in listeners:
+                try:
+                    page.remove_listener(event, handler)
+                except Exception:
+                    pass
 
         landed = "{}/{}".format(HOME, self._thread_id(page)) if self._thread_id(page) else None
-        if stream["status"] is None:
+        if "how" not in ended:
             self.last_settle = "timeout"
             return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
                                     error="gemini did not finish within {}s".format(REPLY_TIMEOUT))
         self.last_settle = "server"
-        if stream["status"] != 200:
-            raise ProviderError("gemini refused the turn: its stream answered {}".format(stream["status"]))
+        if ended["how"] != "finished":
+            raise ProviderError("gemini's stream broke off: {}".format(ended["how"]))
+        response = next((s for s in streams if s.request is ended["request"]),
+                        streams[0] if streams else None)
+        status = response.status if response is not None else None
+        if status != 200:
+            raise ProviderError("gemini refused the turn: its stream answered {}".format(status))
 
         # The server says the turn is over; the words are read from the new bubble the page
         # painted for it, after it holds still for a second.

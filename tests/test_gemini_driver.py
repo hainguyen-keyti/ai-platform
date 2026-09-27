@@ -8,7 +8,7 @@ editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ dur
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one.
-Prints N/17 PASSED.
+Prints N/26 PASSED.
 """
 
 import json
@@ -100,15 +100,35 @@ class Keyboard:
             self.page.text = ""
 
 
+class BlocksForever(BaseException):
+    """What Playwright's Response.finished() does on a stream that failed after its headers: it
+    never returns (shown by the tier 1 review, 2026-09-27, against localhost). A BaseException,
+    so a driver that catches Exception cannot swallow it and carry on as if nothing happened."""
+
+
+class Request:
+    def __init__(self, url, method="POST"):
+        self.url = url
+        self.method = method
+        self.failure = None
+
+
 class Response:
-    def __init__(self, url, status=200, body=b"", ctype="application/json", method="POST"):
+    """outcome: "finished" (the request completes), "failed" (it breaks after its headers), or
+    None (it never ends)."""
+
+    def __init__(self, url, status=200, body=b"", ctype="application/json", method="POST",
+                 outcome="finished"):
         self.url = url
         self.status = status
         self._body = body
         self.headers = {"content-type": ctype}
-        self.request = type("Request", (), {"method": method})()
+        self.request = Request(url, method)
+        self.outcome = outcome
 
     def finished(self):
+        if self.outcome != "finished":
+            raise BlocksForever()
         return None
 
     def body(self):
@@ -120,7 +140,30 @@ class Bubbles:
         self.page = page
 
     def all_inner_texts(self):
-        return list(self.page.bubbles)
+        # A reopened thread paints its earlier turns a moment after the composer shows.
+        late = self.page.late if (self.page.late_at is not None
+                                  and self.page.clock.now >= self.page.late_at) else []
+        return list(late) + list(self.page.bubbles)
+
+
+class Expected:
+    """page.expect_response(...) as a context manager: the wait happens when the block exits."""
+
+    def __init__(self, page):
+        self.page = page
+        self.value = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, error, trace):
+        if kind:
+            return False
+        if self.page.process_file is None:
+            raise RuntimeError("Timeout 30000ms exceeded while waiting for event \"response\"")
+        self.value = Response("https://gemini.google.com/_/BardChatUi/data/assistant.lamda."
+                              "BardFrontendService/ProcessFile", status=self.page.process_file)
+        return False
 
 
 class Page:
@@ -140,26 +183,41 @@ class Page:
         self.sent = []
         self.truncate = None
         self.keyboard = Keyboard(self)
-        self.listeners = []
+        self.listeners = {}
         self.replies = []
         self.bubbles = []
+        self.late, self.late_at = [], None
         self.answer = ""
         self.thread = "https://gemini.google.com/app/0123456789abcdef"
+        self.file_input = False
+        self.process_file = 200
 
     def on(self, event, handler):
-        if event == "response":
-            self.listeners.append(handler)
+        self.listeners.setdefault(event, []).append(handler)
 
     def remove_listener(self, event, handler):
-        if handler in self.listeners:
-            self.listeners.remove(handler)
+        if handler in self.listeners.get(event, []):
+            self.listeners[event].remove(handler)
+
+    def emit(self, event, arg):
+        for handler in list(self.listeners.get(event, [])):
+            handler(arg)
 
     def on_sent(self):
         self.url = self.thread
-        self.bubbles.append(self.answer)
+        if self.answer is not None:
+            self.bubbles.append(self.answer)
         for response in self.replies:
-            for handler in list(self.listeners):
-                handler(response)
+            self.emit("response", response)
+            if response.request.method == "POST" and "StreamGenerate" in response.url:
+                if response.outcome == "finished":
+                    self.emit("requestfinished", response.request)
+                elif response.outcome == "failed":
+                    response.request.failure = "net::ERR_CONTENT_LENGTH_MISMATCH"
+                    self.emit("requestfailed", response.request)
+
+    def expect_response(self, predicate, timeout=None):
+        return Expected(self)
 
     def goto(self, url, *args, **kwargs):
         self.url = self.landed or url
@@ -170,6 +228,8 @@ class Page:
     def locator(self, selector):
         if "message-content" in selector:
             return Bubbles(self)
+        if 'input[type="file"]' in selector:
+            return Box(self, self.file_input)
         if "switch" in selector:
             return Box(self, self.checked is not None)
         parts = [p.strip() for p in selector.split(",")]
@@ -353,6 +413,87 @@ def main():
            result.success and result.text == "a plain reply"
            and (result.thread_url or "").endswith("/app/0123456789abcdef"),
            "success {} text {!r} thread {}".format(result.success, result.text, result.thread_url))
+
+    def run_on(page, settings, prompt="hello", **kwargs):
+        """(what happened, result): 'blocked forever', 'refused: kind', 'crashed: ...', or 'returned'."""
+        try:
+            return "returned", provider_on(page, settings)._run(prompt, **kwargs)
+        except BlocksForever:
+            return "blocked forever", None
+        except ProviderError as exc:
+            return "refused: {} {}".format(exc.kind, str(exc)[:50]), None
+        except Exception as exc:
+            return "crashed: {}: {}".format(type(exc).__name__, str(exc)[:50]), None
+
+    # The tier 1 review, 2026-09-27: a stream cut off after its 200 headers never finishes.
+    page = Page(clock)
+    page.answer = "half an answer"
+    page.replies = [Response(stream_ok.url, status=200, outcome="failed")]
+    what, result = run_on(page, off())
+    record("a stream cut off after its headers is a failure, and nothing hangs",
+           what.startswith("refused"), what)
+
+    page = Page(clock)
+    page.answer = "an answer that never finished"
+    page.replies = [Response(stream_ok.url, status=200, outcome=None)]
+    what, result = run_on(page, off())
+    record("a stream that never ends times out instead of hanging",
+           what == "returned" and not result.success and result.error_kind == "provider_timeout",
+           "{} {}".format(what, result and result.error_kind))
+
+    # The tier 1 review, 2026-09-27: a reopened thread paints its earlier turns late, so counting
+    # them at once let an earlier answer pass for this turn's when the turn painted nothing.
+    thread = "https://gemini.google.com/app/0123456789abcdef"
+    page = Page(clock)
+    page.late, page.late_at = ["an earlier question", "an earlier answer from yesterday"], clock.now + 3
+    page.answer, page.replies = None, [stream_ok]
+    what, result = run_on(page, off(), thread_url=thread)
+    record("a turn that paints nothing new never returns an earlier answer",
+           what != "returned" or (not result.success and "yesterday" not in (result.text or "")),
+           "{} text {!r}".format(what, result and result.text))
+
+    page = Page(clock)
+    page.late, page.late_at = ["an earlier question", "an earlier answer"], clock.now
+    page.answer, page.replies = "the new answer", [stream_ok]
+    what, result = run_on(page, off(), thread_url=thread)
+    record("a reopened thread returns this turn's answer",
+           what == "returned" and result.success and result.text == "the new answer",
+           "{} text {!r}".format(what, result and result.text))
+
+    page = Page(clock)
+    page.answer, page.replies = "should never be asked", [stream_ok]
+    what, result = run_on(page, off(), thread_url=thread)
+    record("a reopened thread whose earlier turns never paint is refused, not guessed",
+           what.startswith("refused") and page.sent == [], "{} sent {}".format(what, len(page.sent)))
+
+    # DECISIONS 2026-09-24: a stored thread that fails to open is a provider error, never a silent
+    # fresh chat. Landing back on /app is what a deleted thread does, and a slow one too.
+    page = Page(clock, landed="https://gemini.google.com/app")
+    page.answer, page.replies = "an answer with no context", [stream_ok]
+    what, result = run_on(page, off(), thread_url=thread)
+    record("a thread that lands back on /app is refused, never a fresh chat",
+           what.startswith("refused") and page.sent == [], "{} sent {}".format(what, len(page.sent)))
+
+    # Signed out and sent to Google's sign-in page rather than /saved-info: still signed out.
+    settings = Page(clock, composer=False, checked=None,
+                    landed="https://accounts.google.com/v3/signin/identifier?continue=x")
+    page = Page(clock)
+    page.replies = [stream_ok]
+    what, result = run_on(page, settings)
+    record("a settings page bounced to Google sign-in is a signed-out session, refused",
+           what.startswith("refused: provider_misconfigured") and page.sent == [],
+           "{} sent {}".format(what, len(page.sent)))
+
+    reference = Path("/tmp/gemini-driver-test/reference.png")
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    reference.write_bytes(b"\x89PNG not really")
+    for status, label in ((500, "an upload the server refused"), (None, "an upload that never answered")):
+        page = Page(clock)
+        page.file_input, page.process_file = True, status
+        page.answer, page.replies = "please attach an image", [stream_ok]
+        what, result = run_on(page, off(), prompt="describe it", upload=reference.name)
+        record("{} stops the turn as a provider failure".format(label),
+               what.startswith("refused") and page.sent == [], "{} sent {}".format(what, len(page.sent)))
 
     for url, expected in (("https://gemini.google.com/app/659ed82f23b56ced", "659ed82f23b56ced"),
                           ("https://gemini.google.com/app", None)):
