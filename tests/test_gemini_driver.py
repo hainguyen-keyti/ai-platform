@@ -8,7 +8,7 @@ editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ dur
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one.
-Prints N/58 PASSED.
+Prints N/62 PASSED.
 """
 
 import json
@@ -971,6 +971,52 @@ def main():
     record("a settings page bounced to Google sign-in is a signed-out session, refused",
            what.startswith("refused: provider_misconfigured") and page.sent == [],
            "{} sent {}".format(what, len(page.sent)))
+
+    # Google's unusual-traffic check, measured 2026-09-27: every Gemini page went to
+    # www.google.com/sorry/, whose q token starts with the network's own address. This token holds
+    # 10.0.0.1, never a real one.
+    sorry = "https://www.google.com/sorry/index?continue=/app&q=EgQKAAABbm90LXJlYWw"
+
+    def refusal(page, settings):
+        started, p = clock.now, provider_on(page, settings)
+        try:
+            p._run("hello")
+            return "returned", "", clock.now - started, p
+        except ProviderError as exc:
+            return exc.kind, str(exc), clock.now - started, p
+        except Exception as exc:
+            return "crashed", "{}: {}".format(type(exc).__name__, exc), clock.now - started, p
+
+    page = Page(clock, composer=False, landed=sorry)
+    page.replies = [stream_ok]
+    kind, message, took, p = refusal(page, off())
+    record("a turn that lands on Google's unusual-traffic check fails at once, naming it",
+           kind == "provider_error" and "unusual-traffic" in message and took < 5
+           and page.sent == [], "{} after {:.0f}s: {!r}".format(kind, took, message[:120]))
+    record("the unusual-traffic check's url never reaches the error a user sees",
+           "q=" not in message and "EgQ" not in message and "sorry/index" not in message,
+           repr(message[:160]))
+
+    settings = Page(clock, composer=False, checked=None, landed=sorry)
+    page = Page(clock)
+    page.replies = [stream_ok]
+    kind, message, took, p = refusal(page, settings)
+    record("the guard reads Google's unusual-traffic check as blocked, never as signed out",
+           kind == "provider_error" and "unusual-traffic" in message and p.memory == "blocked"
+           and page.sent == [], "{} memory {} sent {}: {!r}".format(kind, p.memory, len(page.sent),
+                                                                   message[:120]))
+
+    page = ListPage(clock, "239f0ba819d9963c", hidden=False, gone_after=0, redirect=sorry)
+    started = clock.now
+    try:
+        provider_on(page).delete_thread(gemini.HOME + "/239f0ba819d9963c")
+        what = "returned"
+    except ProviderError as exc:
+        what = "refused: {}".format(exc)
+    record("a deletion that meets Google's unusual-traffic check is refused at once, nothing deleted",
+           what.startswith("refused") and "unusual-traffic" in what and not page.deleted
+           and clock.now - started < 5, "{} after {:.0f}s deleted {}".format(
+               what[:120], clock.now - started, page.deleted))
 
     reference = Path("/tmp/gemini-driver-test/reference.png")
     reference.parent.mkdir(parents=True, exist_ok=True)
