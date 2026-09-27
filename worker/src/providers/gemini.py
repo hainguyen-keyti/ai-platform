@@ -33,7 +33,8 @@ THREAD = re.compile(r"/app/([0-9a-f]{8,})(?:[/?#]|$)")
 # Measured 2026-09-27: each turn is a user-query, then a model-response holding a message-content,
 # in document order. Words alone cannot say which question is this turn's (every video script job
 # opens with the same ones), so the questions already on the page are marked before the send, and
-# this turn's question is the newest one that is NOT marked. Its words are then only a check.
+# this turn's question is the newest one that is NOT marked. Its words are then only a check. The
+# questions are counted too: a page that rebuilds its elements loses the marks, not the count.
 MARK_QUERIES = """
 () => {
     const queries = document.querySelectorAll('user-query');
@@ -43,9 +44,9 @@ MARK_QUERIES = """
 """
 
 ANSWER_AFTER_QUERY = """
-(words) => {
+([words, before]) => {
     const queries = document.querySelectorAll('user-query');
-    const mine = queries.length ? queries[queries.length - 1] : null;
+    const mine = queries.length > before ? queries[queries.length - 1] : null;
     if (!mine || mine.hasAttribute('data-platform-before')) return {query: false, text: ''};
     const shown = (mine.innerText || '').normalize('NFC').toLowerCase();
     if (!words.every((w) => shown.includes(w))) return {query: false, text: ''};
@@ -374,9 +375,9 @@ class GeminiProvider(BaseProvider):
                 ended.setdefault("request", req)
                 ended.setdefault("how", "failed: {}".format(getattr(req, "failure", None)))
 
-        # Every question already on the page is marked; this turn's is the one that is not.
+        # Every question on the page is marked and counted; this turn's is the one that is not.
         try:
-            page.evaluate(MARK_QUERIES)
+            before = page.evaluate(MARK_QUERIES)
         except Exception as exc:
             raise ProviderError("gemini's page could not be read before sending: {}".format(
                 type(exc).__name__))
@@ -437,7 +438,7 @@ class GeminiProvider(BaseProvider):
         text, last = "", None
         for _ in range(10):
             try:
-                found = page.evaluate(ANSWER_AFTER_QUERY, words) or {}
+                found = page.evaluate(ANSWER_AFTER_QUERY, [words, before]) or {}
             except Exception as exc:
                 raise ProviderError("gemini's page went away while the answer was read: {}".format(
                     type(exc).__name__))

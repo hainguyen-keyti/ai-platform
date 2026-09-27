@@ -222,8 +222,11 @@ class Page:
         # send, and whether reading the answer finds the page gone.
         self.display = lambda text: text
         self.paint_query = True
-        self.marked = set()
+        self.marked = []
         self.context_gone = False
+        # A page that rebuilds its question elements when a turn is sent: the rebuilt ones are new
+        # elements and carry no mark (the case the last re-review left open).
+        self.rebuild_on_send = False
 
     def items(self):
         earlier = []
@@ -254,6 +257,10 @@ class Page:
 
     def on_sent(self):
         self.url = self.thread
+        if self.rebuild_on_send:
+            # (kind, text) builds a new tuple; tuple(item) would hand back the same object.
+            self.late = [(due, [(kind, text) for kind, text in batch]) for due, batch in self.late]
+            self.dom = [(kind, text) for kind, text in self.dom]
         if self.paint_query:
             self.dom.append(("query", "Bạn đã nói " + self.display(self.sent[-1])))
         if self.answer is not None:
@@ -299,17 +306,19 @@ class Page:
         # already on the page, then reading the answer after the newest, unmarked question that
         # holds this turn's words. The scripts themselves run for real in markup_cases below.
         if "user-query" in script and "setAttribute" in script:
-            for item in self.items():
-                if item[0] == "query":
-                    self.marked.add(id(item))
-            return len(self.marked)
+            # The marked elements themselves are kept, so a rebuilt one never shares their id.
+            queries = [item for item in self.items() if item[0] == "query"]
+            self.marked.extend(queries)
+            return len(queries)
         if "user-query" in script:
             if self.context_gone:
                 raise RuntimeError("Execution context was destroyed")
-            words = args[0] if args else []
+            # [words, the count at marking]; a bare list of words is how the driver asked before.
+            arg = args[0] if args else []
+            words, before = arg if len(arg) == 2 and isinstance(arg[1], int) else (arg, 0)
             items = self.items()
             queries = [i for i, item in enumerate(items) if item[0] == "query"]
-            if not queries or id(items[queries[-1]]) in self.marked:
+            if len(queries) < before + 1 or any(items[queries[-1]] is m for m in self.marked):
                 return {"query": False, "text": ""}
             shown = unicodedata.normalize("NFC", items[queries[-1]][1]).lower()
             if not all(word in shown for word in words):
@@ -375,52 +384,89 @@ def markup_cases(gemini):
         q.innerHTML = html;
         document.querySelector('main').appendChild(q);
     }"""
+    add_older_query = """(html) => {
+        const q = document.createElement('user-query');
+        q.innerHTML = html;
+        const main = document.querySelector('main');
+        main.insertBefore(q, main.firstChild);
+    }"""
+    rebuild_queries = """() => document.querySelectorAll('user-query').forEach((q) => {
+        const fresh = q.cloneNode(true);
+        fresh.removeAttribute('data-platform-before');
+        q.replaceWith(fresh);
+    })"""
     second = "What word did I ask you to remember? Reply with that word only."
     html = (ROOT / "tests" / "fixtures" / "gemini_thread.html").read_text()
     browser = cloakbrowser.launch(headless=True)
     try:
         page = browser.new_context().new_page()
         page.evaluate("(html) => { document.body.innerHTML = html; }", html)
-        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, words_of(second))
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(second), 1])
         record("the real markup: the answer after this turn's own question",
                got.get("query") is True and got.get("text", "").strip() == "teal-99016", repr(got))
 
         # The questions on the page before this turn's send are marked; if this turn's own never
         # paints, the newest is an old one with the very same words, and it must not be used.
-        page.evaluate(mark)
-        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, words_of(second))
+        before = page.evaluate(mark)
+        record("the real markup: marking counts the questions already there", before == 2,
+               repr(before))
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(second), before])
         record("the real markup: a question from before the send is never this turn's",
                got.get("query") is False and got.get("text") == "", repr(got))
 
+        # An earlier turn painted above after the marking makes the count enough on its own; the
+        # newest question is still a marked one.
+        page.evaluate(add_older_query, "Bạn đã nói an even older question")
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(second), before])
+        record("the real markup: a marked newest question is refused even when the count is met",
+               got.get("query") is False and got.get("text") == "", repr(got))
+
+        # More than one new question since the marking (that older one, then this turn's): at
+        # least one more is required, not exactly one.
         page.evaluate(add_query, "Bạn đã nói Tell me something new, please.")
-        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, words_of("Tell me something new, please."))
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
+                            [words_of("Tell me something new, please."), before])
         record("the real markup: a question with no answer yet reads nothing, not the last answer",
                got.get("query") is True and got.get("text") == "", repr(got))
 
         page.evaluate(add_query, "Bạn đã nói <ol><li>first item</li><li>second item</li></ol>"
                                  "Reply with just: ok")
         got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
-                            words_of("1. first item\n2. second item\nReply with just: ok"))
+                            [words_of("1. first item\n2. second item\nReply with just: ok"), before])
         record("the real markup: a list shown without its numbers is still found",
                got.get("query") is True, repr(got))
 
         page.evaluate(add_query, "Bạn đã nói " + unicodedata.normalize("NFC", "Viết một câu chào."))
         got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
-                            words_of(unicodedata.normalize("NFD", "Viết một câu chào.")))
+                            [words_of(unicodedata.normalize("NFD", "Viết một câu chào.")), before])
         record("the real markup: decomposed Vietnamese matches the page's composed text",
                got.get("query") is True, repr(got))
 
         page.evaluate(add_query, "Bạn đã nói " + unicodedata.normalize("NFD", "Chào buổi sáng nhé."))
         got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
-                            words_of(unicodedata.normalize("NFC", "Chào buổi sáng nhé.")))
+                            [words_of(unicodedata.normalize("NFC", "Chào buổi sáng nhé.")), before])
         record("the real markup: a page that shows decomposed text still matches",
                got.get("query") is True, repr(got))
 
-        # Unmarked but not this turn's: what a page that rebuilt its elements would show.
         page.evaluate(add_query, "Bạn đã nói Something else entirely, from another turn.")
-        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, words_of("Tell me something new, please."))
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY,
+                            [words_of("Tell me something new, please."), before])
         record("the real markup: an unmarked question without this turn's words is not used",
                got.get("query") is False, repr(got))
+
+        # A page that rebuilds its question elements after the marking loses every mark; with this
+        # turn's question missing, only the count still tells.
+        page.evaluate("(html) => { document.body.innerHTML = html; }", html)
+        before = page.evaluate(mark)
+        page.evaluate(rebuild_queries)
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(second), before])
+        record("the real markup: rebuilt questions and no new one read nothing",
+               got.get("query") is False and got.get("text") == "", repr(got))
+
+        page.evaluate(add_query, "Bạn đã nói " + second)
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(second), before])
+        record("the real markup: rebuilt questions do not hide this turn's own",
+               got.get("query") is True, repr(got))
     finally:
         browser.close()
 
@@ -682,6 +728,27 @@ def main():
     what, result = run_on(page, off(), prompt=script_prompt, thread_url=thread)
     record("a question that never painted never borrows an identical earlier one's answer",
            what != "returned" or (not result.success and "older" not in (result.text or "")),
+           "{} text {!r}".format(what, result and result.text))
+
+    # The last re-review: if the page rebuilds its question elements (so the marks are gone) and
+    # this turn's question never paints, only the count of questions can still tell.
+    page = Page(clock)
+    page.late = [(clock.now, [("query", "Bạn đã nói " + script_prompt),
+                              ("answer", "an older video script")])]
+    page.rebuild_on_send = True
+    page.paint_query, page.answer, page.replies = False, None, [stream_ok]
+    what, result = run_on(page, off(), prompt=script_prompt, thread_url=thread)
+    record("rebuilt question elements plus a missing question never borrow an older answer",
+           what != "returned" or (not result.success and "older" not in (result.text or "")),
+           "{} text {!r}".format(what, result and result.text))
+
+    page = Page(clock)
+    page.late = [(clock.now, [("query", "an earlier question"), ("answer", "an earlier answer")])]
+    page.rebuild_on_send = True
+    page.answer, page.replies = "the new answer", [stream_ok]
+    what, result = run_on(page, off(), thread_url=thread)
+    record("rebuilt question elements do not stop this turn's own answer",
+           what == "returned" and result.success and result.text == "the new answer",
            "{} text {!r}".format(what, result and result.text))
 
     # Tier 1 re-review: the anchor failed closed on a decomposed Vietnamese prompt and on a list.
