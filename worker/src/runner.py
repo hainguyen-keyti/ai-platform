@@ -27,7 +27,8 @@ class Runner(threading.Thread):
         super().__init__(name="job-runner-{}".format(provider), daemon=True)
         self.pool = pool
         self.provider = provider
-        self._stop = threading.Event()
+        # Not _stop: threading.Thread calls its own _stop() once the thread has ended.
+        self._halt = threading.Event()
         self.processed = 0
         self.failed = 0
         self.refused = 0
@@ -51,12 +52,12 @@ class Runner(threading.Thread):
         }
 
     def stop(self):
-        self._stop.set()
+        self._halt.set()
 
     def run(self):
         headers = {"X-Worker-Token": settings.worker_token}
         with httpx.Client(base_url=settings.api_url, headers=headers, timeout=30.0) as client:
-            while not self._stop.is_set():
+            while not self._halt.is_set():
                 hold = self.pool.hold_seconds(self.provider)
                 if hold > 0:
                     # Pausing on purpose is not being dead: say so, or the api
@@ -70,7 +71,7 @@ class Runner(threading.Thread):
                     # must not starve it. An error cooldown still does.
                     if not self.pool.cooling_down(self.provider):
                         self._maybe_delete_one_thread(client)
-                    self._stop.wait(min(hold, 5.0))
+                    self._halt.wait(min(hold, 5.0))
                     continue
 
                 job = None
@@ -81,7 +82,7 @@ class Runner(threading.Thread):
 
                 if job is None:
                     self._maybe_delete_one_thread(client)
-                    self._stop.wait(settings.poll_interval)
+                    self._halt.wait(settings.poll_interval)
                     continue
 
                 try:
