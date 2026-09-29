@@ -272,6 +272,15 @@ def main():
             record("the language switch changes the labels and back", False,
                    "{}: no switch, or the labels did not change".format(type(exc).__name__))
 
+        # The list has answered, empty, before the first send: a list first asked after the send would
+        # already hold the new conversation and prove nothing about the reply's wait.
+        first_turn = {}
+        try:
+            page.wait_for_selector("aside >> text=No conversations yet.", timeout=10000)
+            first_turn["empty before the send"] = True
+        except Exception as exc:
+            first_turn["empty before the send"] = "{}: not seen".format(type(exc).__name__)
+
         page.fill(COMPOSER, "hello from the ui smoke test")
         shot(page, "04-message-typed")
         page.click("button:has-text('Send')")
@@ -292,6 +301,15 @@ def main():
         except Exception as exc:
             record("typing indicator while waiting", False,
                    "{}; is the worker running with MOCK_DELAY_SECONDS set?".format(type(exc).__name__))
+        # The api makes the conversation before it answers the send: the list shows it during the first
+        # reply instead of calling itself empty, and its note's live region is there before any note.
+        try:
+            first_turn.update({"rows": page.locator("[data-testid=conversation-item]").count(),
+                               "notes": page.locator("aside").get_by_text("No conversations yet.").count(),
+                               "status regions": page.locator("aside [role=status]").count(),
+                               "reply pending": page.locator("[data-testid=typing-bubble]").count() == 1})
+        except Exception as exc:
+            first_turn["error"] = "{}: {}".format(type(exc).__name__, str(exc)[:120])
 
         page.wait_for_selector("text=mock reply from chatgpt", timeout=60000)
         shot(page, "05-chat-reply")
@@ -594,6 +612,8 @@ def main():
             page.fill("[data-testid=conversation-search]", "zzz-nothing-here")
             page.wait_for_timeout(1000)
             nothing["en"] = page.locator("aside").get_by_text("No conversation matches.", exact=True).is_visible()
+            nothing["announced"] = page.locator("aside [role=status]").get_by_text("No conversation matches.",
+                                                                                   exact=True).is_visible()
             page.click("[data-testid=language-switch]", timeout=5000)
             page.wait_for_selector("button:has-text('Gửi')", timeout=5000)
             nothing["vi"] = page.locator("aside").get_by_text("Không tìm thấy cuộc trò chuyện nào.",
@@ -606,12 +626,18 @@ def main():
             nothing["rows back"] = page.locator("[data-testid=conversation-item]").count()
             nothing["notes left"] = (page.locator("aside").get_by_text("No conversation matches.").count()
                                      + page.locator("aside").get_by_text("No conversations yet.").count())
-            record("an empty list and a search with no hit say so, in both languages",
+            record("an empty list and a search with no hit say so, in both languages, to a screen reader too,"
+                   " and never beside a conversation",
                    bool(empty.get("after")) and bool(empty.get("vi")) and nothing["en"] and nothing["vi"]
-                   and nothing["rows back"] >= 1 and nothing["notes left"] == 0,
-                   "empty list: en {}, vi {}; no hit {}".format(empty.get("after"), empty.get("vi"), nothing))
+                   and nothing["announced"] and nothing["rows back"] >= 1 and nothing["notes left"] == 0
+                   and first_turn.get("empty before the send") is True
+                   and first_turn.get("reply pending") and first_turn.get("rows", 0) >= 1
+                   and first_turn.get("notes") == 0 and first_turn.get("status regions") == 1,
+                   "empty list: en {}, vi {}; during the first reply {}; no hit {}".format(
+                       empty.get("after"), empty.get("vi"), first_turn, nothing))
         except Exception as exc:
-            record("an empty list and a search with no hit say so, in both languages", False,
+            record("an empty list and a search with no hit say so, in both languages, to a screen reader too,"
+                   " and never beside a conversation", False,
                    "{}: {} (so far {})".format(type(exc).__name__, str(exc)[:160], nothing))
 
         # Which providers a worker serves comes from the api; here it answers with a chosen reply
@@ -1089,7 +1115,7 @@ def main():
                    "{}: {}".format(type(exc).__name__, str(exc)[:200]))
         landed = {}
         try:
-            for how in ("Close", "a row", "chat"):
+            for how in ("Close", "a row", "chat", "New chat", "Escape", "the gallery", "a wider window"):
                 fresh_tab()
                 small.click("[data-testid=open-conversations]", timeout=5000)
                 small.wait_for_timeout(300)
@@ -1097,17 +1123,27 @@ def main():
                     small.click("[data-testid=close-conversations]", timeout=5000)
                 elif how == "a row":
                     small.locator("[data-testid=conversation-item] button").first.click(timeout=5000)
-                else:
+                elif how == "chat":
                     small.click("nav button:has-text('chat')", timeout=5000)
+                elif how == "New chat":
+                    small.click("aside button:has-text('New chat')", timeout=5000)
+                elif how == "Escape":
+                    small.keyboard.press("Escape")
+                elif how == "the gallery":
+                    small.click("nav button:has-text('gallery')", timeout=5000)
+                else:
+                    small.set_viewport_size({"width": 1024, "height": 800})
+                    small.wait_for_timeout(500)
+                    small.set_viewport_size({"width": 390, "height": 844})
                 small.wait_for_timeout(800)
                 small.go_back(timeout=10000)
                 small.wait_for_timeout(800)
                 landed[how] = small.url
-            record("on a phone a list closed by Close, a row or chat leaves no step for Back",
-                   len(landed) == 3 and all(url == "about:blank#before" for url in landed.values()),
+            record("on a phone every way of closing the list leaves no step for Back",
+                   len(landed) == 7 and all(url == "about:blank#before" for url in landed.values()),
                    "Back after each close lands on {}".format(landed))
         except Exception as exc:
-            record("on a phone a list closed by Close, a row or chat leaves no step for Back", False,
+            record("on a phone every way of closing the list leaves no step for Back", False,
                    "{}: {} (so far {})".format(type(exc).__name__, str(exc)[:200], landed))
         try:
             fresh_tab()
@@ -1298,6 +1334,62 @@ def main():
             except Exception as exc:
                 record(name, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
+        # The typing bubble's hint shows only after a minute: a job answered in the browser (none is
+        # made) and a fake clock moved on by 61s bring it on screen for the contrast check.
+        def hint_after_a_minute():
+            stamp = "2026-09-30 10:00:00"
+            json_headers = {"access-control-allow-origin": "*", "content-type": "application/json"}
+
+            def answer(route):
+                request = route.request
+                path = urlparse(request.url).path
+                if request.method == "OPTIONS":
+                    route.continue_()
+                    return
+                if path == "/conversations":
+                    body = {"items": [{"id": "hint", "provider": "chatgpt", "title": "Hint", "created_at": stamp,
+                                       "updated_at": stamp}]}
+                elif path == "/conversations/hint":
+                    body = {"id": "hint", "provider": "chatgpt", "title": "Hint", "created_at": stamp,
+                            "updated_at": stamp, "orphan_media": [],
+                            "messages": [{"id": "hint-1", "role": "user", "content": "draw a slow picture",
+                                          "created_at": stamp, "media": []}]}
+                elif path == "/chat" and request.method == "POST":
+                    body = {"job_id": "hint-job", "conversation_id": "hint"}
+                elif path == "/jobs/hint-job":
+                    body = {"id": "hint-job", "status": "running", "phase": None}
+                else:
+                    route.continue_()
+                    return
+                route.fulfill(status=200, headers=json_headers, body=json.dumps(body))
+
+            slow = browser.new_context(viewport={"width": 1280, "height": 900})
+            slow.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', 'en');".format(token))
+            try:
+                view = slow.new_page()
+                view.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+                view.clock.install()
+                for pattern in ("**/conversations", "**/conversations/hint", "**/chat", "**/jobs/hint-job"):
+                    view.route(pattern, answer)
+                view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+                view.locator("[data-testid=conversation-item] button").first.click(timeout=20000)
+                view.wait_for_selector("[data-testid=user-bubble]", timeout=10000)
+                view.fill(COMPOSER, "still drawing")
+                view.click("button:has-text('Send')")
+                view.wait_for_selector("[data-testid=typing-bubble]", timeout=10000)
+                view.clock.fast_forward(61000)
+                view.wait_for_selector("[data-testid=typing-bubble] >> text=Still working.", timeout=5000)
+                faint_texts(view, "the typing bubble after a minute", faint, texts_on)
+                shot(view, "05b-typing-after-a-minute")
+            finally:
+                slow.close()
+
+        try:
+            hint_after_a_minute()
+        except Exception as exc:
+            faint.append("the typing bubble after a minute: not measured, {}: {}".format(
+                type(exc).__name__, str(exc)[:80]))
+
         # How a reply and a file look, answered in the browser. The bubble's pre-wrap turned the
         # breaks between a reply's blocks into blank lines (three bullets 166px), and they were the
         # only gap between paragraphs; a fixed 256px file card ran out of a 147px gallery tile.
@@ -1425,7 +1517,7 @@ def main():
             what = entry.split(": ", 1)[-1]
             kinds[what] = kinds.get(what, 0) + 1
         record("every text and placeholder on screen meets its contrast floor",
-               not faint and len(texts_on) >= 14 and all(texts_on.values()),
+               not faint and len(texts_on) >= 15 and all(texts_on.values()),
                "{} texts on {} screens {}, {} under the floor: {}".format(
                    sum(texts_on.values()), len(texts_on),
                    sorted(k for k, v in texts_on.items() if not v) or "all measured", len(faint), kinds))

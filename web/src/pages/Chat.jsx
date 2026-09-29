@@ -186,14 +186,14 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
   // The open list is a step in the tab's history: Back closes it, any other close takes the step out.
   useEffect(() => {
     if (!listOpen) return
-    history.pushState({ conversationList: true }, '')
+    window.history.pushState({ conversationList: true }, '')
     function onBack() {
       setListOpen(false)
     }
     window.addEventListener('popstate', onBack)
     return () => {
       window.removeEventListener('popstate', onBack)
-      if (history.state?.conversationList) history.back()
+      if (window.history.state?.conversationList) window.history.back()
     }
   }, [listOpen])
 
@@ -292,6 +292,8 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
       jobRef.current = created.job_id
       if (cancelWanted.current) await api.cancelJob(created.job_id)
       setActiveId(created.conversation_id)
+      // The api made the conversation before answering, so the list shows it (and drops its empty note) now.
+      refreshList()
       // Show what was just said straight away. Setting the id alone does not
       // reload an already open conversation, so a follow-up message stayed
       // invisible until its job finished, which for a picture is minutes.
@@ -402,9 +404,12 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
           className="mx-3 mb-2 rounded border px-2 py-1 text-base md:text-sm" />
         {error && <p className="mx-3 mb-2 text-sm text-red-600 md:hidden">{error}</p>}
         <div className="flex-1 overflow-y-auto">
-          {listedFor !== null && conversations.length === 0 && (
-            <p className="px-3 py-2 text-sm text-slate-500">{listedFor ? t.noMatch : t.noConversations}</p>
-          )}
+          {/* Always in the page, so a screen reader hears the note arrive. */}
+          <div role="status">
+            {listedFor !== null && conversations.length === 0 && (
+              <p className="px-3 py-2 text-sm text-slate-500">{listedFor ? t.noMatch : t.noConversations}</p>
+            )}
+          </div>
           {conversations.map((c) => (
             <div key={c.id} data-testid="conversation-item"
               className={`flex items-center gap-1 px-3 text-sm hover:bg-slate-100 ${
