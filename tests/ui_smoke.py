@@ -18,6 +18,7 @@ can look at what actually rendered instead of trusting an assertion.
 
 import json
 import os
+import re
 import sys
 import time
 import zipfile
@@ -502,6 +503,7 @@ def main():
         phone.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', 'en');".format(
             page.evaluate("() => localStorage.getItem('token')")))
         small = phone.new_page()
+        small.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
         fits = """() => {
             const box = (n) => { if (!n) return null; const r = n.getBoundingClientRect();
                 return {left: Math.round(r.left), right: Math.round(r.right)}; };
@@ -526,6 +528,7 @@ def main():
                    "{}: {}".format(type(exc).__name__, str(exc)[:200]))
         try:
             item = small.locator("[data-testid=conversation-item]").first
+            item.wait_for(state="attached", timeout=10000)
             hidden_first = not item.is_visible()
             small.click("[data-testid=open-conversations]", timeout=5000)
             listed = item.is_visible()
@@ -548,11 +551,349 @@ def main():
             on_screen = all(b and b["left"] >= 0 and b["right"] <= got["screen"]
                             for b in (got["language"], got["signOut"]))
             shot(small, "12-phone-gallery")
-            record("on a phone the gallery and the nav fit the screen",
+            record("on a phone the gallery page does not scroll sideways and the nav fits",
                    got["page"] <= got["screen"] and on_screen, repr(got))
         except Exception as exc:
-            record("on a phone the gallery and the nav fit the screen", False,
+            record("on a phone the gallery page does not scroll sideways and the nav fits", False,
                    "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        # The header names the conversation picked from the list before it has loaded: its request
+        # is held here until the header has been read.
+        held = []
+
+        def hold_conversation(route):
+            if route.request.method == "GET":
+                held.append(route)
+            else:
+                route.continue_()
+
+        try:
+            small.click("nav button:has-text('chat')")
+            small.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
+            small.wait_for_timeout(800)
+            title = small.locator("[data-testid=conversation-title]")
+            fresh = title.inner_text().strip() if title.count() else None
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            first = small.locator("[data-testid=conversation-item] button").first
+            wanted = first.evaluate("b => b.lastChild.textContent").strip()
+            small.route("**/conversations/*", hold_conversation)
+            first.click(timeout=5000)
+            small.wait_for_timeout(500)
+            named = title.inner_text().strip() if title.count() else None
+            record("on a phone the header names the conversation picked before it loads",
+                   fresh == "New chat" and named == wanted and len(held) == 1,
+                   "before a pick {!r}, after {!r}, wanted {!r}, requests held {}".format(fresh, named, wanted, len(held)))
+        except Exception as exc:
+            record("on a phone the header names the conversation picked before it loads", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            for route in held:
+                route.continue_()
+            small.unroute("**/conversations/*")
+
+        # The list covers the header where errors are shown, so a failure from the list is shown in
+        # the list too. The rename is refused in the browser; the api never sees it.
+        def refuse_rename(route):
+            if route.request.method != "PATCH":
+                route.continue_()
+                return
+            route.fulfill(status=500, headers={"access-control-allow-origin": "*", "content-type": "application/json"},
+                          body=json.dumps({"detail": "rename refused by the smoke test"}))
+
+        try:
+            small.wait_for_selector("[data-testid=user-bubble]", timeout=10000)
+            small.route("**/conversations/*", refuse_rename)
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.locator("[data-testid=rename-conversation]").first.click(timeout=5000)
+            small.fill("[data-testid=rename-input]", "never saved")
+            start = len(errors)
+            small.press("[data-testid=rename-input]", "Enter")
+            small.wait_for_timeout(800)
+            provoked.update(i for i in range(start, len(errors)) if "500" in errors[i])
+            in_list = small.locator("aside").get_by_text("rename refused by the smoke test")
+            shown = in_list.count() > 0 and in_list.first.is_visible()
+            shot(small, "13-phone-list-error")
+            record("on a phone an error from the list shows in the list", shown,
+                   "{} copy of the error in the list, visible {}".format(in_list.count(), shown))
+        except Exception as exc:
+            record("on a phone an error from the list shows in the list", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            small.unroute("**/conversations/*")
+            if small.locator("[data-testid=close-conversations]").is_visible():
+                small.click("[data-testid=close-conversations]")
+
+        # The list as a panel, by keyboard and screen reader: its button says whether it is open and
+        # which element it opens, focus goes in and comes back, Tab never reaches the chat under it,
+        # Escape closes it, and Escape in a rename box only ends the rename.
+        try:
+            opener = small.locator("[data-testid=open-conversations]")
+            shut = opener.get_attribute("aria-expanded")
+            name = opener.get_attribute("aria-label")
+            opener.click(timeout=5000)
+            small.wait_for_timeout(300)
+            opened = small.evaluate(
+                """() => {
+                    const opener = document.querySelector('[data-testid=open-conversations]');
+                    const list = document.getElementById(opener.getAttribute('aria-controls') || '-');
+                    return {expanded: opener.getAttribute('aria-expanded'),
+                            controls: !!list && !!list.querySelector('[data-testid=conversation-search]'),
+                            heading: list ? (list.querySelector('h2')?.textContent || null) : null,
+                            focus: document.activeElement?.getAttribute('data-testid') || null};
+                }"""
+            )
+            leaked = 0
+            for _ in range(12):
+                small.keyboard.press("Tab")
+                leaked += small.evaluate("() => document.activeElement.closest('section') ? 1 : 0")
+            small.locator("[data-testid=rename-conversation]").first.click(timeout=5000)
+            small.keyboard.press("Escape")
+            small.wait_for_timeout(300)
+            renamed = small.evaluate(
+                "() => ({renaming: !!document.querySelector('[data-testid=rename-input]'),"
+                " open: !!document.querySelector('[data-testid=conversation-search]').offsetParent})")
+            small.keyboard.press("Escape")
+            small.wait_for_timeout(300)
+            closed = small.evaluate(
+                "() => ({open: !!document.querySelector('[data-testid=conversation-search]').offsetParent,"
+                " focus: document.activeElement?.getAttribute('data-testid') || null,"
+                " expanded: document.querySelector('[data-testid=open-conversations]').getAttribute('aria-expanded')})")
+            record("on a phone the list works by keyboard and screen reader",
+                   shut == "false" and name == "Open conversations" and opened["expanded"] == "true"
+                   and opened["controls"] and opened["heading"] == "Conversations"
+                   and opened["focus"] == "close-conversations" and leaked == 0
+                   and not renamed["renaming"] and renamed["open"]
+                   and not closed["open"] and closed["focus"] == "open-conversations" and closed["expanded"] == "false",
+                   "closed {!r}, name {!r}, opened {}, tabs into the chat {}, escape in a rename {}, escape {}"
+                   .format(shut, name, opened, leaked, renamed, closed))
+        except Exception as exc:
+            record("on a phone the list works by keyboard and screen reader", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            if small.locator("[data-testid=close-conversations]").is_visible():
+                small.click("[data-testid=close-conversations]")
+
+        # Big enough to hit with a thumb: the list button 40px and as tall as the provider select,
+        # every control in a list row at least 24px wide and 40px tall, named for a screen reader,
+        # and the panel's close a word, not a second × above each row's delete.
+        try:
+            boxes = small.evaluate(
+                """() => {
+                    const box = (n) => { const r = n.getBoundingClientRect(); return {w: Math.round(r.width), h: Math.round(r.height)}; };
+                    return {opener: box(document.querySelector('[data-testid=open-conversations]')),
+                            select: box(document.querySelector('[data-testid=provider-select]'))};
+                }"""
+            )
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.wait_for_timeout(300)
+            rows = small.evaluate(
+                """() => Array.from(document.querySelectorAll('[data-testid=conversation-item]')).map((row) => {
+                    const box = (n) => { const r = n.getBoundingClientRect(); return {w: Math.round(r.width), h: Math.round(r.height)}; };
+                    const [pick, rename, remove] = row.querySelectorAll('button');
+                    return {pick: box(pick), rename: box(rename), remove: box(remove),
+                            names: [rename.getAttribute('aria-label'), remove.getAttribute('aria-label')]};
+                })"""
+            )
+            close_text = small.locator("[data-testid=close-conversations]").inner_text().strip()
+            shot(small, "14-phone-list-open")
+
+            def thumb(b):
+                return b["w"] >= 24 and b["h"] >= 40
+
+            record("on a phone the list's controls are big enough to tap, and named",
+                   boxes["opener"]["w"] >= 40 and boxes["opener"]["h"] >= 40
+                   and boxes["select"]["h"] == boxes["opener"]["h"] and close_text == "Close" and bool(rows)
+                   and all(thumb(r["pick"]) and thumb(r["rename"]) and thumb(r["remove"])
+                           and r["names"] == ["Rename", "Delete"] for r in rows),
+                   "{}, close reads {!r}, rows {}".format(boxes, close_text, rows))
+        except Exception as exc:
+            record("on a phone the list's controls are big enough to tap, and named", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            if small.locator("[data-testid=close-conversations]").is_visible():
+                small.click("[data-testid=close-conversations]")
+
+        # An iPhone zooms into any field under 16px the moment it is tapped: 16px on a phone, 14px
+        # from 768px as before. Widening the window with the list open must leave the chat usable.
+        fonts = """() => {
+            const size = (sel) => { const n = document.querySelector(sel); return n ? parseFloat(getComputedStyle(n).fontSize) : null; };
+            return {composer: size('form input'), search: size('[data-testid=conversation-search]'),
+                    select: size('[data-testid=provider-select]')};
+        }"""
+        try:
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.locator("[data-testid=rename-conversation]").first.click(timeout=5000)
+            rename_size = small.evaluate(
+                "() => parseFloat(getComputedStyle(document.querySelector('[data-testid=rename-input]')).fontSize)")
+            small.keyboard.press("Escape")
+            narrow = small.evaluate(fonts)
+            small.set_viewport_size({"width": 1024, "height": 800})
+            small.wait_for_timeout(800)
+            wide = small.evaluate(fonts)
+            usable = False
+            for _ in range(6):
+                small.focus("form input")
+                usable = small.evaluate("() => document.activeElement === document.querySelector('form input')")
+                if usable:
+                    break
+                small.wait_for_timeout(500)
+            small.set_viewport_size({"width": 390, "height": 844})
+            small.wait_for_timeout(500)
+            reopened = small.locator("[data-testid=conversation-search]").is_visible()
+            record("on a phone the fields are 16px so an iPhone does not zoom, 14px from 768px",
+                   rename_size >= 16 and all(v >= 16 for v in narrow.values())
+                   and all(v == 14 for v in wide.values()) and usable and not reopened,
+                   "phone {} rename {}, wide {}, chat usable after widening with the list open {}, list back over"
+                   " the chat after narrowing again {}".format(narrow, rename_size, wide, usable, reopened))
+        except Exception as exc:
+            record("on a phone the fields are 16px so an iPhone does not zoom, 14px from 768px", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            small.set_viewport_size({"width": 390, "height": 844})
+            small.wait_for_timeout(500)
+            if small.locator("[data-testid=close-conversations]").is_visible():
+                small.click("[data-testid=close-conversations]")
+
+        # The list also closes on its Close button and on New chat, and the phone layout ends at
+        # 768px: a panel behind a button up to 767px, a sidebar with no button from 768px.
+        search = small.locator("[data-testid=conversation-search]")
+        try:
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.click("[data-testid=close-conversations]", timeout=5000)
+            small.wait_for_timeout(300)
+            by_close = not search.is_visible()
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.click("aside button:has-text('New chat')", timeout=5000)
+            small.wait_for_timeout(300)
+            by_new = not search.is_visible()
+            fresh = small.locator("[data-testid=conversation-title]").inner_text().strip()
+            edge = {}
+            for width in (767, 768):
+                small.set_viewport_size({"width": width, "height": 900})
+                small.wait_for_timeout(300)
+                edge[width] = {"button": small.locator("[data-testid=open-conversations]").is_visible(),
+                               "list": search.is_visible()}
+            record("on a phone the list closes on Close and on New chat, and the phone layout ends at 768px",
+                   by_close and by_new and fresh == "New chat"
+                   and edge[767] == {"button": True, "list": False} and edge[768] == {"button": False, "list": True},
+                   "closed by Close {}, by New chat {} ({!r}), at 767 and 768 {}".format(by_close, by_new, fresh, edge))
+        except Exception as exc:
+            record("on a phone the list closes on Close and on New chat, and the phone layout ends at 768px", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            small.set_viewport_size({"width": 390, "height": 844})
+            small.wait_for_timeout(500)
+            if small.locator("[data-testid=close-conversations]").is_visible():
+                small.click("[data-testid=close-conversations]")
+
+        # Wide content in a conversation: a link the person pasted and a code block in the reply,
+        # added in the browser to the real conversation. Nothing is cut off on the left, the thread
+        # does not scroll sideways, and the page, Send and the nav still fit.
+        link = ("https://docs.google.com/document/d/1aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789abcdefGHIJKLmnop/"
+                "edit?usp=sharing")
+        code = "def long_function_name_for_testing(argument_one, argument_two, argument_three, argument_four):"
+
+        def widen(route):
+            if route.request.method != "GET":
+                route.continue_()
+                return
+            real = route.fetch()
+            body = real.json()
+            stamp = body["messages"][-1]["created_at"] if body.get("messages") else "2026-01-01 00:00:00"
+            body["messages"] = body.get("messages", []) + [
+                {"id": "wide-1", "role": "user", "content": link, "created_at": stamp, "media": []},
+                {"id": "wide-2", "role": "assistant", "content": "Here:\n\n```\n" + code + "\n```",
+                 "created_at": stamp, "media": []}]
+            headers = {k: v for k, v in real.headers.items() if k.lower() != "content-length"}
+            route.fulfill(status=200, headers=headers, body=json.dumps(body))
+
+        try:
+            small.route("**/conversations/*", widen)
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.locator("[data-testid=conversation-item] button").first.click(timeout=5000)
+            small.wait_for_selector("[data-testid=user-bubble]:has-text('docs.google.com')", timeout=10000)
+            small.wait_for_timeout(1000)
+            got = small.evaluate(
+                """(link) => {
+                    const area = document.querySelector('[data-testid=message-scroll]');
+                    area.scrollLeft = 0;
+                    const bubble = [...document.querySelectorAll('[data-testid=user-bubble]')].find((n) => n.textContent === link);
+                    const range = document.createRange();
+                    const text = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT).nextNode();
+                    range.setStart(text, 0);
+                    range.setEnd(text, 1);
+                    const send = document.querySelector('form button[type=submit]').getBoundingClientRect();
+                    return {screen: window.innerWidth, page: document.scrollingElement.scrollWidth,
+                            sendRight: Math.round(send.right), firstChar: Math.round(range.getBoundingClientRect().left),
+                            areaLeft: Math.round(area.getBoundingClientRect().left),
+                            sideways: area.scrollWidth - area.clientWidth,
+                            email: document.querySelector('nav').innerText.includes('@')};
+                }""", link)
+            shot(small, "15-phone-wide-content")
+            record("on a phone wide content in a conversation is not cut off and nothing scrolls sideways",
+                   got["page"] <= got["screen"] and got["sendRight"] <= got["screen"]
+                   and got["firstChar"] >= got["areaLeft"] and got["sideways"] == 0 and not got["email"], repr(got))
+        except Exception as exc:
+            record("on a phone wide content in a conversation is not cut off and nothing scrolls sideways", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            small.unroute("**/conversations/*")
+
+        # The nav on a phone: one row from 360px in both languages, its right side wrapping as one
+        # below that, the quota saying what is left, the brand still shown from 640px; and the list's
+        # title and its button read right in both languages.
+        try:
+            shape = """() => {
+                const nav = document.querySelector('nav');
+                const buttons = nav.querySelectorAll('button');
+                // The quota is the first shown text in the nav with a digit in it.
+                const walker = document.createTreeWalker(nav, NodeFilter.SHOW_TEXT);
+                let quota = null;
+                while (!quota && walker.nextNode()) {
+                    const range = document.createRange();
+                    range.selectNodeContents(walker.currentNode);
+                    const r = range.getBoundingClientRect();
+                    if (/\\d/.test(walker.currentNode.textContent) && r.width > 0) quota = r;
+                }
+                const middle = (r) => (r.top + r.bottom) / 2;
+                const rows = [quota, document.querySelector('[data-testid=language-switch]').getBoundingClientRect(),
+                              buttons[buttons.length - 1].getBoundingClientRect()].map((r) => r ? middle(r) : NaN);
+                return {h: Math.round(nav.getBoundingClientRect().height), text: nav.innerText,
+                        together: Math.max(...rows) - Math.min(...rows) < 6,
+                        screen: window.innerWidth, page: document.scrollingElement.scrollWidth,
+                        opener: document.querySelector('[data-testid=open-conversations]').getAttribute('aria-label'),
+                        heading: document.querySelector('aside h2')?.textContent || null};
+            }"""
+            seen = {}
+            for lang, other in (("en", "Gửi"), ("vi", "Send")):
+                for width in (320, 344, 360, 390):
+                    small.set_viewport_size({"width": width, "height": 844})
+                    small.wait_for_timeout(250)
+                    seen[(lang, width)] = small.evaluate(shape)
+                small.click("[data-testid=language-switch]", timeout=5000)
+                small.wait_for_selector("button:has-text('{}')".format(other), timeout=5000)
+            small.set_viewport_size({"width": 1024, "height": 800})
+            small.wait_for_timeout(250)
+            brand = small.locator("nav").get_by_text("AI Platform").first.is_visible()
+            small.set_viewport_size({"width": 390, "height": 844})
+            one_row = {(l, w): seen[(l, w)]["h"] for l in ("en", "vi") for w in (360, 390)}
+            apart = [k for k, v in seen.items() if not v["together"] or v["page"] > v["screen"]]
+            words = (re.search(r"\b\d+ left\b", seen[("en", 390)]["text"]) is not None
+                     and re.search(r"\bcòn \d+", seen[("vi", 390)]["text"]) is not None)
+            record("on a phone the nav is one row from 360px in both languages, its right side kept together",
+                   all(h < 50 for h in one_row.values()) and not apart and words and brand,
+                   "nav heights {}, right side split or page too wide at {}, quota words {}, brand from 640px {}"
+                   .format(one_row, apart, words, brand))
+            record("the list's title and its button's name read right in both languages",
+                   seen[("en", 390)]["opener"] == "Open conversations" and seen[("en", 390)]["heading"] == "Conversations"
+                   and seen[("vi", 390)]["opener"] == "Mở danh sách trò chuyện"
+                   and seen[("vi", 390)]["heading"] == "Các cuộc trò chuyện",
+                   "en {!r} / {!r}, vi {!r} / {!r}".format(seen[("en", 390)]["opener"], seen[("en", 390)]["heading"],
+                                                          seen[("vi", 390)]["opener"], seen[("vi", 390)]["heading"]))
+        except Exception as exc:
+            for check in ("on a phone the nav is one row from 360px in both languages, its right side kept together",
+                          "the list's title and its button's name read right in both languages"):
+                record(check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
         finally:
             phone.close()
 

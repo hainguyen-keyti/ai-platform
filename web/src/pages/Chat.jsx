@@ -30,7 +30,7 @@ const markdownParts = {
 function ReplyText({ text }) {
   return (
     <div data-testid="reply-bubble"
-      className="max-w-2xl whitespace-pre-wrap rounded-lg border bg-white px-3 py-2 text-sm [&_p]:my-0 [&_ul]:my-1 [&_ul]:pl-5 [&_ul]:list-disc [&_ol]:my-1 [&_ol]:pl-5 [&_ol]:list-decimal [&_pre]:my-1 [&_pre]:overflow-x-auto [&_code]:text-xs">
+      className="max-w-[min(42rem,100%)] whitespace-pre-wrap rounded-lg border bg-white px-3 py-2 text-sm [overflow-wrap:anywhere] [&_p]:my-0 [&_ul]:my-1 [&_ul]:pl-5 [&_ul]:list-disc [&_ol]:my-1 [&_ol]:pl-5 [&_ol]:list-decimal [&_pre]:my-1 [&_pre]:overflow-x-auto [&_code]:text-xs">
       <Markdown urlTransform={keepSandbox} components={markdownParts}>{text}</Markdown>
     </div>
   )
@@ -74,6 +74,8 @@ export default function Chat({ onQuotaSpent }) {
   const [draftTitle, setDraftTitle] = useState('')
   // On a phone the conversation list is a panel over the chat, opened on demand.
   const [listOpen, setListOpen] = useState(false)
+  const openButton = useRef(null)
+  const closeButton = useRef(null)
   // Which providers a worker serves right now, by name; until the api has answered, nothing is
   // held back (the api refuses a turn nobody serves anyway).
   const [served, setServed] = useState({})
@@ -150,6 +152,30 @@ export default function Chat({ onQuotaSpent }) {
     ask()
     const id = setInterval(ask, 60000)
     return () => { live = false; clearInterval(id) }
+  }, [])
+
+  // The open list takes the focus and gives it back to its button; Escape closes it.
+  useEffect(() => {
+    if (!listOpen) return
+    closeButton.current?.focus()
+    function onKey(event) {
+      if (event.key === 'Escape') setListOpen(false)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      openButton.current?.focus()
+    }
+  }, [listOpen])
+
+  // The chat under the open list is inert, so a window widened past the phone layout closes the list.
+  useEffect(() => {
+    const wide = window.matchMedia('(min-width: 768px)')
+    function close() {
+      if (wide.matches) setListOpen(false)
+    }
+    wide.addEventListener('change', close)
+    return () => wide.removeEventListener('change', close)
   }, [])
 
   // A new chat never starts on a provider nobody serves while another one is served.
@@ -313,14 +339,20 @@ export default function Chat({ onQuotaSpent }) {
     }
   }
 
+  // Named from the list, so a phone's header reads right the moment a conversation is picked.
+  const openTitle = activeId
+    ? conversations.find((c) => c.id === activeId)?.title || (conversation?.id === activeId && conversation.title) || t.untitled
+    : t.newChat
+
   return (
     <div className="relative flex h-full">
-      <aside className={`${listOpen ? 'flex' : 'hidden'} absolute inset-0 z-20 w-full flex-col bg-white md:static md:z-auto md:flex md:w-64 md:border-r`}>
+      <aside id="conversation-list"
+        className={`${listOpen ? 'flex' : 'hidden'} absolute inset-0 z-20 w-full flex-col bg-white md:static md:z-auto md:flex md:w-64 md:border-r`}>
         <div className="flex items-center justify-between px-3 pt-3 md:hidden">
-          <span className="text-sm font-medium">{t.conversations}</span>
-          <button type="button" data-testid="close-conversations" aria-label={t.close}
-            onClick={() => setListOpen(false)} className="px-2 text-lg text-slate-500">
-            ×
+          <h2 className="text-base font-semibold">{t.conversations}</h2>
+          <button type="button" ref={closeButton} data-testid="close-conversations"
+            onClick={() => setListOpen(false)} className="rounded px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">
+            {t.close}
           </button>
         </div>
         <button onClick={() => { setActiveId(null); setConversation(null); setListOpen(false) }}
@@ -329,34 +361,38 @@ export default function Chat({ onQuotaSpent }) {
         </button>
         <input data-testid="conversation-search" value={query} placeholder={t.search}
           onChange={(e) => setQuery(e.target.value)}
-          className="mx-3 mb-2 rounded border px-2 py-1 text-sm" />
+          className="mx-3 mb-2 rounded border px-2 py-1 text-base md:text-sm" />
+        {error && <p className="mx-3 mb-2 text-sm text-red-600 md:hidden">{error}</p>}
         <div className="flex-1 overflow-y-auto">
           {conversations.map((c) => (
             <div key={c.id} data-testid="conversation-item"
-              className={`flex items-center gap-1 px-3 py-1.5 text-sm hover:bg-slate-100 ${
+              className={`flex items-center gap-1 px-3 text-sm hover:bg-slate-100 ${
                 c.id === activeId ? 'bg-slate-100 font-medium' : ''}`}>
               {renaming === c.id ? (
                 <input data-testid="rename-input" autoFocus value={draftTitle}
                   onChange={(e) => setDraftTitle(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') commitRename(c.id)
-                    if (e.key === 'Escape') setRenaming(null)
+                    // Ends the rename only, not the list around it.
+                    if (e.key === 'Escape') { e.stopPropagation(); setRenaming(null) }
                   }}
                   onBlur={() => setRenaming(null)}
-                  className="min-w-0 flex-1 rounded border px-1 py-0.5 text-sm font-normal" />
+                  className="min-w-0 flex-1 rounded border px-1 py-0.5 text-base font-normal md:text-sm" />
               ) : (
                 <button onClick={() => { setActiveId(c.id); setListOpen(false) }}
-                  className="min-w-0 flex-1 truncate text-left">
+                  className="min-w-0 flex-1 truncate py-3 text-left md:py-1.5">
                   <span className="text-slate-400 mr-1">{c.provider}</span>
                   {c.title || t.untitled}
                 </button>
               )}
-              <button data-testid="rename-conversation" type="button" title={t.rename}
-                onClick={() => startRename(c)} className="px-1 text-slate-400 hover:text-slate-900">
+              <button data-testid="rename-conversation" type="button" title={t.rename} aria-label={t.rename}
+                onClick={() => startRename(c)}
+                className="px-3 py-3 text-slate-400 hover:text-slate-900 md:px-1 md:py-1.5">
                 ✎
               </button>
-              <button data-testid="delete-conversation" type="button" title={t.delete}
-                onClick={() => removeConversation(c.id)} className="px-1 text-slate-400 hover:text-red-600">
+              <button data-testid="delete-conversation" type="button" title={t.delete} aria-label={t.delete}
+                onClick={() => removeConversation(c.id)}
+                className="px-3 py-3 text-slate-400 hover:text-red-600 md:px-1 md:py-1.5">
                 ×
               </button>
             </div>
@@ -364,16 +400,20 @@ export default function Chat({ onQuotaSpent }) {
         </div>
       </aside>
 
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section inert={listOpen ? '' : undefined} className="flex min-w-0 flex-1 flex-col">
         <header className="flex flex-wrap items-center gap-3 border-b bg-white px-4 py-2">
-          <button type="button" data-testid="open-conversations" aria-label={t.conversations}
-            onClick={() => setListOpen(true)} className="rounded border px-2 py-1 text-sm md:hidden">
+          <button type="button" ref={openButton} data-testid="open-conversations" aria-label={t.openConversations}
+            aria-expanded={listOpen} aria-controls="conversation-list" onClick={() => setListOpen(true)}
+            className="inline-flex h-10 w-10 items-center justify-center rounded border text-base hover:bg-slate-100 md:hidden">
             ☰
           </button>
+          <span data-testid="conversation-title" className="min-w-0 flex-1 truncate text-sm font-medium md:hidden">
+            {openTitle}
+          </span>
           <select value={provider} onChange={(e) => { picked.current = true; setProvider(e.target.value) }}
             disabled={!!activeId} title={activeId ? t.providerLocked : undefined}
             data-testid="provider-select"
-            className="border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-600 disabled:opacity-100">
+            className="h-10 border rounded px-2 py-1 text-base md:h-auto md:text-sm disabled:bg-slate-100 disabled:text-slate-600 disabled:opacity-100">
             {PROVIDERS.map((p) => (
               <option key={p} value={p} disabled={served[p] === false}>
                 {served[p] === false ? `${p} (${t.providerIdle})` : p}
@@ -406,7 +446,7 @@ export default function Chat({ onQuotaSpent }) {
                 {entry.message.content && (
                   entry.message.role === 'user' ? (
                     <div data-testid="user-bubble"
-                      className="max-w-2xl whitespace-pre-wrap rounded-lg bg-slate-900 px-3 py-2 text-sm text-white">
+                      className="max-w-[min(42rem,100%)] whitespace-pre-wrap rounded-lg bg-slate-900 px-3 py-2 text-sm text-white [overflow-wrap:anywhere]">
                       {entry.message.content}
                     </div>
                   ) : (
@@ -446,7 +486,7 @@ export default function Chat({ onQuotaSpent }) {
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)}
             placeholder={t.composer} aria-describedby={unserved ? 'provider-unserved' : undefined}
-            className="min-w-0 flex-1 border rounded px-3 py-2 text-sm" />
+            className="min-w-0 flex-1 border rounded px-3 py-2 text-base md:text-sm" />
           {status ? (
             <button type="button" onClick={stopJob}
               className="rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700">

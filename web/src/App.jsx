@@ -26,23 +26,25 @@ function Shell() {
 
   return (
     <div className="flex flex-col h-full">
-      <nav className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-white px-3 py-2 text-sm sm:gap-x-4 sm:px-4">
-        <span className="font-semibold">{t.appName}</span>
+      <nav className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-white px-4 py-2 text-sm sm:gap-x-4">
+        <span className="hidden font-semibold sm:inline">{t.appName}</span>
         {['chat', 'gallery'].map((v) => (
           <button key={v} onClick={() => setView(v)}
             className={view === v ? 'font-medium underline' : 'text-slate-500'}>
             {t[v]}
           </button>
         ))}
-        <span className="ml-auto text-slate-500">
-          <span className="hidden sm:inline">{user.email} · </span>{user.quota_remaining} {t.left}
-        </span>
-        <button data-testid="language-switch" type="button"
-          onClick={() => setLang(lang === 'vi' ? 'en' : 'vi')}
-          className="rounded border px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100">
-          {t.language}
-        </button>
-        <button onClick={signOut} className="text-slate-500 hover:underline">{t.signOut}</button>
+        <div className="ml-auto flex items-center gap-x-3 sm:gap-x-4">
+          <span className="text-slate-500">
+            <span className="hidden sm:inline">{user.email} · </span>{t.left(user.quota_remaining)}
+          </span>
+          <button data-testid="language-switch" type="button"
+            onClick={() => setLang(lang === 'vi' ? 'en' : 'vi')}
+            className="rounded border px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100">
+            {t.language}
+          </button>
+          <button onClick={signOut} className="text-slate-500 hover:underline">{t.signOut}</button>
+        </div>
       </nav>
       <main className="flex-1 min-h-0">
         {view === 'chat'
