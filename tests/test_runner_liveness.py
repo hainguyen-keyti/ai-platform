@@ -6,7 +6,7 @@
 Traced 2026-09-29 from the third Gemini real gate: while a runner deleted a thread (55s on Gemini),
 and while it finished a job the api had cancelled, it claimed and pinged nothing, so past the
 served window the api refused the next turn with 503 and failed a queued job as no_worker.
-Prints N/2 PASSED.
+Prints N/3 PASSED.
 """
 
 import sys
@@ -46,28 +46,39 @@ class Client:
 
     def post(self, path, json=None):
         with self.lock:
-            self.calls.append((time.time(), path))
+            self.calls.append((time.time(), path, json))
         for part, response in self.answers.items():
             if part in path:
                 return response
         return Response(200)
 
     def pings(self, start, end):
-        return [t for t, path in self.calls if path == PING and start <= t <= end]
+        return [t for t, path, _ in self.calls if path == PING and start <= t <= end]
+
+    def ping_bodies(self):
+        return [body for _, path, body in self.calls if path == PING]
 
 
 class Pool:
-    """Busy for a while in whatever it is asked to do."""
+    """Busy for a while in whatever it is asked to do; notes when it is first told to stop."""
 
-    def __init__(self, busy):
+    def __init__(self, busy, delete_raises=False):
         self.busy = busy
+        self.delete_raises = delete_raises
+        self.stop_seen = None
 
     def delete_thread(self, provider, url):
         time.sleep(self.busy)
+        if self.delete_raises:
+            raise RuntimeError("the page went away mid-deletion")
         return SimpleNamespace(success=True, error=None)
 
     def execute(self, provider, feature, payload, thread_url, phase_hook, should_stop):
-        time.sleep(self.busy)
+        until = time.time() + self.busy
+        while time.time() < until:
+            if self.stop_seen is None and should_stop():
+                self.stop_seen = time.time()
+            time.sleep(0.05)
         return SimpleNamespace(success=False, text="", media=[], error="cancelled by the user",
                                error_kind="cancelled", thread_url=None)
 
@@ -92,26 +103,45 @@ def main():
     ended = time.time()
     time.sleep(0.8)
     during, after = client.pings(started, ended), client.pings(ended + 0.01, time.time())
+    # A ping names its provider, or the api counts it for nobody.
+    named = all(body == {"providers": ["gemini"]} for body in client.ping_bodies())
     record("a runner deleting a thread keeps saying it is alive, and stops when done",
-           len(during) >= 3 and not after,
-           "{} pings in the {:.1f}s deletion, {} after it".format(len(during), ended - started, len(after)))
+           len(during) >= 3 and not after and named,
+           "{} pings in the {:.1f}s deletion, {} after it, each naming gemini {}".format(
+               len(during), ended - started, len(after), named))
+
+    client = Client({"/internal/tombstones/claim": Response(200, stone)})
+    runner = runner_module.Runner(Pool(busy=1.0, delete_raises=True), "gemini")
+    started = time.time()
+    try:
+        runner._delete_one_thread(client)
+    except RuntimeError:
+        pass
+    ended = time.time()
+    time.sleep(0.8)
+    during, after = client.pings(started, ended), client.pings(ended + 0.01, time.time())
+    record("a deletion that raises still stops the pings", len(during) >= 2 and not after,
+           "{} pings during, {} after".format(len(during), len(after)))
 
     # The api answers the first heartbeat that the job is gone (cancelled); the driver goes on for
-    # a while before it returns, as the Gemini one did.
+    # a while before it returns, as the Gemini one did, and must still be told to stop at once.
     client = Client({"/heartbeat": Response(200, {"alive": False})})
-    runner = runner_module.Runner(Pool(busy=2.0), "gemini")
+    pool = Pool(busy=2.0)
+    runner = runner_module.Runner(pool, "gemini")
     job = {"id": "job-1", "attempt": 1, "feature": "chat", "provider": "gemini", "payload": {},
            "thread_url": None, "lease_seconds": 0.6}
     runner._handle(client, job)
     ended = time.time()
     time.sleep(0.8)
-    told = next((t for t, path in client.calls if path.endswith("/heartbeat")), None)
+    told = next((t for t, path, _ in client.calls if path.endswith("/heartbeat")), None)
     during = client.pings(told, ended) if told else []
     after = client.pings(ended + 0.01, time.time())
+    stopped_in = round(pool.stop_seen - told, 2) if told and pool.stop_seen else None
     record("a runner finishing a cancelled job keeps saying it is alive, and stops when done",
-           told is not None and len(during) >= 3 and not after,
-           "told the job was gone {}, {} pings until the driver returned, {} after".format(
-               told is not None, len(during), len(after)))
+           told is not None and len(during) >= 3 and not after
+           and stopped_in is not None and stopped_in < 0.5,
+           "told the job was gone {}, the driver told to stop {}s later, {} pings until it returned, "
+           "{} after".format(told is not None, stopped_in, len(during), len(after)))
 
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))
