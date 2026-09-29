@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -279,7 +280,7 @@ def tail(path, lines=15):
 
 
 def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, worker_ctl,
-               python, restart_api, provider="chatgpt"):
+               python, restart_api, provider="chatgpt", db_path=None):
     # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
     # first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
@@ -477,12 +478,15 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         fresh, err_c, _ = chat_once(
             "What word did I ask you to remember? Reply with that word and nothing else.")
         leaked = ((fresh or {}).get("result") or {}).get("text") or ""
-        if secret not in leaked:
+        # A failed or empty turn knows nothing, so it proves nothing (two failed Gemini runs of
+        # 2026-09-29 read green here).
+        if (fresh or {}).get("status") == "done" and leaked.strip() and secret not in leaked:
             c["threads never cross conversations"].passed(
                 "a new conversation does not know {}".format(secret))
         else:
             c["threads never cross conversations"].failed(
-                "a new conversation knew {}: {!r} {}".format(secret, leaked[:80], err_c or ""))
+                "a new conversation answered {} with {!r}, knew {} {}".format(
+                    (fresh or {}).get("status"), leaked[:80], secret in leaked, err_c or ""))
     else:
         first, err_a, conv = chat_once("first turn, opening a thread")
         second, err_b, _ = chat_once("second turn, same thread", conv) if conv else (None, err_a, None)
@@ -620,9 +624,21 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     def quota_now():
         return (http("GET", api + "/auth/me", token=token)[1] or {}).get("quota_remaining")
 
-    def threads_deleted():
-        _, health = http("GET", worker_health)
-        return (health or {}).get("threads_deleted") or 0
+    # The api's own record, read-only: which thread a deletion is for, and whether the worker removed
+    # it. The worker's total count cannot tell one deletion from another (the busy-runner review).
+    def read_db(sql, args):
+        con = sqlite3.connect("file:{}?mode=ro".format(db_path), uri=True)
+        try:
+            return con.execute(sql, args).fetchall()
+        finally:
+            con.close()
+
+    def tombstones():
+        return read_db("SELECT id, thread_url, deleted_at FROM thread_tombstones WHERE provider = ?", (provider,))
+
+    def own_thread(conversation_id):
+        rows = read_db("SELECT provider_thread_url FROM conversations WHERE id = ?", (conversation_id,))
+        return rows[0][0] if rows else None
 
     def job_state(job_id):
         return http("GET", "{}/jobs/{}".format(api, job_id), token=token)[1] or {}
@@ -655,7 +671,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             + list((cbody or {}).get("orphan_media") or [])
         media_ids = [x["id"] for x in items]
         filenames = [x["filename"] for x in items]
-        deleted_before = threads_deleted()
+        own_url = own_thread(conv_pack)
         q_before = quota_now()
         # Someone else's DELETE must bounce and change nothing before the owner's own.
         foreign_delete, _ = http("DELETE", "{}/conversations/{}".format(api, conv_pack), token=btoken) \
@@ -671,23 +687,21 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         # gap and its tombstone interval: measured at 16s on a quiet host, and
         # 64s for a Gemini deletion, which drives the page (2026-09-29).
         deadline = time.time() + 150
-        deleted_after = deleted_before
-        while time.time() < deadline and deleted_after < deleted_before + 1:
+        own_deleted = False
+        while own_url and time.time() < deadline and not own_deleted:
             time.sleep(1)
-            deleted_after = threads_deleted()
+            own_deleted = any(url == own_url and gone for _, url, gone in tombstones())
         if (foreign_delete == 404 and still_mine and dstatus == 204 and conv_gone and media_gone
-                and files_gone and media_ids and quota_now() == q_before
-                and deleted_after >= deleted_before + 1):
+                and files_gone and media_ids and quota_now() == q_before and own_deleted):
             c["deleting a conversation removes its media files and the provider thread"].passed(
                 "other user 404 and nothing moved; owner 204; {} media rows and files gone; "
-                "provider threads deleted {} -> {}; quota unchanged".format(
-                    len(media_ids), deleted_before, deleted_after))
+                "its own thread deleted; quota unchanged".format(len(media_ids)))
         else:
             c["deleting a conversation removes its media files and the provider thread"].failed(
                 "other user {} still mine {}, delete {}, conversation gone {}, {} media gone {}, "
-                "files gone {}, quota {} -> {}, threads deleted {} -> {}".format(
+                "files gone {}, quota {} -> {}, own thread {} deleted {}".format(
                     foreign_delete, still_mine, dstatus, conv_gone, len(media_ids), media_gone,
-                    files_gone, q_before, quota_now(), deleted_before, deleted_after))
+                    files_gone, q_before, quota_now(), (own_url or "none")[-24:], own_deleted))
     else:
         c["deleting a conversation removes its media files and the provider thread"].failed(
             "no conversation to delete")
@@ -700,7 +714,9 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # too, once the worker reports where it landed.
     q0 = quota_now()
     files_before = set(os.listdir(media_dir))
-    deleted_before = threads_deleted()
+    # The turn's thread is known only once its late result lands, so it is the tombstone that did not
+    # exist before this delete.
+    known = {stone_id for stone_id, _, _ in tombstones()}
     status, body = http("POST", api + "/chat",
                         {"provider": provider,
                          "message": SLOW_PHRASE + ": draw a picture, then delete me while running"},
@@ -724,22 +740,22 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     time.sleep(1.5)
     files_after = set(os.listdir(media_dir))
     deadline = time.time() + 150
-    deleted_after = deleted_before
-    while time.time() < deadline and deleted_after < deleted_before + 1:
+    new_deleted = False
+    while doomed_job and time.time() < deadline and not new_deleted:
         time.sleep(1)
-        deleted_after = threads_deleted()
+        new_deleted = any(stone_id not in known and gone for stone_id, _, gone in tombstones())
     if (seen.get("status") == "running" and dstatus == 204 and final.get("status") == "cancelled"
             and not ((final.get("result") or {}).get("media")) and quota_now() == q0
-            and files_after == files_before and deleted_after >= deleted_before + 1):
+            and files_after == files_before and new_deleted):
         c["deleting a conversation cancels its running job and refunds"].passed(
             "job cancelled by the delete, credit returned, no media row or file written, "
-            "the turn's own thread deleted {} -> {}".format(deleted_before, deleted_after))
+            "the turn's own thread deleted")
     else:
         c["deleting a conversation cancels its running job and refunds"].failed(
-            "seen {} delete {} final {} media {} quota {} -> {} new files {} threads deleted {} -> {}".format(
+            "seen {} delete {} final {} media {} quota {} -> {} new files {} its own thread deleted {}".format(
                 seen.get("status"), dstatus, final.get("status"),
                 (final.get("result") or {}).get("media"), q0, quota_now(),
-                sorted(files_after - files_before)[:3], deleted_before, deleted_after))
+                sorted(files_after - files_before)[:3], new_deleted))
 
     # The tombstone queue's promises, checked on a throwaway database rather than
     # through a racing worker: once per attempt, settled stays settled, a failed
@@ -1264,7 +1280,7 @@ def main():
 
         checks = run_checks(api_base, media_dir, args.real, invite_code,
                             worker_token, worker_health, worker_ctl, python, restart_api,
-                            args.provider)
+                            args.provider, db_dir / "app.db")
 
     except RuntimeError:
         pass
