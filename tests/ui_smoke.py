@@ -858,7 +858,10 @@ def main():
                 const middle = (r) => (r.top + r.bottom) / 2;
                 const rows = [quota, document.querySelector('[data-testid=language-switch]').getBoundingClientRect(),
                               buttons[buttons.length - 1].getBoundingClientRect()].map((r) => r ? middle(r) : NaN);
+                // An item whose words wrap inside it is taller than one line of text.
+                const heights = [...nav.querySelectorAll('button, span')].map((n) => n.getBoundingClientRect().height);
                 return {h: Math.round(nav.getBoundingClientRect().height), text: nav.innerText,
+                        tallest: Math.round(Math.max(...heights)),
                         together: Math.max(...rows) - Math.min(...rows) < 6,
                         screen: window.innerWidth, page: document.scrollingElement.scrollWidth,
                         opener: document.querySelector('[data-testid=open-conversations]').getAttribute('aria-label'),
@@ -877,13 +880,14 @@ def main():
             brand = small.locator("nav").get_by_text("AI Platform").first.is_visible()
             small.set_viewport_size({"width": 390, "height": 844})
             one_row = {(l, w): seen[(l, w)]["h"] for l in ("en", "vi") for w in (360, 390)}
-            apart = [k for k, v in seen.items() if not v["together"] or v["page"] > v["screen"]]
+            apart = [k for k, v in seen.items() if not v["together"] or v["page"] > v["screen"] or v["tallest"] >= 30]
             words = (re.search(r"\b\d+ left\b", seen[("en", 390)]["text"]) is not None
                      and re.search(r"\bcòn \d+", seen[("vi", 390)]["text"]) is not None)
             record("on a phone the nav is one row from 360px in both languages, its right side kept together",
                    all(h < 50 for h in one_row.values()) and not apart and words and brand,
-                   "nav heights {}, right side split or page too wide at {}, quota words {}, brand from 640px {}"
-                   .format(one_row, apart, words, brand))
+                   "nav heights {}, right side split, page too wide or words wrapped inside an item at {}"
+                   " (tallest item {}), quota words {}, brand from 640px {}"
+                   .format(one_row, apart, {k: v["tallest"] for k, v in seen.items()}, words, brand))
             record("the list's title and its button's name read right in both languages",
                    seen[("en", 390)]["opener"] == "Open conversations" and seen[("en", 390)]["heading"] == "Conversations"
                    and seen[("vi", 390)]["opener"] == "Mở danh sách trò chuyện"
