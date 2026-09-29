@@ -19,10 +19,13 @@ can look at what actually rendered instead of trusting an assertion.
 import json
 import os
 import re
+import struct
 import sys
 import time
 import zipfile
+import zlib
 from pathlib import Path
+from urllib.parse import urlparse
 
 import cloakbrowser
 
@@ -44,6 +47,37 @@ def record(name, ok, detail=""):
 def quota_number(page):
     text = page.locator("text=/\\d+ left/").first.inner_text()
     return int("".join(c for c in text.split("·")[-1] if c.isdigit()))
+
+
+# The page's own smooth scroll made slow, as on a busy or slow device: a scrollTo with behavior
+# 'smooth' becomes a 4 second animation, and a new one replaces the one running.
+SLOW_SMOOTH = """(() => {
+  const native = Element.prototype.scrollTo;
+  const running = new WeakMap();
+  Element.prototype.scrollTo = function (options) {
+    if (!options || typeof options !== 'object' || options.behavior !== 'smooth') return native.apply(this, arguments);
+    const el = this, start = el.scrollTop, began = performance.now(), token = {};
+    const target = Math.min(options.top, el.scrollHeight - el.clientHeight);
+    running.set(el, token);
+    const step = (now) => {
+      if (running.get(el) !== token) return;
+      const t = Math.min(1, (now - began) / 4000);
+      el.scrollTop = start + (target - start) * t;
+      if (t < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  };
+})();"""
+
+
+def png(width, height):
+    """A plain picture, so one can be answered in the browser without a file on disk."""
+    raw = b"".join(b"\x00" + b"\x80\x80\xff" * width for _ in range(height))
+
+    def chunk(kind, data):
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
 def shot(page, name):
@@ -900,6 +934,115 @@ def main():
                 record(check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
         finally:
             phone.close()
+
+        # The view follows the tail whatever the timing. A second context at 1280x900 with this
+        # person's session, where the conversation, the send, the job and a picture are answered in
+        # the browser (no job is made). Measured before the fix: its own smooth scroll, slowed as on
+        # a busy device, let go of the tail on the way down (384px short); a picture arriving after
+        # its reply (238px short); the area getting shorter at the bottom (300px short).
+        token = page.evaluate("() => localStorage.getItem('token')")
+
+        def tail_gap(case):
+            stamp = "2026-09-29 10:00:00"
+            earlier = [{"id": "tail-{}".format(i), "role": "user" if i % 2 == 0 else "assistant",
+                        "content": "Line {} of the earlier talk, long enough to take a couple of lines. ".format(i) * 2,
+                        "created_at": stamp, "media": []} for i in range(20)]
+            state = {"messages": earlier, "job": "running"}
+            held = []
+            json_headers = {"access-control-allow-origin": "*", "content-type": "application/json"}
+
+            def answer(route):
+                request = route.request
+                path = urlparse(request.url).path
+                if request.method == "OPTIONS":
+                    route.continue_()
+                    return
+                if path == "/media/tail-picture/file":
+                    held.append(route)
+                    return
+                if path == "/conversations":
+                    body = {"items": [{"id": "tail", "provider": "chatgpt", "title": "Tail", "created_at": stamp,
+                                       "updated_at": stamp}]}
+                elif path == "/conversations/tail":
+                    body = {"id": "tail", "provider": "chatgpt", "title": "Tail", "created_at": stamp,
+                            "updated_at": stamp, "orphan_media": [], "messages": state["messages"]}
+                elif path == "/providers":
+                    body = {"providers": [{"name": n, "served": True} for n in ("chatgpt", "grok", "gemini")]}
+                elif path == "/chat" and request.method == "POST":
+                    sent = json.loads(request.post_data)["message"]
+                    state["messages"] = state["messages"] + [{"id": "tail-sent", "role": "user", "content": sent,
+                                                              "created_at": stamp, "media": []}]
+                    body = {"job_id": "tail-job", "conversation_id": "tail"}
+                elif path == "/jobs/tail-job":
+                    body = {"id": "tail-job", "status": state["job"], "phase": None}
+                else:
+                    route.continue_()
+                    return
+                route.fulfill(status=200, headers=json_headers, body=json.dumps(body))
+
+            wide = browser.new_context(viewport={"width": 1280, "height": 900})
+            wide.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', 'en');".format(token))
+            if case == "slow":
+                wide.add_init_script(SLOW_SMOOTH)
+            try:
+                view = wide.new_page()
+                view.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+                for pattern in ("**/conversations", "**/conversations/tail", "**/providers", "**/chat",
+                                "**/jobs/tail-job", "**/media/tail-picture/file"):
+                    view.route(pattern, answer)
+                view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+                view.locator("[data-testid=conversation-item] button").first.click(timeout=20000)
+                view.wait_for_selector("[data-testid=user-bubble]", timeout=10000)
+                view.wait_for_timeout(5000 if case == "slow" else 1500)
+                view.evaluate("() => { const el = document.querySelector('[data-testid=message-scroll]');"
+                              " el.scrollTop = el.scrollHeight; }")
+                view.wait_for_timeout(500)
+                if case == "shorter":
+                    view.set_viewport_size({"width": 1280, "height": 600})
+                    view.wait_for_timeout(1500)
+                else:
+                    sent = "pad " * 400 if case == "slow" else "draw a blue square"
+                    view.fill(COMPOSER, sent)
+                    view.click("button:has-text('Send')")
+                    view.wait_for_selector("[data-testid=user-bubble]:has-text('{}')".format(sent.split()[-1]),
+                                           timeout=10000)
+                    view.wait_for_timeout(200)
+                    if case == "slow":
+                        reply = {"id": "tail-reply", "role": "assistant", "content": "a reply that is long on purpose. " * 60,
+                                 "created_at": stamp, "media": []}
+                    else:
+                        reply = {"id": "tail-reply", "role": "assistant", "content": "Here is the picture.",
+                                 "created_at": stamp, "media": [{"id": "tail-picture", "type": "image",
+                                                                 "filename": "square.png", "mime_type": "image/png",
+                                                                 "created_at": stamp}]}
+                    state["messages"] = state["messages"] + [reply]
+                    state["job"] = "done"
+                    view.wait_for_selector("[data-testid=reply-bubble]:has-text('{}')".format(
+                        "long on purpose" if case == "slow" else "Here is the picture"), timeout=10000)
+                    if case == "slow":
+                        view.wait_for_timeout(6000)
+                    else:
+                        view.wait_for_timeout(1000)
+                        picture = png(512, 512)
+                        for route in held:
+                            route.fulfill(status=200, headers={"access-control-allow-origin": "*",
+                                                               "content-type": "image/png"}, body=picture)
+                        view.wait_for_selector("[data-testid=media-thumb]", timeout=10000)
+                        view.wait_for_timeout(2500)
+                shot(view, "16-tail-{}".format(case))
+                return view.evaluate("() => { const el = document.querySelector('[data-testid=message-scroll]');"
+                                     " return Math.round(el.scrollHeight - el.scrollTop - el.clientHeight); }")
+            finally:
+                wide.close()
+
+        for case, name in (("slow", "the view keeps following when its own smooth scroll is slow"),
+                           ("picture", "the view follows a picture that arrives after its reply"),
+                           ("shorter", "the view stays at the bottom when the chat area gets shorter")):
+            try:
+                gap = tail_gap(case)
+                record(name, gap < 80, "{}px from the bottom".format(gap))
+            except Exception as exc:
+                record(name, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
         try:
             page.once("dialog", lambda d: d.accept())
