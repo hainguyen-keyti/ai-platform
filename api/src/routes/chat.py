@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from src.jobs import cancel_job, create_job, get_job
+from src.jobs import cancel_job, create_job, get_job, provider_status
 from src.models import ChatRequest
 from src.security import current_user
 
@@ -28,3 +28,8 @@ def chat(body: ChatRequest, user: dict = Depends(current_user)):
 @router.get("/jobs/{job_id}")
 def job_status(job_id: str, user: dict = Depends(current_user)):
     return get_job(user["id"], job_id)
+
+
+@router.get("/providers")
+def providers(user: dict = Depends(current_user)):
+    return provider_status()

@@ -102,7 +102,14 @@ def create_job(user, provider, feature, payload, conversation_id=None,
                         detail="this conversation belongs to {}; start a new chat to use {}".format(
                             owned["provider"], provider),
                     )
-            else:
+            # After the 404 and the 409, before anything is written or charged: a turn nobody
+            # would pick up is refused now instead of failing as no_worker minutes later.
+            if not _served(conn, provider):
+                raise HTTPException(
+                    status_code=503,
+                    detail="no worker is serving {} right now; try again later".format(provider),
+                )
+            if not conversation_id:
                 conversation_id = uuid.uuid4().hex
                 conn.execute(
                     "INSERT INTO conversations (id, user_id, provider, title) VALUES (?, ?, ?, ?)",
@@ -180,6 +187,21 @@ def _note_worker(conn, providers):
             " ON CONFLICT(provider) DO UPDATE SET last_seen = datetime('now')",
             (name,),
         )
+
+
+def _served(conn, provider):
+    """Whether a worker has asked for this provider within the window the sweep below uses."""
+    return one(
+        conn,
+        "SELECT 1 FROM worker_pings WHERE provider = ? AND last_seen >= datetime('now', ?)",
+        (provider, "-{} seconds".format(settings.no_worker_seconds)),
+    ) is not None
+
+
+def provider_status():
+    """Every provider, and whether a worker serves it right now."""
+    with db() as conn:
+        return {"providers": [{"name": name, "served": _served(conn, name)} for name in PROVIDERS]}
 
 
 def _sweep_unserved(conn, job_id=None):
