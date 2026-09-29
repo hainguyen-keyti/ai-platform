@@ -30,7 +30,7 @@ const markdownParts = {
 function ReplyText({ text }) {
   return (
     <div data-testid="reply-bubble"
-      className="max-w-[min(42rem,100%)] whitespace-pre-wrap rounded-lg border bg-white px-3 py-2 text-sm [overflow-wrap:anywhere] [&_p]:my-0 [&_ul]:my-1 [&_ul]:pl-5 [&_ul]:list-disc [&_ol]:my-1 [&_ol]:pl-5 [&_ol]:list-decimal [&_pre]:my-1 [&_pre]:overflow-x-auto [&_code]:text-xs">
+      className="max-w-[min(42rem,100%)] rounded-lg border bg-white px-3 py-2 text-sm [overflow-wrap:anywhere] [&>*+*]:mt-2 [&_p]:whitespace-pre-wrap [&_ul]:pl-5 [&_ul]:list-disc [&_ol]:pl-5 [&_ol]:list-decimal [&_pre]:overflow-x-auto [&_code]:text-xs">
       <Markdown urlTransform={keepSandbox} components={markdownParts}>{text}</Markdown>
     </div>
   )

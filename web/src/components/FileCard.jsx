@@ -35,7 +35,7 @@ export default function FileCard({ item }) {
   }
 
   return (
-    <div data-testid="file-card" className="w-64 rounded border bg-white p-3">
+    <div data-testid="file-card" className="w-full max-w-64 rounded border bg-white p-3">
       <div className="flex items-start gap-2">
         <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-medium uppercase text-slate-500">
           {(name.split('.').pop() || 'file').slice(0, 5)}
