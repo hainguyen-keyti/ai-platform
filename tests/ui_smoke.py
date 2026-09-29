@@ -496,6 +496,66 @@ def main():
             page.click("nav button:has-text('chat')")
             page.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
 
+        # A phone, 390x844, signed in as the same person (the session token from this page): nothing
+        # scrolls sideways, Send is on the screen, and the list sits behind a button until needed.
+        phone = browser.new_context(viewport={"width": 390, "height": 844})
+        phone.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', 'en');".format(
+            page.evaluate("() => localStorage.getItem('token')")))
+        small = phone.new_page()
+        fits = """() => {
+            const box = (n) => { if (!n) return null; const r = n.getBoundingClientRect();
+                return {left: Math.round(r.left), right: Math.round(r.right)}; };
+            const navButtons = document.querySelectorAll('nav button');
+            return {screen: window.innerWidth, page: document.scrollingElement.scrollWidth,
+                    send: box(document.querySelector('form button[type=submit]')),
+                    language: box(document.querySelector('[data-testid=language-switch]')),
+                    signOut: box(navButtons[navButtons.length - 1])};
+        }"""
+        try:
+            small.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            small.wait_for_selector("[data-testid=provider-select]", timeout=20000)
+            small.wait_for_timeout(1000)
+            got = small.evaluate(fits)
+            send = got["send"] or {}
+            shot(small, "10-phone-chat")
+            record("on a phone the chat does not scroll sideways and Send is on screen",
+                   got["page"] <= got["screen"] and send.get("left", -1) >= 0
+                   and send.get("right", 10 ** 6) <= got["screen"], repr(got))
+        except Exception as exc:
+            record("on a phone the chat does not scroll sideways and Send is on screen", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        try:
+            item = small.locator("[data-testid=conversation-item]").first
+            hidden_first = not item.is_visible()
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            listed = item.is_visible()
+            small.locator("[data-testid=conversation-item] button").first.click(timeout=5000)
+            small.wait_for_selector("[data-testid=user-bubble]", timeout=10000)
+            small.wait_for_timeout(500)
+            closed = not item.is_visible()
+            shot(small, "11-phone-conversation")
+            record("on a phone the list opens from its button and closes on a pick",
+                   hidden_first and listed and closed,
+                   "hidden at first {}, shown {}, closed after the pick {}".format(hidden_first, listed, closed))
+        except Exception as exc:
+            record("on a phone the list opens from its button and closes on a pick", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        try:
+            small.click("nav button:has-text('gallery')")
+            small.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
+            small.wait_for_timeout(800)
+            got = small.evaluate(fits)
+            on_screen = all(b and b["left"] >= 0 and b["right"] <= got["screen"]
+                            for b in (got["language"], got["signOut"]))
+            shot(small, "12-phone-gallery")
+            record("on a phone the gallery and the nav fit the screen",
+                   got["page"] <= got["screen"] and on_screen, repr(got))
+        except Exception as exc:
+            record("on a phone the gallery and the nav fit the screen", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            phone.close()
+
         try:
             page.once("dialog", lambda d: d.accept())
             page.click("[data-testid=delete-conversation]", timeout=5000)
