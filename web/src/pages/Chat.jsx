@@ -115,6 +115,8 @@ export default function Chat({ onQuotaSpent }) {
   // Following the tail is the default, but someone who scrolled up to reread
   // history must not be yanked back down when a reply lands.
   const stickToBottom = useRef(true)
+  const lastTop = useRef(0)
+  const threadRef = useRef(null)
 
   // The search box asks the api, which also looks inside messages; a short
   // pause so a person typing does not fire a request per keystroke.
@@ -134,6 +136,17 @@ export default function Chat({ onQuotaSpent }) {
     if (!el || !stickToBottom.current) return
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
   }, [conversation, status, unserved])
+
+  // A picture arriving or the area getting shorter changes no state, so the tail is kept here too.
+  useEffect(() => {
+    const el = scrollRef.current
+    const watcher = new ResizeObserver(() => {
+      if (stickToBottom.current) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    })
+    watcher.observe(el)
+    watcher.observe(threadRef.current)
+    return () => watcher.disconnect()
+  }, [])
 
   // A conversation holds one provider's thread, and the api refuses a turn from
   // another one. Follow the conversation rather than letting the two disagree.
@@ -225,11 +238,13 @@ export default function Chat({ onQuotaSpent }) {
       + (conversation.orphan_media?.length || 0)
   }, [conversation])
 
+  // Only a scroll moving up leaves the tail; the page's own smooth scroll only ever goes down.
   function trackScroll() {
     const el = scrollRef.current
     if (!el) return
-    stickToBottom.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX) stickToBottom.current = true
+    else if (el.scrollTop < lastTop.current) stickToBottom.current = false
+    lastTop.current = el.scrollTop
   }
 
   async function refreshList() {
@@ -431,44 +446,46 @@ export default function Chat({ onQuotaSpent }) {
         </header>
 
         <div ref={scrollRef} onScroll={trackScroll} data-testid="message-scroll"
-          className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
-          {!conversation && <p className="text-slate-400 text-sm">{t.startHint}</p>}
+          className="flex-1 overflow-y-auto p-4 bg-slate-50">
+          <div ref={threadRef} className="space-y-3">
+            {!conversation && <p className="text-slate-400 text-sm">{t.startHint}</p>}
 
-          {timeline.map((entry) =>
-            entry.kind === 'media' ? (
-              <div key={entry.id} className="flex flex-col items-start gap-2">
-                <MediaCard item={entry.media} busy={!!status || unserved} label={t.videoScript}
-                  onOpen={open} onScript={requestScript} />
-              </div>
-            ) : (
-              <div key={entry.id} className={`flex flex-col gap-2 ${
-                entry.message.role === 'user' ? 'items-end' : 'items-start'}`}>
-                {entry.message.content && (
-                  entry.message.role === 'user' ? (
-                    <div data-testid="user-bubble"
-                      className="max-w-[min(42rem,100%)] whitespace-pre-wrap rounded-lg bg-slate-900 px-3 py-2 text-sm text-white [overflow-wrap:anywhere]">
-                      {entry.message.content}
-                    </div>
-                  ) : (
-                    <ReplyText text={entry.message.content} />
-                  )
-                )}
-                {entry.message.media?.map((item) => (
-                  <MediaCard key={item.id} item={item} busy={!!status || unserved} label={t.videoScript}
+            {timeline.map((entry) =>
+              entry.kind === 'media' ? (
+                <div key={entry.id} className="flex flex-col items-start gap-2">
+                  <MediaCard item={entry.media} busy={!!status || unserved} label={t.videoScript}
                     onOpen={open} onScript={requestScript} />
-                ))}
-                {(entry.message.media?.length || 0) >= 2 && (
-                  <button type="button" data-testid="download-message" disabled={packing}
-                    onClick={() => saveZip(entry.message.id)}
-                    className="text-xs text-slate-500 underline hover:text-slate-900 disabled:opacity-50">
-                    {t.downloadThese(entry.message.media.length)}
-                  </button>
-                )}
-              </div>
-            )
-          )}
+                </div>
+              ) : (
+                <div key={entry.id} className={`flex flex-col gap-2 ${
+                  entry.message.role === 'user' ? 'items-end' : 'items-start'}`}>
+                  {entry.message.content && (
+                    entry.message.role === 'user' ? (
+                      <div data-testid="user-bubble"
+                        className="max-w-[min(42rem,100%)] whitespace-pre-wrap rounded-lg bg-slate-900 px-3 py-2 text-sm text-white [overflow-wrap:anywhere]">
+                        {entry.message.content}
+                      </div>
+                    ) : (
+                      <ReplyText text={entry.message.content} />
+                    )
+                  )}
+                  {entry.message.media?.map((item) => (
+                    <MediaCard key={item.id} item={item} busy={!!status || unserved} label={t.videoScript}
+                      onOpen={open} onScript={requestScript} />
+                  ))}
+                  {(entry.message.media?.length || 0) >= 2 && (
+                    <button type="button" data-testid="download-message" disabled={packing}
+                      onClick={() => saveZip(entry.message.id)}
+                      className="text-xs text-slate-500 underline hover:text-slate-900 disabled:opacity-50">
+                      {t.downloadThese(entry.message.media.length)}
+                    </button>
+                  )}
+                </div>
+              )
+            )}
 
-          {status && <TypingBubble hint={pendingHint} phase={phase} />}
+            {status && <TypingBubble hint={pendingHint} phase={phase} />}
+          </div>
         </div>
 
         <Lightbox url={viewing?.url} filename={viewing?.filename}
