@@ -87,6 +87,84 @@ def shot(page, name):
     return path
 
 
+# Every text on screen against WCAG AA: 4.5:1, or 3:1 from 24px (18.66px bold). A text's background
+# is the nearest opaque one behind it, with the translucent ones between laid over it; a placeholder
+# is measured in its empty field. Disabled controls and the chat under the phone's open list are not.
+FAINT = r"""() => {
+  const parse = (c) => {
+    const m = c.match(/rgba?\(([^)]+)\)/);
+    if (!m) return null;
+    const p = m[1].split(/[\s,\/]+/).filter(Boolean).map(Number);
+    return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+  };
+  const lum = (c) => {
+    const f = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+  };
+  const over = (top, under) => [0, 1, 2].map((i) => top[i] * top[3] + under[i] * (1 - top[3])).concat([1]);
+  const behind = (el) => {
+    const layers = [];
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      const c = parse(getComputedStyle(n).backgroundColor);
+      if (c && c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
+    }
+    return layers.reverse().reduce((bg, c) => over(c, bg), [255, 255, 255, 1]);
+  };
+  const opacity = (el) => {
+    let o = 1;
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) o *= Number(getComputedStyle(n).opacity);
+    return o;
+  };
+  const shown = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden'
+    && !el.closest('[disabled], [inert]');
+  const ratio = (el, color) => {
+    const bg = behind(el), c = parse(color);
+    const fg = over([c[0], c[1], c[2], c[3] * opacity(el)], bg);
+    const a = lum(fg), b = lum(bg);
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  };
+  const floor = (cs) => {
+    const size = parseFloat(cs.fontSize);
+    return size >= 24 || (Number(cs.fontWeight) >= 700 && size >= 18.66) ? 3 : 4.5;
+  };
+  let measured = 0;
+  const faint = [];
+  for (const el of document.querySelectorAll('body *')) {
+    const own = [...el.childNodes].filter((n) => n.nodeType === 3 && n.textContent.trim())
+      .map((n) => n.textContent.trim()).join(' ');
+    if (!own || !shown(el)) continue;
+    const cs = getComputedStyle(el), r = ratio(el, cs.color);
+    measured += 1;
+    if (r < floor(cs)) faint.push({text: own.slice(0, 30), ratio: Math.round(r * 100) / 100});
+  }
+  for (const el of document.querySelectorAll('input[placeholder], textarea[placeholder]')) {
+    if (el.value || !el.placeholder || !shown(el)) continue;
+    const cs = getComputedStyle(el), r = ratio(el, getComputedStyle(el, '::placeholder').color);
+    measured += 1;
+    if (r < floor(cs)) faint.push({text: 'placeholder ' + el.placeholder.slice(0, 20), ratio: Math.round(r * 100) / 100});
+  }
+  return {measured, faint};
+}"""
+
+
+def faint_texts(page, where, found, seen):
+    """Adds each text on the page under its contrast floor to found; seen[where] counts the texts measured."""
+    try:
+        got = page.evaluate(FAINT)
+        seen[where] = got["measured"]
+        found += ["{}: {!r} {}:1".format(where, f["text"], f["ratio"]) for f in got["faint"]]
+    except Exception as exc:
+        seen[where] = 0
+        found.append("{}: not measured, {}: {}".format(where, type(exc).__name__, str(exc)[:80]))
+
+
+def select_name(page):
+    """The provider select's accessible name as a screen reader gets it, None when it has none."""
+    first = page.locator("[data-testid=provider-select]").aria_snapshot().splitlines()[0]
+    named = re.match(r'- combobox "((?:[^"\\]|\\.)*)"', first)
+    return named.group(1) if named else None
+
+
 def main():
     if not INVITE_CODE:
         sys.exit("set INVITE_CODE to the code the running API was started with")
@@ -101,14 +179,18 @@ def main():
     # Indices of console errors a check provokes on purpose (the refused send's 503).
     provoked = set()
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    # Texts under their contrast floor and the texts measured, by screen; the select's names by state.
+    faint, texts_on, select_names = [], {}, {}
 
     try:
         page.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_selector("text=AI Platform", timeout=20000)
         shot(page, "01-login")
         record("login page renders", True, page.title())
+        faint_texts(page, "login, sign in", faint, texts_on)
 
         page.click("button:has-text('Create account')")
+        faint_texts(page, "login, create account", faint, texts_on)
         page.fill("input[type=email]", email)
         page.fill("input[type=password]", password)
         page.fill("input[placeholder='name (optional)']", "UI Smoke")
@@ -121,6 +203,55 @@ def main():
         page.wait_for_selector("text=sign out", timeout=30000)
         shot(page, "03-signed-in")
         record("register and sign in", True, email)
+
+        # A new person's list is empty and says so, but only once it has answered (444ms after a
+        # load, measured): its first answer after a reload is held here, and a note shown while it
+        # is held would be a guess.
+        held_list = []
+
+        def hold_list(route):
+            if route.request.method == "GET":
+                held_list.append(route)
+            else:
+                route.continue_()
+
+        empty = {}
+        try:
+            page.route("**/conversations", hold_list)
+            try:
+                page.reload(wait_until="domcontentloaded")
+                page.wait_for_selector("aside button:has-text('New chat')", timeout=20000)
+                page.wait_for_timeout(1000)
+                empty["held"] = len(held_list)
+                empty["while held"] = page.locator("aside").get_by_text("No conversations yet.").count()
+            finally:
+                for route in held_list:
+                    route.continue_()
+                page.unroute("**/conversations")
+            page.wait_for_timeout(1000)
+            empty["after"] = page.locator("aside").get_by_text("No conversations yet.", exact=True).is_visible()
+            shot(page, "03c-empty-list")
+            record("the empty list's note waits for the list's first answer",
+                   empty["held"] >= 1 and empty["while held"] == 0 and empty["after"],
+                   "requests held {}, notes while held {}, note after the answer {}".format(
+                       empty["held"], empty["while held"], empty["after"]))
+            page.click("[data-testid=language-switch]", timeout=5000)
+            page.wait_for_selector("button:has-text('Gửi')", timeout=5000)
+            empty["vi"] = page.locator("aside").get_by_text("Chưa có cuộc trò chuyện nào.", exact=True).is_visible()
+            select_names["new chat, vi"] = select_name(page)
+            page.click("[data-testid=language-switch]", timeout=5000)
+            page.wait_for_selector("button:has-text('Send')", timeout=5000)
+            select_names["new chat, en"] = select_name(page)
+        except Exception as exc:
+            record("the empty list's note waits for the list's first answer", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        faint_texts(page, "a new chat, the list empty", faint, texts_on)
+        page.click("nav button:has-text('gallery')")
+        page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
+        page.wait_for_timeout(500)
+        faint_texts(page, "the gallery, empty", faint, texts_on)
+        page.click("nav button:has-text('chat')")
+        page.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
 
         quota_before = quota_number(page)
         record("nav shows identity and quota", email.split("@")[0] in page.content(),
@@ -150,6 +281,7 @@ def main():
         try:
             page.wait_for_selector("[data-testid=typing-bubble]", timeout=15000)
             page.wait_for_timeout(1200)
+            faint_texts(page, "the typing bubble", faint, texts_on)
             shot(page, "05a-typing")
             label = page.locator("[data-testid=typing-bubble]").inner_text().strip()
             dots = page.evaluate(
@@ -164,6 +296,22 @@ def main():
         page.wait_for_selector("text=mock reply from chatgpt", timeout=60000)
         shot(page, "05-chat-reply")
         record("chat message round trip", True, "assistant bubble rendered")
+
+        # The select is named for what it picks, also once a conversation holds it (its title then
+        # says why it is locked, which is a description, not a name).
+        try:
+            select_names["open, en"] = select_name(page)
+            page.click("[data-testid=language-switch]", timeout=5000)
+            page.wait_for_selector("button:has-text('Gửi')", timeout=5000)
+            select_names["open, vi"] = select_name(page)
+            page.click("[data-testid=language-switch]", timeout=5000)
+            page.wait_for_selector("button:has-text('Send')", timeout=5000)
+        except Exception as exc:
+            select_names["error"] = "{}: {}".format(type(exc).__name__, str(exc)[:120])
+        wanted = {"new chat, en": "Provider", "new chat, vi": "Nhà cung cấp",
+                  "open, en": "Provider", "open, vi": "Nhà cung cấp"}
+        record("the provider select is named, with or without a conversation, in both languages",
+               select_names == wanted, repr(select_names))
 
         page.fill(COMPOSER, "generate an image of a red square")
         page.click("button:has-text('Send')")
@@ -244,6 +392,19 @@ def main():
         record("a non image arrives as a file, not a broken picture",
                card["hasButton"] and not card["brokenImage"],
                "card reads {!r}, download button {}".format(card["text"], card["hasButton"]))
+
+        # The open conversation's row is highlighted; the pointer on its controls changes their colour.
+        faint_texts(page, "a reply with a picture and a file card", faint, texts_on)
+        for control, where in (("delete-conversation", "the pointer on a row's delete"),
+                               ("rename-conversation", "the pointer on a row's rename")):
+            try:
+                page.locator("[data-testid=conversation-item]").first.locator(
+                    "[data-testid={}]".format(control)).hover(timeout=5000)
+                page.wait_for_timeout(300)
+                faint_texts(page, where, faint, texts_on)
+            except Exception as exc:
+                faint.append("{}: not measured, {}".format(where, type(exc).__name__))
+        page.hover(COMPOSER)
 
         # The model writes markdown; the bubble must show it rendered, and a
         # sandbox: link (the file is already a card) must not appear as a raw link.
@@ -389,6 +550,7 @@ def main():
         page.click("nav button:has-text('gallery')")
         page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
         page.wait_for_timeout(1500)
+        faint_texts(page, "the gallery with items", faint, texts_on)
         shot(page, "08-gallery")
         heading = page.locator("text=/Gallery \\(\\d+\\)/").first.inner_text()
         gallery_images = page.evaluate(
@@ -425,6 +587,32 @@ def main():
                    "{} hit(s) for the title, {} for nonsense".format(hits, misses))
         except Exception as exc:
             record("search filters the sidebar", False, "{}: no search box".format(type(exc).__name__))
+
+        # A search with no hit says so too, in both languages, and the note leaves with the search.
+        nothing = {}
+        try:
+            page.fill("[data-testid=conversation-search]", "zzz-nothing-here")
+            page.wait_for_timeout(1000)
+            nothing["en"] = page.locator("aside").get_by_text("No conversation matches.", exact=True).is_visible()
+            page.click("[data-testid=language-switch]", timeout=5000)
+            page.wait_for_selector("button:has-text('Gửi')", timeout=5000)
+            nothing["vi"] = page.locator("aside").get_by_text("Không tìm thấy cuộc trò chuyện nào.",
+                                                              exact=True).is_visible()
+            page.click("[data-testid=language-switch]", timeout=5000)
+            page.wait_for_selector("button:has-text('Send')", timeout=5000)
+            shot(page, "08f-no-hit")
+            page.fill("[data-testid=conversation-search]", "")
+            page.wait_for_timeout(1000)
+            nothing["rows back"] = page.locator("[data-testid=conversation-item]").count()
+            nothing["notes left"] = (page.locator("aside").get_by_text("No conversation matches.").count()
+                                     + page.locator("aside").get_by_text("No conversations yet.").count())
+            record("an empty list and a search with no hit say so, in both languages",
+                   bool(empty.get("after")) and bool(empty.get("vi")) and nothing["en"] and nothing["vi"]
+                   and nothing["rows back"] >= 1 and nothing["notes left"] == 0,
+                   "empty list: en {}, vi {}; no hit {}".format(empty.get("after"), empty.get("vi"), nothing))
+        except Exception as exc:
+            record("an empty list and a search with no hit say so, in both languages", False,
+                   "{}: {} (so far {})".format(type(exc).__name__, str(exc)[:160], nothing))
 
         # Which providers a worker serves comes from the api; here it answers with a chosen reply
         # (the real request goes through for its CORS headers, only the body is replaced).
@@ -731,6 +919,7 @@ def main():
             )
             close_text = small.locator("[data-testid=close-conversations]").inner_text().strip()
             shot(small, "14-phone-list-open")
+            faint_texts(small, "a phone's open list", faint, texts_on)
 
             def thumb(b):
                 return b["w"] >= 24 and b["h"] >= 40
@@ -873,6 +1062,70 @@ def main():
                    "{}: {}".format(type(exc).__name__, str(exc)[:200]))
         finally:
             small.unroute("**/conversations/*")
+
+        # The open list is a step in the tab's history: Back closes it and the app stays, and closing
+        # it any other way takes the step back out, so Back then leaves as it did before the list
+        # opened. The page before the app stands for wherever the person came from.
+        def fresh_tab():
+            small.goto("about:blank#before")
+            small.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            small.wait_for_selector("[data-testid=conversation-item]", state="attached", timeout=20000)
+            small.wait_for_timeout(500)
+
+        try:
+            fresh_tab()
+            small.evaluate("() => { window.__stayed = true }")
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.wait_for_timeout(300)
+            small.go_back(timeout=10000)
+            small.wait_for_timeout(800)
+            stayed = small.evaluate("() => window.__stayed === true")
+            still_open = stayed and search.is_visible()
+            record("on a phone Back closes the open list and stays in the app",
+                   stayed and not still_open and small.url.startswith(WEB_URL),
+                   "after Back: at {!r}, the same page {}, the list open {}".format(small.url, stayed, still_open))
+        except Exception as exc:
+            record("on a phone Back closes the open list and stays in the app", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        landed = {}
+        try:
+            for how in ("Close", "a row", "chat"):
+                fresh_tab()
+                small.click("[data-testid=open-conversations]", timeout=5000)
+                small.wait_for_timeout(300)
+                if how == "Close":
+                    small.click("[data-testid=close-conversations]", timeout=5000)
+                elif how == "a row":
+                    small.locator("[data-testid=conversation-item] button").first.click(timeout=5000)
+                else:
+                    small.click("nav button:has-text('chat')", timeout=5000)
+                small.wait_for_timeout(800)
+                small.go_back(timeout=10000)
+                small.wait_for_timeout(800)
+                landed[how] = small.url
+            record("on a phone a list closed by Close, a row or chat leaves no step for Back",
+                   len(landed) == 3 and all(url == "about:blank#before" for url in landed.values()),
+                   "Back after each close lands on {}".format(landed))
+        except Exception as exc:
+            record("on a phone a list closed by Close, a row or chat leaves no step for Back", False,
+                   "{}: {} (so far {})".format(type(exc).__name__, str(exc)[:200], landed))
+        try:
+            fresh_tab()
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.wait_for_timeout(300)
+            small.click("nav button:has-text('chat')", timeout=5000)
+            small.wait_for_timeout(500)
+            still_open = search.is_visible()
+            shot(small, "15b-phone-chat-tapped")
+            record("on a phone chat in the nav closes the open list", not still_open,
+                   "the list open after tapping chat: {}".format(still_open))
+        except Exception as exc:
+            record("on a phone chat in the nav closes the open list", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            small.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            small.wait_for_selector("[data-testid=provider-select]", timeout=20000)
+            small.wait_for_timeout(800)
 
         # The nav on a phone: one row from 360px in both languages, its right side wrapping as one
         # below that, the quota saying what is left, the brand still shown from 640px; and the list's
@@ -1106,9 +1359,12 @@ def main():
         try:
             context, view = look(1280, "en")
             try:
+                view.wait_for_selector("[data-testid=conversation-item]", timeout=20000)
+                faint_texts(view, "a new chat with a row", faint, texts_on)
                 view.locator("[data-testid=conversation-item] button").first.click(timeout=20000)
                 view.wait_for_selector("[data-testid=reply-bubble]", timeout=10000)
                 view.wait_for_timeout(800)
+                faint_texts(view, "replies with blocks and a file card", faint, texts_on)
                 blocks = view.evaluate(
                     """() => {
                         const bubbles = [...document.querySelectorAll('[data-testid=reply-bubble]')];
@@ -1138,6 +1394,7 @@ def main():
                     view.click("nav button:has-text('{}')".format(gallery), timeout=10000)
                     view.wait_for_selector("[data-testid=file-card]", timeout=10000)
                     view.wait_for_timeout(600)
+                    faint_texts(view, "the gallery at {}px in {}".format(width, lang), faint, texts_on)
                     inside[(width, lang)] = view.evaluate(
                         """() => [...document.querySelectorAll('[data-testid=file-card]')].map((card) => {
                             const tile = card.parentElement.getBoundingClientRect(), c = card.getBoundingClientRect();
@@ -1161,6 +1418,17 @@ def main():
         except Exception as exc:
             record("a file card stays inside its gallery tile on a phone and keeps its size in the chat", False,
                    "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        # Each faint text once, with the number of screens it was seen on.
+        kinds = {}
+        for entry in faint:
+            what = entry.split(": ", 1)[-1]
+            kinds[what] = kinds.get(what, 0) + 1
+        record("every text and placeholder on screen meets its contrast floor",
+               not faint and len(texts_on) >= 14 and all(texts_on.values()),
+               "{} texts on {} screens {}, {} under the floor: {}".format(
+                   sum(texts_on.values()), len(texts_on),
+                   sorted(k for k, v in texts_on.items() if not v) or "all measured", len(faint), kinds))
 
         try:
             page.once("dialog", lambda d: d.accept())
