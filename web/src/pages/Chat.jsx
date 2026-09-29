@@ -76,6 +76,9 @@ export default function Chat({ onQuotaSpent }) {
   // held back (the api refuses a turn nobody serves anyway).
   const [served, setServed] = useState({})
   const unserved = served[provider] === false
+  const anotherServed = PROVIDERS.some((p) => p !== provider && served[p] === true)
+  // Only a provider nobody chose is ever moved on its own; a person's own choice is never swapped.
+  const picked = useRef(false)
   const unseen = useRef(0)
 
   function open(url, item) {
@@ -126,7 +129,7 @@ export default function Chat({ onQuotaSpent }) {
     const el = scrollRef.current
     if (!el || !stickToBottom.current) return
     el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
-  }, [conversation, status])
+  }, [conversation, status, unserved])
 
   // A conversation holds one provider's thread, and the api refuses a turn from
   // another one. Follow the conversation rather than letting the two disagree.
@@ -149,7 +152,7 @@ export default function Chat({ onQuotaSpent }) {
 
   // A new chat never starts on a provider nobody serves while another one is served.
   useEffect(() => {
-    if (activeId || served[provider] !== false) return
+    if (activeId || picked.current || served[provider] !== false) return
     const next = PROVIDERS.find((p) => served[p] === true)
     if (next) setProvider(next)
   }, [served, activeId, provider])
@@ -210,7 +213,7 @@ export default function Chat({ onQuotaSpent }) {
     }
   }
 
-  async function runJob(starter, hint = null) {
+  async function runJob(starter, hint = null, draft = null) {
     setError(null)
     setStatus('queued')
     setPendingHint(hint)
@@ -236,7 +239,11 @@ export default function Chat({ onQuotaSpent }) {
       // one finishes.
       if (onQuotaSpent) onQuotaSpent()
     } catch (err) {
-      setError(err.message)
+      // Refused before any job existed: nothing was sent, so the words go back in the box.
+      if (!jobRef.current && draft) setInput(draft)
+      // The api's word that nobody serves this provider beats the list asked a minute ago.
+      if (err.status === 503) setServed((s) => ({ ...s, [provider]: false }))
+      else setError(err.message)
     } finally {
       setStatus(null)
       jobRef.current = null
@@ -267,7 +274,7 @@ export default function Chat({ onQuotaSpent }) {
     }
     // One way in. The provider returns whatever the reply turned out to be, so
     // asking the user to declare "this one is a picture" bought nothing.
-    runJob(() => api.chat({ provider, conversation_id: activeId, message: text }), t.slowHint)
+    runJob(() => api.chat({ provider, conversation_id: activeId, message: text }), t.slowHint, text)
   }
 
   function requestScript(mediaId) {
@@ -349,10 +356,10 @@ export default function Chat({ onQuotaSpent }) {
 
       <section className="flex-1 flex flex-col">
         <header className="flex items-center gap-3 border-b bg-white px-4 py-2">
-          <select value={provider} onChange={(e) => setProvider(e.target.value)}
+          <select value={provider} onChange={(e) => { picked.current = true; setProvider(e.target.value) }}
             disabled={!!activeId} title={activeId ? t.providerLocked : undefined}
             data-testid="provider-select"
-            className="border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-500">
+            className="border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-600 disabled:opacity-100">
             {PROVIDERS.map((p) => (
               <option key={p} value={p} disabled={served[p] === false}>
                 {served[p] === false ? `${p} (${t.providerIdle})` : p}
@@ -413,15 +420,18 @@ export default function Chat({ onQuotaSpent }) {
         <Lightbox url={viewing?.url} filename={viewing?.filename}
           onClose={() => setViewing(null)} />
 
-        {unserved && (
-          <p data-testid="provider-unserved" role="status"
-            className="border-t bg-amber-50 px-4 py-2 text-sm text-amber-800">
-            {t.providerUnserved(provider)}
-          </p>
-        )}
+        {/* The live region stays in the page, so a screen reader hears the notice arrive. */}
+        <div role="status">
+          {unserved && (
+            <p id="provider-unserved" data-testid="provider-unserved"
+              className="border-t bg-amber-50 px-4 py-2 text-sm text-amber-800">
+              {t.providerUnserved(provider, anotherServed, !!activeId)}
+            </p>
+          )}
+        </div>
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)}
-            placeholder={t.composer}
+            placeholder={t.composer} aria-describedby={unserved ? 'provider-unserved' : undefined}
             className="flex-1 border rounded px-3 py-2 text-sm" />
           {status ? (
             <button type="button" onClick={stopJob}

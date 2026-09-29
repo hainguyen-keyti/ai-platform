@@ -63,6 +63,8 @@ def main():
     context = browser.new_context(viewport={"width": 1280, "height": 900})
     page = context.new_page()
     errors = []
+    # Indices of console errors a check provokes on purpose (the refused send's 503).
+    provoked = set()
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
 
     try:
@@ -426,12 +428,67 @@ def main():
             notice = page.locator("[data-testid=provider-unserved]")
             shown = notice.count() > 0 and notice.first.is_visible()
             blocked = page.locator("button:has-text('Send')").first.is_disabled()
+            scripts = page.locator("button:has-text('Video script')")
+            scripts_held = scripts.count() > 0 and all(scripts.nth(i).is_disabled() for i in range(scripts.count()))
             shot(page, "08d-unserved")
             record("a conversation whose provider nobody serves says so and cannot send",
-                   shown and blocked, "notice shown {}, send disabled {}".format(shown, blocked))
+                   shown and blocked and scripts_held, "notice shown {}, send disabled {}, video script held {}"
+                   .format(shown, blocked, scripts_held))
         except Exception as exc:
             record("the unserved provider checks ran", False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
         finally:
+            page.unroute("**/providers")
+
+        # A list a minute old can still say served when the api already refuses: the refusal must
+        # keep the words in the box and bring the notice, not an english error. The api is never
+        # reached here; its 503 is played in the browser, so no job is made.
+        everyone = {"providers": [{"name": n, "served": True} for n in ("chatgpt", "grok", "gemini")]}
+
+        def answer_served(route):
+            if route.request.method != "GET":
+                route.continue_()
+                return
+            real = route.fetch()
+            headers = {k: v for k, v in real.headers.items() if k.lower() != "content-length"}
+            headers["content-type"] = "application/json"
+            route.fulfill(status=200, headers=headers, body=json.dumps(everyone))
+
+        def refuse_chat(route):
+            if route.request.method != "POST":
+                route.continue_()
+                return
+            route.fulfill(status=503, headers={"access-control-allow-origin": "*",
+                                               "content-type": "application/json"},
+                          body=json.dumps({"detail": "no worker is serving chatgpt right now; try again later"}))
+
+        page.route("**/providers", answer_served)
+        try:
+            page.click("nav button:has-text('gallery')")
+            page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
+            page.click("nav button:has-text('chat')")
+            page.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
+            page.locator("[data-testid=conversation-item] button").first.click(timeout=5000)
+            page.wait_for_selector("[data-testid=user-bubble]", timeout=10000)
+            page.wait_for_timeout(800)
+            page.route("**/chat", refuse_chat)
+            page.fill(COMPOSER, "sent into a stale list")
+            start = len(errors)
+            page.click("button:has-text('Send')")
+            page.wait_for_timeout(1500)
+            provoked.update(i for i in range(start, len(errors)) if "503" in errors[i])
+            kept = page.input_value(COMPOSER)
+            notice = page.locator("[data-testid=provider-unserved]")
+            shown = notice.count() > 0 and notice.first.is_visible()
+            english = page.locator("header .text-red-600").count()
+            shot(page, "08e-refused")
+            record("a send the api refuses keeps the words and shows the notice",
+                   kept == "sent into a stale list" and shown and english == 0,
+                   "box {!r}, notice shown {}, header errors {}".format(kept, shown, english))
+        except Exception as exc:
+            record("a send the api refuses keeps the words and shows the notice", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            page.unroute("**/chat")
             page.unroute("**/providers")
             page.fill(COMPOSER, "")
             page.click("nav button:has-text('gallery')")
@@ -459,7 +516,7 @@ def main():
         shot(page, "09-signed-out")
         record("sign out returns to login", True, "")
 
-        real_errors = [e for e in errors if "favicon" not in e.lower()]
+        real_errors = [e for i, e in enumerate(errors) if "favicon" not in e.lower() and i not in provoked]
         record("no console errors", not real_errors, str(real_errors[:3]))
 
     except Exception as exc:

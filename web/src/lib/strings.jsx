@@ -28,7 +28,9 @@ const STRINGS = {
     slowHint: 'Still working. Asking for a picture takes the longest.',
     providerLocked: 'This conversation belongs to this provider. Start a new chat to use another.',
     providerIdle: 'unavailable',
-    providerUnserved: (p) => `No worker is serving ${p} right now, so nothing can be sent to it. Try again later.`,
+    // other: another provider is served; inChat: a conversation is open (its provider is fixed).
+    providerUnserved: (p, other, inChat) => `Sending is paused: ${p} is unavailable right now. Try again later${
+      other ? (inChat ? ', or start a new chat with another provider' : ', or pick another provider') : ''}.`,
     replyLanded: 'Your reply is ready.',
     download: 'Download',
     preparing: 'Preparing...',
@@ -68,7 +70,8 @@ const STRINGS = {
     slowHint: 'Vẫn đang làm. Tạo hình mất lâu nhất.',
     providerLocked: 'Cuộc trò chuyện này thuộc về nhà cung cấp đang chọn. Mở trò chuyện mới để dùng bên khác.',
     providerIdle: 'tạm ngưng',
-    providerUnserved: (p) => `Hiện không có worker nào phục vụ ${p}, nên chưa gửi được. Hãy thử lại sau.`,
+    providerUnserved: (p, other, inChat) => `Chưa gửi được: ${p} đang tạm ngưng. Hãy thử lại sau${
+      other ? (inChat ? ', hoặc mở trò chuyện mới với nhà cung cấp khác' : ', hoặc chọn nhà cung cấp khác') : ''}.`,
     replyLanded: 'Đã có trả lời.',
     download: 'Tải về',
     preparing: 'Đang chuẩn bị...',

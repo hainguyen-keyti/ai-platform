@@ -33,7 +33,9 @@ async function request(method, path, body) {
   const data = text ? JSON.parse(text) : null
   if (!response.ok) {
     const detail = data && data.detail
-    throw new Error(typeof detail === 'string' ? detail : `request failed (${response.status})`)
+    const failure = new Error(typeof detail === 'string' ? detail : `request failed (${response.status})`)
+    failure.status = response.status
+    throw failure
   }
   return data
 }

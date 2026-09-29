@@ -102,8 +102,16 @@ def create_job(user, provider, feature, payload, conversation_id=None,
                         detail="this conversation belongs to {}; start a new chat to use {}".format(
                             owned["provider"], provider),
                     )
-            # After the 404 and the 409, before anything is written or charged: a turn nobody
-            # would pick up is refused now instead of failing as no_worker minutes later.
+
+            if reference_media_id:
+                payload["reference_filename"] = _resolve_media(
+                    conn, user["id"], reference_media_id)["filename"]
+            if media_id:
+                payload["filename"] = _resolve_media(conn, user["id"], media_id)["filename"]
+
+            # After every check that already refuses (404, 409, a missing picture), before
+            # anything is written or charged: a turn nobody would pick up is refused now instead
+            # of failing as no_worker minutes later.
             if not _served(conn, provider):
                 raise HTTPException(
                     status_code=503,
@@ -115,12 +123,6 @@ def create_job(user, provider, feature, payload, conversation_id=None,
                     "INSERT INTO conversations (id, user_id, provider, title) VALUES (?, ?, ?, ?)",
                     (conversation_id, user["id"], provider, (title or "New chat")[:80]),
                 )
-
-            if reference_media_id:
-                payload["reference_filename"] = _resolve_media(
-                    conn, user["id"], reference_media_id)["filename"]
-            if media_id:
-                payload["filename"] = _resolve_media(conn, user["id"], media_id)["filename"]
 
             if user_message:
                 conn.execute(
