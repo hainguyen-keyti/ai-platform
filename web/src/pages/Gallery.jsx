@@ -37,7 +37,7 @@ export default function Gallery() {
     <div className="p-6 overflow-y-auto h-full bg-slate-50">
       <h2 className="text-lg font-semibold mb-4">{t.galleryTitle(total)}</h2>
       {error && <div className="text-sm text-red-600 mb-3">{error}</div>}
-      {items.length === 0 && <p className="text-sm text-slate-400">{t.nothingYet}</p>}
+      {items.length === 0 && <p className="text-sm text-slate-500">{t.nothingYet}</p>}
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {items.map((item) => (
@@ -49,7 +49,7 @@ export default function Gallery() {
               <FileCard item={item} />
             )}
             <p className="text-xs text-slate-500 line-clamp-2">{item.prompt || item.filename}</p>
-            <div className="flex justify-between text-xs text-slate-400">
+            <div className="flex justify-between text-xs text-slate-500">
               <span>{item.provider}</span>
               <button onClick={() => remove(item.id)} className="text-red-600 hover:underline">
                 {t.delete.toLowerCase()}

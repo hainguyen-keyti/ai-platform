@@ -31,13 +31,13 @@ export default function TypingBubble({ hint, phase }) {
           </span>
           {/* A real image job runs for minutes; three dots alone are
               indistinguishable from a hung request. */}
-          <span className="text-xs tabular-nums text-slate-400">{format(elapsed)}</span>
+          <span className="text-xs tabular-nums text-slate-500">{format(elapsed)}</span>
           {phase && phase !== 'claimed' && (
             <span data-testid="typing-phase" className="text-xs text-slate-500">{phase}</span>
           )}
         </div>
         {hint && elapsed >= HINT_AFTER_SECONDS && (
-          <span className="text-xs text-slate-400">{hint}</span>
+          <span className="text-xs text-slate-500">{hint}</span>
         )}
       </div>
     </div>

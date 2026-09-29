@@ -52,10 +52,12 @@ function MediaCard({ item, busy, onOpen, onScript, label }) {
   )
 }
 
-export default function Chat({ onQuotaSpent }) {
+export default function Chat({ onQuotaSpent, chatTaps }) {
   const { t } = useStrings()
   const [conversations, setConversations] = useState([])
   const [query, setQuery] = useState('')
+  // The search the list on screen answers; null until the list has answered once.
+  const [listedFor, setListedFor] = useState(null)
   const [activeId, setActiveId] = useState(null)
   const [conversation, setConversation] = useState(null)
   const [provider, setProvider] = useState('chatgpt')
@@ -181,6 +183,25 @@ export default function Chat({ onQuotaSpent }) {
     }
   }, [listOpen])
 
+  // The open list is a step in the tab's history: Back closes it, any other close takes the step out.
+  useEffect(() => {
+    if (!listOpen) return
+    history.pushState({ conversationList: true }, '')
+    function onBack() {
+      setListOpen(false)
+    }
+    window.addEventListener('popstate', onBack)
+    return () => {
+      window.removeEventListener('popstate', onBack)
+      if (history.state?.conversationList) history.back()
+    }
+  }, [listOpen])
+
+  // "chat" tapped in the nav means show the chat, so it closes the list over it.
+  useEffect(() => {
+    setListOpen(false)
+  }, [chatTaps])
+
   // The chat under the open list is inert, so a window widened past the phone layout closes the list.
   useEffect(() => {
     const wide = window.matchMedia('(min-width: 768px)')
@@ -248,9 +269,11 @@ export default function Chat({ onQuotaSpent }) {
   }
 
   async function refreshList() {
+    const asked = query.trim()
     try {
-      const data = await api.conversations(query.trim())
+      const data = await api.conversations(asked)
       setConversations(data.items)
+      setListedFor(asked)
     } catch (err) {
       setError(err.message)
     }
@@ -379,6 +402,9 @@ export default function Chat({ onQuotaSpent }) {
           className="mx-3 mb-2 rounded border px-2 py-1 text-base md:text-sm" />
         {error && <p className="mx-3 mb-2 text-sm text-red-600 md:hidden">{error}</p>}
         <div className="flex-1 overflow-y-auto">
+          {listedFor !== null && conversations.length === 0 && (
+            <p className="px-3 py-2 text-sm text-slate-500">{listedFor ? t.noMatch : t.noConversations}</p>
+          )}
           {conversations.map((c) => (
             <div key={c.id} data-testid="conversation-item"
               className={`flex items-center gap-1 px-3 text-sm hover:bg-slate-100 ${
@@ -396,18 +422,18 @@ export default function Chat({ onQuotaSpent }) {
               ) : (
                 <button onClick={() => { setActiveId(c.id); setListOpen(false) }}
                   className="min-w-0 flex-1 truncate py-3 text-left md:py-1.5">
-                  <span className="text-slate-400 mr-1">{c.provider}</span>
+                  <span className="text-slate-600 mr-1">{c.provider}</span>
                   {c.title || t.untitled}
                 </button>
               )}
               <button data-testid="rename-conversation" type="button" title={t.rename} aria-label={t.rename}
                 onClick={() => startRename(c)}
-                className="px-3 py-3 text-slate-400 hover:text-slate-900 md:px-1 md:py-1.5">
+                className="px-3 py-3 text-slate-600 hover:text-slate-900 md:px-1 md:py-1.5">
                 ✎
               </button>
               <button data-testid="delete-conversation" type="button" title={t.delete} aria-label={t.delete}
                 onClick={() => removeConversation(c.id)}
-                className="px-3 py-3 text-slate-400 hover:text-red-600 md:px-1 md:py-1.5">
+                className="px-3 py-3 text-slate-600 hover:text-red-700 md:px-1 md:py-1.5">
                 ×
               </button>
             </div>
@@ -426,7 +452,7 @@ export default function Chat({ onQuotaSpent }) {
             {openTitle}
           </span>
           <select value={provider} onChange={(e) => { picked.current = true; setProvider(e.target.value) }}
-            disabled={!!activeId} title={activeId ? t.providerLocked : undefined}
+            aria-label={t.provider} disabled={!!activeId} title={activeId ? t.providerLocked : undefined}
             data-testid="provider-select"
             className="h-10 border rounded px-2 py-1 text-base md:h-auto md:text-sm disabled:bg-slate-100 disabled:text-slate-600 disabled:opacity-100">
             {PROVIDERS.map((p) => (
@@ -448,7 +474,7 @@ export default function Chat({ onQuotaSpent }) {
         <div ref={scrollRef} onScroll={trackScroll} data-testid="message-scroll"
           className="flex-1 overflow-y-auto p-4 bg-slate-50">
           <div ref={threadRef} className="space-y-3">
-            {!conversation && <p className="text-slate-400 text-sm">{t.startHint}</p>}
+            {!conversation && <p className="text-slate-500 text-sm">{t.startHint}</p>}
 
             {timeline.map((entry) =>
               entry.kind === 'media' ? (

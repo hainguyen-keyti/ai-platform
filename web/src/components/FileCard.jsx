@@ -37,12 +37,12 @@ export default function FileCard({ item }) {
   return (
     <div data-testid="file-card" className="w-full max-w-64 rounded border bg-white p-3">
       <div className="flex items-start gap-2">
-        <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-medium uppercase text-slate-500">
+        <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-medium uppercase text-slate-600">
           {(name.split('.').pop() || 'file').slice(0, 5)}
         </span>
         <div className="min-w-0">
           <p className="truncate text-sm" title={name}>{name}</p>
-          {size && <p className="text-xs text-slate-400">{size}</p>}
+          {size && <p className="text-xs text-slate-500">{size}</p>}
         </div>
       </div>
       <button data-testid="file-download" onClick={save} disabled={busy}

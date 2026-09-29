@@ -9,6 +9,8 @@ function Shell() {
   const { t, lang, setLang } = useStrings()
   const [user, setUser] = useState(null)
   const [view, setView] = useState('chat')
+  // Counts taps on "chat": one while the chat already shows still closes the phone's list over it.
+  const [chatTaps, setChatTaps] = useState(0)
   const [checking, setChecking] = useState(true)
 
   useEffect(() => {
@@ -29,7 +31,7 @@ function Shell() {
       <nav className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-white px-4 py-2 text-sm sm:gap-x-4">
         <span className="hidden font-semibold sm:inline">{t.appName}</span>
         {['chat', 'gallery'].map((v) => (
-          <button key={v} onClick={() => setView(v)}
+          <button key={v} onClick={() => { setView(v); if (v === 'chat') setChatTaps((n) => n + 1) }}
             className={view === v ? 'font-medium underline' : 'text-slate-500'}>
             {t[v]}
           </button>
@@ -48,7 +50,7 @@ function Shell() {
       </nav>
       <main className="flex-1 min-h-0">
         {view === 'chat'
-          ? <Chat onQuotaSpent={() => api.me().then(setUser).catch(() => {})} />
+          ? <Chat chatTaps={chatTaps} onQuotaSpent={() => api.me().then(setUser).catch(() => {})} />
           : <Gallery />}
       </main>
     </div>

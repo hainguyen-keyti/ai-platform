@@ -2,6 +2,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Tailwind's default placeholder grey is 2.5:1 on white, and the login form's placeholders are its only labels. */
+@layer base {
+  input::placeholder,
+  textarea::placeholder {
+    color: theme('colors.slate.500');
+  }
+}
+
 html, body, #root {
   height: 100%;
 }
