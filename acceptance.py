@@ -668,8 +668,9 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         media_gone = all(http("GET", "{}/media/{}".format(api, m), token=token)[0] == 404 for m in media_ids)
         files_gone = not any((Path(media_dir) / f).exists() for f in filenames)
         # The worker removes the thread when it is next idle, after its pacing
-        # gap and its tombstone interval: measured at 16s on a quiet host.
-        deadline = time.time() + 60
+        # gap and its tombstone interval: measured at 16s on a quiet host, and
+        # 64s for a Gemini deletion, which drives the page (2026-09-29).
+        deadline = time.time() + 150
         deleted_after = deleted_before
         while time.time() < deadline and deleted_after < deleted_before + 1:
             time.sleep(1)
@@ -722,7 +723,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         time.sleep(1)
     time.sleep(1.5)
     files_after = set(os.listdir(media_dir))
-    deadline = time.time() + 45
+    deadline = time.time() + 150
     deleted_after = deleted_before
     while time.time() < deadline and deleted_after < deleted_before + 1:
         time.sleep(1)

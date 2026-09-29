@@ -8,6 +8,9 @@ from src.config import settings
 # How often an idle worker asks whether a deleted conversation left a thread to
 # remove from the provider's account. Rare work; no need to ask every poll.
 TOMBSTONE_INTERVAL_SECONDS = 10.0
+# How often a runner busy outside a live job (deleting a thread, finishing a cancelled one) says it
+# is alive, as often as its pauses between turns do.
+BUSY_PING_SECONDS = 5.0
 
 
 class Runner(threading.Thread):
@@ -114,7 +117,16 @@ class Runner(threading.Thread):
         if response.status_code != 200:
             return
         stone = response.json()
-        result = self.pool.delete_thread(stone["provider"], stone["thread_url"])
+        # Measured 2026-09-29: a Gemini deletion drives the page for about a minute.
+        done = threading.Event()
+        pinger = threading.Thread(target=self._keep_alive, args=(client, done),
+                                  name="alive-{}".format(self.provider), daemon=True)
+        pinger.start()
+        try:
+            result = self.pool.delete_thread(stone["provider"], stone["thread_url"])
+        finally:
+            done.set()
+            pinger.join(timeout=5)
         client.post("/internal/tombstones/{}/result".format(stone["id"]),
                     json={"ok": result.success, "error": result.error})
         if result.success:
@@ -131,10 +143,20 @@ class Runner(threading.Thread):
                                        json={"attempt": attempt})
                 if response.status_code == 200 and not response.json().get("alive", False):
                     lost.set()
+                    # The driver is still finishing the cancelled turn: busy, not dead.
+                    self._keep_alive(client, finished)
                     return
             except Exception:
                 # A missed beat is not a lost job; the lease is generous.
                 continue
+
+    def _keep_alive(self, client, done):
+        """Ping for this provider until done is set, or the api counts the busy runner as gone."""
+        while not done.wait(BUSY_PING_SECONDS):
+            try:
+                client.post("/internal/workers/ping", json={"providers": [self.provider]})
+            except Exception:
+                pass
 
     def _handle(self, client, job):
         if job.get("provider") != self.provider:
