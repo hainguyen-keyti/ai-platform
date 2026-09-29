@@ -8,7 +8,7 @@ paints textarea#pending-home-input and mounts the real composer, a ProseMirror
 div with no id, about ten seconds later; #prompt-textarea is gone; a failed first
 turn leaves /c/local-chatgpt:<uuid> in the address. The driver used to call a
 signed-in session "probably logged out" whenever the composer did not appear.
-Prints N/17 PASSED.
+Prints N/19 PASSED.
 """
 
 import sys
@@ -107,8 +107,9 @@ class Keyboard:
 
 class Page:
     # composer_on_load: the composer mounts only from that load on (a slow first load).
+    # token_after: how many session reads answer empty before the token (a fresh browser's first reads).
     def __init__(self, clock, has=(), token="token", url="https://chatgpt.com/", composer_on_load=None,
-                 thread_status=None, screenshot_fails=False):
+                 thread_status=None, screenshot_fails=False, token_after=0):
         self.clock = clock
         self.has = set(has)
         self.token = token
@@ -124,6 +125,9 @@ class Page:
         self.thread_status = thread_status
         self.screenshot_fails = screenshot_fails
         self.pictures = []
+        self.token_after = token_after
+        self.token_reads = 0
+        self.deletions = []
 
     def goto(self, url, *args, **kwargs):
         self.url = url
@@ -153,9 +157,13 @@ class Page:
 
     def evaluate(self, script, *args):
         if script == chatgpt.SESSION_TOKEN:
-            return self.token
+            self.token_reads += 1
+            return self.token if self.token_reads > self.token_after else None
         if script == chatgpt.FETCH_THREAD and self.thread_status is not None:
             return {"status": self.thread_status}
+        if script == chatgpt.DELETE_THREAD:
+            self.deletions.append(args[0][0])
+            return {"status": 200}
         return None
 
     def __getattr__(self, name):
@@ -249,6 +257,29 @@ def main():
     record("a stored thread whose composer never shows is loaded twice and leaves one picture",
            not opened and "did not open" in said and page.loads == 2 and len(page.pictures) == 1,
            "loads {} pictures {} said {!r}".format(page.loads, len(page.pictures), said[:60]))
+
+    # Measured 2026-09-30: a fresh browser's first session read answered empty and the deletion said
+    # logged out; the same session read a token 1.1s later.
+    def delete_on(page):
+        try:
+            return provider_on(page).delete_thread(thread), ""
+        except ProviderError as exc:
+            return False, str(exc)
+        except Exception as exc:
+            return False, "{}: {}".format(type(exc).__name__, exc)
+
+    wanted = thread.rsplit("/c/", 1)[-1]
+    page = Page(clock, has=(), token="token", token_after=2)
+    gone, said = delete_on(page)
+    record("a thread deletion waits for a session read that answers late",
+           gone is True and page.deletions == [wanted],
+           "gone {} after {} reads, deletions {} said {!r}".format(gone, page.token_reads, len(page.deletions), said[:60]))
+
+    page = Page(clock, has=(), token=None)
+    gone, said = delete_on(page)
+    record("a thread deletion with no session is still called logged out and sends nothing",
+           not gone and "logged out" in said and page.deletions == [],
+           "deletions {} said {!r}".format(len(page.deletions), said[:60]))
 
     # A picture that cannot be taken must not turn a provider error into a worker error.
     page = Page(clock, has=(), token="token", screenshot_fails=True)
