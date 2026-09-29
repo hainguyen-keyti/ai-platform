@@ -72,6 +72,8 @@ export default function Chat({ onQuotaSpent }) {
   const [packing, setPacking] = useState(false)
   const [renaming, setRenaming] = useState(null)
   const [draftTitle, setDraftTitle] = useState('')
+  // On a phone the conversation list is a panel over the chat, opened on demand.
+  const [listOpen, setListOpen] = useState(false)
   // Which providers a worker serves right now, by name; until the api has answered, nothing is
   // held back (the api refuses a turn nobody serves anyway).
   const [served, setServed] = useState({})
@@ -312,9 +314,16 @@ export default function Chat({ onQuotaSpent }) {
   }
 
   return (
-    <div className="flex h-full">
-      <aside className="w-64 border-r bg-white flex flex-col">
-        <button onClick={() => { setActiveId(null); setConversation(null) }}
+    <div className="relative flex h-full">
+      <aside className={`${listOpen ? 'flex' : 'hidden'} absolute inset-0 z-20 w-full flex-col bg-white md:static md:z-auto md:flex md:w-64 md:border-r`}>
+        <div className="flex items-center justify-between px-3 pt-3 md:hidden">
+          <span className="text-sm font-medium">{t.conversations}</span>
+          <button type="button" data-testid="close-conversations" aria-label={t.close}
+            onClick={() => setListOpen(false)} className="px-2 text-lg text-slate-500">
+            ×
+          </button>
+        </div>
+        <button onClick={() => { setActiveId(null); setConversation(null); setListOpen(false) }}
           className="m-3 rounded bg-slate-900 text-white py-2 text-sm">
           {t.newChat}
         </button>
@@ -336,7 +345,8 @@ export default function Chat({ onQuotaSpent }) {
                   onBlur={() => setRenaming(null)}
                   className="min-w-0 flex-1 rounded border px-1 py-0.5 text-sm font-normal" />
               ) : (
-                <button onClick={() => setActiveId(c.id)} className="min-w-0 flex-1 truncate text-left">
+                <button onClick={() => { setActiveId(c.id); setListOpen(false) }}
+                  className="min-w-0 flex-1 truncate text-left">
                   <span className="text-slate-400 mr-1">{c.provider}</span>
                   {c.title || t.untitled}
                 </button>
@@ -354,8 +364,12 @@ export default function Chat({ onQuotaSpent }) {
         </div>
       </aside>
 
-      <section className="flex-1 flex flex-col">
-        <header className="flex items-center gap-3 border-b bg-white px-4 py-2">
+      <section className="flex min-w-0 flex-1 flex-col">
+        <header className="flex flex-wrap items-center gap-3 border-b bg-white px-4 py-2">
+          <button type="button" data-testid="open-conversations" aria-label={t.conversations}
+            onClick={() => setListOpen(true)} className="rounded border px-2 py-1 text-sm md:hidden">
+            ☰
+          </button>
           <select value={provider} onChange={(e) => { picked.current = true; setProvider(e.target.value) }}
             disabled={!!activeId} title={activeId ? t.providerLocked : undefined}
             data-testid="provider-select"
@@ -432,7 +446,7 @@ export default function Chat({ onQuotaSpent }) {
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)}
             placeholder={t.composer} aria-describedby={unserved ? 'provider-unserved' : undefined}
-            className="flex-1 border rounded px-3 py-2 text-sm" />
+            className="min-w-0 flex-1 border rounded px-3 py-2 text-sm" />
           {status ? (
             <button type="button" onClick={stopJob}
               className="rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700">

@@ -26,7 +26,7 @@ function Shell() {
 
   return (
     <div className="flex flex-col h-full">
-      <nav className="flex items-center gap-4 border-b bg-white px-4 py-2 text-sm">
+      <nav className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-white px-3 py-2 text-sm sm:gap-x-4 sm:px-4">
         <span className="font-semibold">{t.appName}</span>
         {['chat', 'gallery'].map((v) => (
           <button key={v} onClick={() => setView(v)}
@@ -35,7 +35,7 @@ function Shell() {
           </button>
         ))}
         <span className="ml-auto text-slate-500">
-          {user.email} · {user.quota_remaining} {t.left}
+          <span className="hidden sm:inline">{user.email} · </span>{user.quota_remaining} {t.left}
         </span>
         <button data-testid="language-switch" type="button"
           onClick={() => setLang(lang === 'vi' ? 'en' : 'vi')}
