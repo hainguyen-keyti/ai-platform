@@ -8,7 +8,7 @@ paints textarea#pending-home-input and mounts the real composer, a ProseMirror
 div with no id, about ten seconds later; #prompt-textarea is gone; a failed first
 turn leaves /c/local-chatgpt:<uuid> in the address. The driver used to call a
 signed-in session "probably logged out" whenever the composer did not appear.
-Prints N/15 PASSED.
+Prints N/17 PASSED.
 """
 
 import sys
@@ -108,7 +108,7 @@ class Keyboard:
 class Page:
     # composer_on_load: the composer mounts only from that load on (a slow first load).
     def __init__(self, clock, has=(), token="token", url="https://chatgpt.com/", composer_on_load=None,
-                 thread_status=None):
+                 thread_status=None, screenshot_fails=False):
         self.clock = clock
         self.has = set(has)
         self.token = token
@@ -122,6 +122,7 @@ class Page:
         self.loads = 0
         self.composer_on_load = composer_on_load
         self.thread_status = thread_status
+        self.screenshot_fails = screenshot_fails
         self.pictures = []
 
     def goto(self, url, *args, **kwargs):
@@ -132,6 +133,8 @@ class Page:
         self.loads += 1
 
     def screenshot(self, path=None, *args, **kwargs):
+        if self.screenshot_fails:
+            raise RuntimeError("the page could not be captured")
         self.pictures.append(path)
 
     def wait_for_timeout(self, ms):
@@ -223,20 +226,36 @@ def main():
     record("a composer that shows only on the second load of the home page is waited for",
            opened, "loads {} said {!r}".format(page.loads, said[:80]))
 
+    # Still on the thread after two loads: falling back to a new chat would lose the conversation.
     thread = "https://chatgpt.com/c/6ab805cb-f334-83ec-9df4-aa8e1fc863a8"
     page = Page(clock, has=(), token="token", composer_on_load=2, thread_status=200)
     opened, said = open_on(page, thread)
     record("a composer that shows only on the second load of a stored thread is waited for",
-           opened, "loads {} said {!r}".format(page.loads, said[:80]))
+           opened and page.url == thread and page.loads == 2,
+           "loads {} on {} said {!r}".format(page.loads, page.url[-20:], said[:80]))
 
     page = Page(clock, has=(), token="token")
     provider = provider_on(page)
     opened, said = open_on(page)
     kept = [Path(p) for p in page.pictures if p]
     record("a composer that never shows leaves one picture in the diagnostics and the same error",
-           not opened and "although the session is signed in" in said and len(page.pictures) == 1
-           and len(kept) == 1 and kept[0].parent == provider.media_path.parent / "diagnostics",
-           "pictures {} said {!r}".format([str(p) for p in page.pictures], said[:60]))
+           not opened and "although the session is signed in" in said and page.loads == 2
+           and len(page.pictures) == 1 and len(kept) == 1
+           and kept[0].parent == provider.media_path.parent / "diagnostics",
+           "loads {} pictures {} said {!r}".format(page.loads, [str(p) for p in page.pictures], said[:60]))
+
+    page = Page(clock, has=(), token="token", thread_status=200)
+    opened, said = open_on(page, thread)
+    record("a stored thread whose composer never shows is loaded twice and leaves one picture",
+           not opened and "did not open" in said and page.loads == 2 and len(page.pictures) == 1,
+           "loads {} pictures {} said {!r}".format(page.loads, len(page.pictures), said[:60]))
+
+    # A picture that cannot be taken must not turn a provider error into a worker error.
+    page = Page(clock, has=(), token="token", screenshot_fails=True)
+    opened, said = open_on(page)
+    record("a picture that cannot be taken leaves the same error",
+           not opened and said.startswith("composer never appeared although the session is signed in"),
+           "said {!r}".format(said[:80]))
 
     prompt = "user: first line\n\nassistant: second line\n\nReply to this next message only:\nthird"
     page = Page(clock, has={PROSEMIRROR})
