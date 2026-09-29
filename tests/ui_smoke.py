@@ -16,6 +16,7 @@ SHOT_DIR (default /tmp/ui_shots) so a human, or an agent that can read images,
 can look at what actually rendered instead of trusting an assertion.
 """
 
+import json
 import os
 import sys
 import time
@@ -386,6 +387,53 @@ def main():
                    "{} hit(s) for the title, {} for nonsense".format(hits, misses))
         except Exception as exc:
             record("search filters the sidebar", False, "{}: no search box".format(type(exc).__name__))
+
+        # Which providers a worker serves comes from the api; here it answers with a chosen reply
+        # (the real request goes through for its CORS headers, only the body is replaced).
+        chosen = {"providers": [{"name": "chatgpt", "served": False}, {"name": "grok", "served": False},
+                                {"name": "gemini", "served": True}]}
+
+        def answer_providers(route):
+            if route.request.method != "GET":
+                route.continue_()
+                return
+            real = route.fetch()
+            headers = {k: v for k, v in real.headers.items() if k.lower() != "content-length"}
+            headers["content-type"] = "application/json"
+            route.fulfill(status=200, headers=headers, body=json.dumps(chosen))
+
+        page.route("**/providers", answer_providers)
+        try:
+            page.click("nav button:has-text('gallery')")
+            page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
+            page.click("nav button:has-text('chat')")
+            page.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
+            page.wait_for_timeout(1500)
+            option = page.evaluate(
+                """() => {
+                    const o = document.querySelector('[data-testid=provider-select] option[value=grok]');
+                    return o && {disabled: o.disabled, text: o.textContent.trim()};
+                }"""
+            )
+            record("the selector greys out a provider no worker serves, with a note",
+                   bool(option) and option["disabled"] is True and option["text"] != "grok", repr(option))
+            # A filled composer, so a send button that is only off for an empty box proves nothing.
+            page.fill(COMPOSER, "this must not be sent")
+            notice = page.locator("[data-testid=provider-unserved]")
+            shown = notice.count() > 0 and notice.first.is_visible()
+            blocked = page.locator("button:has-text('Send')").first.is_disabled()
+            shot(page, "08d-unserved")
+            record("a conversation whose provider nobody serves says so and cannot send",
+                   shown and blocked, "notice shown {}, send disabled {}".format(shown, blocked))
+        except Exception as exc:
+            record("the unserved provider checks ran", False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            page.unroute("**/providers")
+            page.fill(COMPOSER, "")
+            page.click("nav button:has-text('gallery')")
+            page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
+            page.click("nav button:has-text('chat')")
+            page.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
 
         try:
             page.once("dialog", lambda d: d.accept())

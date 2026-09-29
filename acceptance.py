@@ -60,6 +60,8 @@ CHECKS = (
     "each provider gets its own runner",
     "one provider's cooldown does not hold the other",
     "a job nobody serves is failed and refunded",
+    "the api says which providers a worker serves",
+    "a turn nobody serves is refused at once and uncharged",
     "a conversation keeps to one provider",
     "a job queued behind a long turn is not failed as unserved",
     "memory on refuses the turn and refunds",
@@ -948,15 +950,42 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         how = "while the worker served only {}".format(other_provider)
     orphan = start_job("nobody is serving this one")
     final = wait_state(orphan, ("failed", "done", "cancelled"), 90) if orphan else {}
+    # Read now: the refund lands with the failure, and the turn below must not blur it.
+    q_orphan = quota_now()
+    # The orphan failing proves nobody has asked for this provider for the whole window. The api
+    # must say so, and refuse the next turn at once instead of charging it and making it wait.
+    lstatus, listing = http("GET", api + "/providers", token=token)
+    served = {p.get("name"): p.get("served") for p in ((listing or {}).get("providers") or [])
+              if isinstance(p, dict)}
+    q_before_refusal = quota_now()
+    asked_at = time.time()
+    rstatus, _ = http("POST", api + "/chat",
+                      {"provider": provider, "message": "nobody is serving this one either"}, token=token)
+    refused_in = time.time() - asked_at
+    q_after_refusal = quota_now()
     worker_ctl["restart"]()
     if (moved and final.get("status") == "failed"
-            and final.get("error_kind") == "no_worker" and quota_now() == q0):
+            and final.get("error_kind") == "no_worker" and q_orphan == q0):
         c["a job nobody serves is failed and refunded"].passed(
             "failed as no_worker {}, credit returned".format(how))
     else:
         c["a job nobody serves is failed and refunded"].failed(
             "worker moved {} status {} kind {} quota {} -> {}".format(
-                moved, final.get("status"), final.get("error_kind"), q0, quota_now()))
+                moved, final.get("status"), final.get("error_kind"), q0, q_orphan))
+    if (lstatus == 200 and served.get(provider) is False
+            and (real or served.get(other_provider) is True)):
+        c["the api says which providers a worker serves"].passed(
+            "{} not served {}{}".format(provider, how, "" if real else ", {} served".format(other_provider)))
+    else:
+        c["the api says which providers a worker serves"].failed(
+            "status {} served {}".format(lstatus, served))
+    if rstatus == 503 and q_after_refusal == q_before_refusal and refused_in < 5:
+        c["a turn nobody serves is refused at once and uncharged"].passed(
+            "503 in {:.1f}s, quota {} -> {}".format(refused_in, q_before_refusal, q_after_refusal))
+    else:
+        c["a turn nobody serves is refused at once and uncharged"].failed(
+            "status {} in {:.1f}s, quota {} -> {}".format(
+                rstatus, refused_in, q_before_refusal, q_after_refusal))
 
     # A conversation holds one provider's thread. Sending another provider's turn
     # into it would hand that provider a url from a site it is not logged into,
