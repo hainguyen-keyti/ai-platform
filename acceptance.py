@@ -974,11 +974,14 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # Every kind of turn is refused the same way, and never ahead of a check that already refuses
     # (the review of aff8012): a missing conversation, another provider's conversation, a missing
     # picture. None of them may cost a credit, and the list itself is not for anonymous callers.
+    # The video probe needs a picture still there: where no file is asked for (grok), the delete
+    # check above removed the run's only one, and a missing picture rightly answers 404 first.
+    live_picture = media_id and http("GET", "{}/media/{}".format(api, media_id), token=token)[0] == 200
     kinds = {
         "image": http("POST", api + "/image/generate",
                       {"provider": provider, "prompt": "a picture nobody will draw"}, token=token)[0],
         "video": (http("POST", api + "/video/script", {"provider": provider, "media_id": media_id},
-                       token=token)[0] if media_id else None),
+                       token=token)[0] if live_picture else None),
         "missing conversation": http("POST", api + "/chat",
                                      {"provider": provider, "message": "into nothing",
                                       "conversation_id": "no-such-conversation"}, token=token)[0],

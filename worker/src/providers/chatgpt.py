@@ -297,6 +297,16 @@ class ChatGPTProvider(BaseProvider):
         self._page = self._context.new_page()
         return self._page
 
+    def _keep_picture(self, page):
+        """The page as it stood when the driver gave up, beside the run's media, for the diagnosis."""
+        folder = self.media_path.parent / "diagnostics"
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            name = "chatgpt-open-{}-{}.png".format(int(time.time()), uuid.uuid4().hex[:6])
+            page.screenshot(path=str(folder / name))
+        except Exception:
+            pass
+
     def _composer_ready(self, page, seconds: float) -> bool:
         deadline = time.time() + seconds
         while time.time() < deadline:
@@ -317,6 +327,7 @@ class ChatGPTProvider(BaseProvider):
         page = self._ensure_page()
         if thread_url:
             wanted = thread_url.rsplit("/c/", 1)[-1].split("?")[0].split("#")[0]
+            reloaded = False
             for attempt in range(OPEN_ATTEMPTS):
                 page.goto(thread_url, timeout=90000, wait_until="domcontentloaded")
                 ready = self._composer_ready(page, 45)
@@ -340,12 +351,21 @@ class ChatGPTProvider(BaseProvider):
                     self._phase("waiting for the provider")
                     time.sleep(OPEN_RETRY_SECONDS * (2 ** attempt))
                     continue
+                # The thread is there and so is the page, only its composer is late: load it once more.
+                if status == 200 and landed == wanted and not reloaded and attempt + 1 < OPEN_ATTEMPTS:
+                    reloaded = True
+                    continue
+                self._keep_picture(page)
                 raise ProviderError(
                     "thread {} did not open: landed on {}, server status {}".format(
                         wanted[:8], (landed or page.url)[:60], status))
-        page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
-        if self._composer_ready(page, 45):
-            return page
+        # Measured 2026-09-29: a freshly launched browser mounted the composer at 7.8 to 34.9s, and once
+        # not within the wait; a second load comes from a warm cache.
+        for _ in range(2):
+            page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+            if self._composer_ready(page, 45):
+                return page
+        self._keep_picture(page)
         # Measured 2026-09-27: a signed-in session met a changed page and was
         # reported as logged out, which sent the diagnosis the wrong way.
         try:
