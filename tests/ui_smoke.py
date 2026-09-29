@@ -190,7 +190,8 @@ def main():
         order = page.evaluate(
             """() => {
                 const img = document.querySelector('[data-testid=media-thumb]');
-                const bubbles = document.querySelectorAll('[data-testid=message-scroll] .whitespace-pre-wrap');
+                const bubbles = document.querySelectorAll('[data-testid=message-scroll] [data-testid=user-bubble], '
+                    + '[data-testid=message-scroll] [data-testid=reply-bubble]');
                 const last = bubbles[bubbles.length - 1];
                 if (!img || !last) return null;
                 const following = img.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING;
@@ -1043,6 +1044,123 @@ def main():
                 record(name, gap < 80, "{}px from the bottom".format(gap))
             except Exception as exc:
                 record(name, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        # How a reply and a file look, answered in the browser. The bubble's pre-wrap turned the
+        # breaks between a reply's blocks into blank lines (three bullets 166px), and they were the
+        # only gap between paragraphs; a fixed 256px file card ran out of a 147px gallery tile.
+        stamp = "2026-09-29 10:00:00"
+        replies = {"list": "Three places:\n\n1. A lake walk\n2. A cooking class\n3. An escape room\n\nEnjoy the day!",
+                   "paragraphs": "First line\nsecond line of the same paragraph\n\nA new paragraph after a blank line.",
+                   "bullets": "- one\n- two\n- three"}
+        archive = {"id": "look-zip", "type": "file", "filename": "report-with-a-long-name.zip", "provider": "chatgpt",
+                   "prompt": "zip the pictures", "created_at": stamp,
+                   "metadata": {"name": "report-with-a-long-name.zip", "size": 20480}}
+        looked = []
+        for key, text in replies.items():
+            looked += [{"id": "look-q-" + key, "role": "user", "content": "show " + key, "created_at": stamp, "media": []},
+                       {"id": "look-r-" + key, "role": "assistant", "content": text, "created_at": stamp, "media": []}]
+        looked.append({"id": "look-r-file", "role": "assistant", "content": "Here is the archive.", "created_at": stamp,
+                       "media": [archive]})
+        shelf = [{"id": "look-pic", "type": "image", "filename": "square.png", "provider": "chatgpt",
+                  "prompt": "a blue square", "created_at": stamp}, archive,
+                 {"id": "look-doc", "type": "file", "filename": "notes.docx", "provider": "gemini", "prompt": "write notes",
+                  "created_at": stamp, "metadata": {"name": "notes.docx", "size": 4096}}]
+        square = png(256, 256)
+
+        def answer_look(route):
+            request = route.request
+            path = urlparse(request.url).path
+            if request.method == "OPTIONS":
+                route.continue_()
+                return
+            if path == "/media/look-pic/file":
+                route.fulfill(status=200, headers={"access-control-allow-origin": "*", "content-type": "image/png"},
+                              body=square)
+                return
+            if path == "/conversations":
+                body = {"items": [{"id": "look", "provider": "chatgpt", "title": "Look", "created_at": stamp,
+                                   "updated_at": stamp}]}
+            elif path == "/conversations/look":
+                body = {"id": "look", "provider": "chatgpt", "title": "Look", "created_at": stamp,
+                        "updated_at": stamp, "orphan_media": [], "messages": looked}
+            elif path == "/media":
+                body = {"items": shelf, "total": len(shelf)}
+            else:
+                route.continue_()
+                return
+            route.fulfill(status=200, headers={"access-control-allow-origin": "*", "content-type": "application/json"},
+                          body=json.dumps(body))
+
+        def look(width, lang):
+            context = browser.new_context(viewport={"width": width, "height": 900})
+            context.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', {!r});"
+                                    .format(token, lang))
+            view = context.new_page()
+            view.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+            for pattern in ("**/conversations", "**/conversations/look", "**/media", "**/media/look-pic/file"):
+                view.route(pattern, answer_look)
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.wait_for_selector("[data-testid=provider-select]", timeout=20000)
+            return context, view
+
+        try:
+            context, view = look(1280, "en")
+            try:
+                view.locator("[data-testid=conversation-item] button").first.click(timeout=20000)
+                view.wait_for_selector("[data-testid=reply-bubble]", timeout=10000)
+                view.wait_for_timeout(800)
+                blocks = view.evaluate(
+                    """() => {
+                        const bubbles = [...document.querySelectorAll('[data-testid=reply-bubble]')];
+                        const find = (start) => bubbles.find((b) => b.textContent.trim().startsWith(start));
+                        const height = (n) => Math.round(n.getBoundingClientRect().height);
+                        const paragraphs = [...find('First line').querySelectorAll('p')].map((p) => p.getBoundingClientRect());
+                        return {list: height(find('Three places')), bullets: height(find('one')),
+                                firstParagraph: Math.round(paragraphs[0].height),
+                                gap: paragraphs.length > 1 ? Math.round(paragraphs[1].top - paragraphs[0].bottom) : null};
+                    }"""
+                )
+                shot(view, "17-reply-blocks")
+            finally:
+                context.close()
+            record("a reply shows its blocks without blank lines, its paragraphs still apart",
+                   blocks["list"] <= 150 and blocks["bullets"] <= 90 and blocks["firstParagraph"] >= 38
+                   and blocks["gap"] is not None and 4 <= blocks["gap"] <= 16, repr(blocks))
+        except Exception as exc:
+            record("a reply shows its blocks without blank lines, its paragraphs still apart", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        try:
+            inside = {}
+            for width, lang, gallery in ((390, "en", "gallery"), (320, "vi", "thư viện")):
+                context, view = look(width, lang)
+                try:
+                    view.click("nav button:has-text('{}')".format(gallery), timeout=10000)
+                    view.wait_for_selector("[data-testid=file-card]", timeout=10000)
+                    view.wait_for_timeout(600)
+                    inside[(width, lang)] = view.evaluate(
+                        """() => [...document.querySelectorAll('[data-testid=file-card]')].map((card) => {
+                            const tile = card.parentElement.getBoundingClientRect(), c = card.getBoundingClientRect();
+                            return c.left >= tile.left - 0.5 && c.right <= tile.right + 0.5;
+                        })"""
+                    )
+                    shot(view, "18-gallery-files-{}".format(width))
+                finally:
+                    context.close()
+            context, view = look(1280, "en")
+            try:
+                view.locator("[data-testid=conversation-item] button").first.click(timeout=20000)
+                view.wait_for_selector("[data-testid=file-card]", timeout=10000)
+                chat_card = view.evaluate(
+                    "() => Math.round(document.querySelector('[data-testid=file-card]').getBoundingClientRect().width)")
+            finally:
+                context.close()
+            record("a file card stays inside its gallery tile on a phone and keeps its size in the chat",
+                   all(v and all(v) for v in inside.values()) and chat_card == 256,
+                   "inside their tiles {}, the chat's card {}px".format(inside, chat_card))
+        except Exception as exc:
+            record("a file card stays inside its gallery tile on a phone and keeps its size in the chat", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
         try:
             page.once("dialog", lambda d: d.accept())
