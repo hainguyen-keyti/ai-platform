@@ -307,6 +307,15 @@ class ChatGPTProvider(BaseProvider):
         except Exception:
             pass
 
+    def _session_token(self, page, seconds: float) -> Optional[str]:
+        # Measured 2026-09-30: a fresh browser's first read answered empty; the token came 1.1s later.
+        deadline = time.time() + seconds
+        token = page.evaluate(SESSION_TOKEN)
+        while not token and time.time() < deadline:
+            page.wait_for_timeout(1000)
+            token = page.evaluate(SESSION_TOKEN)
+        return token
+
     def _composer_ready(self, page, seconds: float) -> bool:
         deadline = time.time() + seconds
         while time.time() < deadline:
@@ -830,7 +839,7 @@ class ChatGPTProvider(BaseProvider):
         if not page.url.startswith(HOME):
             page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
         if not self._access_token:
-            self._access_token = page.evaluate(SESSION_TOKEN)
+            self._access_token = self._session_token(page, 20)
         if not self._access_token:
             raise ProviderError("no session token: the provider session is logged out; "
                                 "run scripts/login_provider.py chatgpt")
