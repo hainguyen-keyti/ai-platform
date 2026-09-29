@@ -72,6 +72,10 @@ export default function Chat({ onQuotaSpent }) {
   const [packing, setPacking] = useState(false)
   const [renaming, setRenaming] = useState(null)
   const [draftTitle, setDraftTitle] = useState('')
+  // Which providers a worker serves right now, by name; until the api has answered, nothing is
+  // held back (the api refuses a turn nobody serves anyway).
+  const [served, setServed] = useState({})
+  const unserved = served[provider] === false
   const unseen = useRef(0)
 
   function open(url, item) {
@@ -129,6 +133,26 @@ export default function Chat({ onQuotaSpent }) {
   useEffect(() => {
     if (conversation?.provider) setProvider(conversation.provider)
   }, [conversation?.provider])
+
+  useEffect(() => {
+    let live = true
+    async function ask() {
+      try {
+        const data = await api.providers()
+        if (live) setServed(Object.fromEntries((data?.providers || []).map((p) => [p.name, p.served])))
+      } catch { /* keep the last answer */ }
+    }
+    ask()
+    const id = setInterval(ask, 60000)
+    return () => { live = false; clearInterval(id) }
+  }, [])
+
+  // A new chat never starts on a provider nobody serves while another one is served.
+  useEffect(() => {
+    if (activeId || served[provider] !== false) return
+    const next = PROVIDERS.find((p) => served[p] === true)
+    if (next) setProvider(next)
+  }, [served, activeId, provider])
 
   // A reply that lands while the tab is hidden is counted in the title, and
   // announced when notifications were allowed; coming back clears it.
@@ -236,7 +260,7 @@ export default function Chat({ onQuotaSpent }) {
   function send(event) {
     event.preventDefault()
     const text = input.trim()
-    if (!text || status) return
+    if (!text || status || unserved) return
     setInput('')
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission().catch(() => {})
@@ -247,7 +271,7 @@ export default function Chat({ onQuotaSpent }) {
   }
 
   function requestScript(mediaId) {
-    if (status) return
+    if (status || unserved) return
     runJob(() => api.videoScript({ provider, media_id: mediaId, conversation_id: activeId }))
   }
 
@@ -329,7 +353,11 @@ export default function Chat({ onQuotaSpent }) {
             disabled={!!activeId} title={activeId ? t.providerLocked : undefined}
             data-testid="provider-select"
             className="border rounded px-2 py-1 text-sm disabled:bg-slate-100 disabled:text-slate-500">
-            {PROVIDERS.map((p) => <option key={p} value={p}>{p}</option>)}
+            {PROVIDERS.map((p) => (
+              <option key={p} value={p} disabled={served[p] === false}>
+                {served[p] === false ? `${p} (${t.providerIdle})` : p}
+              </option>
+            ))}
           </select>
           {mediaCount >= 2 && (
             <button type="button" data-testid="download-all" onClick={() => saveZip()}
@@ -348,7 +376,7 @@ export default function Chat({ onQuotaSpent }) {
           {timeline.map((entry) =>
             entry.kind === 'media' ? (
               <div key={entry.id} className="flex flex-col items-start gap-2">
-                <MediaCard item={entry.media} busy={!!status} label={t.videoScript}
+                <MediaCard item={entry.media} busy={!!status || unserved} label={t.videoScript}
                   onOpen={open} onScript={requestScript} />
               </div>
             ) : (
@@ -365,7 +393,7 @@ export default function Chat({ onQuotaSpent }) {
                   )
                 )}
                 {entry.message.media?.map((item) => (
-                  <MediaCard key={item.id} item={item} busy={!!status} label={t.videoScript}
+                  <MediaCard key={item.id} item={item} busy={!!status || unserved} label={t.videoScript}
                     onOpen={open} onScript={requestScript} />
                 ))}
                 {(entry.message.media?.length || 0) >= 2 && (
@@ -385,6 +413,12 @@ export default function Chat({ onQuotaSpent }) {
         <Lightbox url={viewing?.url} filename={viewing?.filename}
           onClose={() => setViewing(null)} />
 
+        {unserved && (
+          <p data-testid="provider-unserved" role="status"
+            className="border-t bg-amber-50 px-4 py-2 text-sm text-amber-800">
+            {t.providerUnserved(provider)}
+          </p>
+        )}
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)}
             placeholder={t.composer}
@@ -395,7 +429,8 @@ export default function Chat({ onQuotaSpent }) {
               {t.stop}
             </button>
           ) : (
-            <button type="submit" className="bg-slate-900 text-white rounded px-4 text-sm">
+            <button type="submit" disabled={unserved}
+              className="bg-slate-900 text-white rounded px-4 text-sm disabled:opacity-50">
               {t.send}
             </button>
           )}

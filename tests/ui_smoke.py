@@ -417,6 +417,10 @@ def main():
             )
             record("the selector greys out a provider no worker serves, with a note",
                    bool(option) and option["disabled"] is True and option["text"] != "grok", repr(option))
+            # Coming back to the chat opens no conversation; open the chatgpt one this test made.
+            page.locator("[data-testid=conversation-item] button").first.click(timeout=5000)
+            page.wait_for_selector("[data-testid=user-bubble]", timeout=10000)
+            page.wait_for_timeout(800)
             # A filled composer, so a send button that is only off for an empty box proves nothing.
             page.fill(COMPOSER, "this must not be sent")
             notice = page.locator("[data-testid=provider-unserved]")

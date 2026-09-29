@@ -51,6 +51,7 @@ export const api = {
   videoScript: (payload) => request('POST', '/video/script', payload),
   job: (id) => request('GET', `/jobs/${id}`),
   cancelJob: (id) => request('POST', `/jobs/${id}/cancel`),
+  providers: () => request('GET', '/providers'),
   media: () => request('GET', '/media'),
   deleteMedia: (id) => request('DELETE', `/media/${id}`),
 }
