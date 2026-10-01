@@ -10,8 +10,9 @@ Each probe prints what it saw; nothing here asserts a wish. Costs:
   recall                                              three turns
   purge <id,id>                                       deletes exactly the named threads
 Every turn leaves a thread in the owner's account; they are deleted only by name, with the owner's
-yes. Reads storage/sessions/gemini.json. Never changes an account setting.
-Measured first on 2026-09-25 with a throwaway copy of this file; see docs/research.
+yes. Opens the provider's own profile, storage/sessions/gemini/, as the worker does: take gemini
+off the host worker first, the profile opens in one browser at a time. Never changes an account
+setting. Measured first on 2026-09-25 with a throwaway copy of this file; see docs/research.
 """
 
 import base64
@@ -23,7 +24,12 @@ from pathlib import Path
 import cloakbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
-SESSION = ROOT / "storage" / "sessions" / "gemini.json"
+sys.path.insert(0, str(ROOT / "worker"))
+
+from src.providers.base import ProviderError  # noqa: E402
+from src.providers.session import open_session, profile_of  # noqa: E402
+
+SESSIONS = ROOT / "storage" / "sessions"
 HOME = "https://gemini.google.com/app"
 COMPOSER = 'rich-textarea .ql-editor[contenteditable="true"]'
 SIGN_IN = ("sign in", "đăng nhập")
@@ -60,9 +66,9 @@ def flat(text):
     return " ".join((text or "").split())
 
 
-def open_page(browser, url=HOME, stored=True):
-    context = browser.new_context(storage_state=str(SESSION)) if stored else browser.new_context()
-    page = context.new_page()
+def open_page(account, url=HOME, stored=True):
+    """A tab of the account's own browser or, for a comparison, a page of a browser with no account."""
+    page = account.new_page() if stored else cloakbrowser.launch(headless=True).new_page()
     t0 = time.time()
     page.goto(url, wait_until="domcontentloaded", timeout=90000)
     for _ in range(40):
@@ -132,8 +138,8 @@ def listed(page, seconds=15):
     return found
 
 
-def probe_open(browser):
-    page = open_page(browser)
+def probe_open(account):
+    page = open_page(account)
     body = (page.inner_text("body") or "").lower()
     say("open", "sign-in wording: {}".format([w for w in SIGN_IN if w in body] or "none"))
     say("open", "sidebar threads: {}".format(len(listed(page))))
@@ -153,10 +159,10 @@ async (path) => {
 PROOF_PATHS = ("/app", "/usage", "/personalization-settings")
 
 
-def probe_session(browser):
+def probe_session(account):
     """What a proof of sign-in could be: the same fetches, signed in and anonymous."""
     for stored in (True, False):
-        page = open_page(browser, stored=stored)
+        page = open_page(account, stored=stored)
         who = "signed in" if stored else "anonymous"
         body = (page.inner_text("body") or "").lower()
         say("session", "{}: sign-in wording {}".format(who, [w for w in SIGN_IN if w in body] or "none"))
@@ -169,13 +175,15 @@ def probe_session(browser):
         page.wait_for_timeout(6000)
         say("session", "{}: settings page lands on {}, role=switch count {}".format(
             who, page.url, page.locator('button[role="switch"]').count()))
-        page.context.close()
+        if stored:
+            page.close()
+        else:
+            page.context.browser.close()
 
 
-def probe_settings_read(browser):
+def probe_settings_read(account):
     """What reading the personal context switch costs, and what the page asks the server."""
-    context = browser.new_context(storage_state=str(SESSION))
-    page = context.new_page()
+    page = account.new_page()
     rpcs = []
     page.on("response", lambda r: rpcs.append(
         (r.url.split("rpcids=", 1)[-1].split("&")[0], r.status))
@@ -196,10 +204,10 @@ def probe_settings_read(browser):
     say("settings-read", "batchexecute rpcids while loading: {}".format(rpcs))
 
 
-def probe_banner(browser):
+def probe_banner(account):
     """The error the page paints when a turn request fails, provoked from inside the page:
     the turn request is answered 500, so the server never sees a turn."""
-    page = open_page(browser)
+    page = open_page(account)
     hits = {"n": 0, "urls": []}
 
     def fail(route):
@@ -229,8 +237,8 @@ def probe_banner(browser):
         page.unroute(pattern, fail)
 
 
-def probe_list(browser):
-    page = open_page(browser)
+def probe_list(account):
+    page = open_page(account)
     for item in listed(page):
         say("list", item)
 
@@ -249,10 +257,9 @@ TURN_ORDER = """
 """
 
 
-def probe_turn_order(browser, ids):
+def probe_turn_order(account, ids):
     """How a thread's turns sit in the page, in document order. Opens a thread; costs no turn."""
-    context = browser.new_context(storage_state=str(SESSION))
-    page = context.new_page()
+    page = account.new_page()
     for cid in ids:
         page.goto("https://gemini.google.com/app/{}".format(cid), wait_until="domcontentloaded",
                   timeout=90000)
@@ -272,12 +279,11 @@ SMALLEST_TURNS_BLOCK = """
 """
 
 
-def probe_capture(browser, ids):
+def probe_capture(account, ids):
     """Save one thread's turns, and nothing around them, as tests/fixtures/gemini_thread.html.
     Opens a thread; costs no turn. Scripts and every url are stripped before saving."""
     import re
-    context = browser.new_context(storage_state=str(SESSION))
-    page = context.new_page()
+    page = account.new_page()
     page.goto("https://gemini.google.com/app/{}".format(ids[0]), wait_until="domcontentloaded",
               timeout=90000)
     page.wait_for_timeout(8000)
@@ -293,10 +299,9 @@ def probe_capture(browser, ids):
         path.name, len(html), html.count("<user-query"), html.count("<model-response")))
 
 
-def probe_peek(browser, ids):
+def probe_peek(account, ids):
     """Does a thread exist, whatever the sidebar shows. A dead id lands back on /app."""
-    context = browser.new_context(storage_state=str(SESSION))
-    page = context.new_page()
+    page = account.new_page()
     t0 = [time.time()]
     seen = image_responses(page, t0)
     for cid in ids:
@@ -313,10 +318,10 @@ def probe_peek(browser, ids):
 
 # --- turns -----------------------------------------------------------------
 
-def probe_settle(browser, picture=False):
+def probe_settle(account, picture=False):
     """Which response carries the finished answer, and when, against when the page settles.
     With picture=True, also when the picture arrives against when the stream ends."""
-    page = open_page(browser)
+    page = open_page(account)
     token = "teal-{}".format(int(time.time()) % 100000)
     t0 = time.time()
     seen = []
@@ -359,12 +364,12 @@ def probe_settle(browser, picture=False):
     say("settle", "thread {}".format(thread_of(page)))
 
 
-def probe_persist(browser):
+def probe_persist(account):
     """Do a picture turn's and an upload turn's threads survive? Measured 2026-09-25: both were
     gone minutes later, while chat threads survived; those probes closed the page seconds after
     the picture appeared. This one keeps the page open and reloads before closing."""
     made = []
-    page = open_page(browser)
+    page = open_page(account)
     send(page, "Generate an image of a plain green triangle on a white background.")
     found, at = wait_picture(page)
     say("persist", "picture after {}s: {}".format(at, [(f["w"], f["h"]) for f in found]))
@@ -374,11 +379,11 @@ def probe_persist(browser):
     say("persist", "picture thread after 30s open and a reload: url {} bubbles {}".format(
         page.url, len(bubbles(page))))
     made.append(thread_of(page))
-    page.context.close()
+    page.close()
 
     path = Path("/tmp/gemini-reference.png")
     path.write_bytes(base64.b64decode(REFERENCE_PNG))
-    page = open_page(browser)
+    page = open_page(account)
     for sel in ("button[aria-label*='Nội dung tải lên']", "button[aria-label*='Upload']"):
         if page.locator(sel).count():
             page.locator(sel).first.click(timeout=10000)
@@ -421,13 +426,13 @@ def image_responses(page, t0):
     return seen
 
 
-def probe_pictures(browser):
+def probe_pictures(account):
     """Where a user's upload and a generated picture come from during the turn, so the driver
     can keep one and never the other. Two turns."""
     path = Path("/tmp/gemini-reference.png")
     path.write_bytes(base64.b64decode(REFERENCE_PNG))
     for kind in ("upload", "generate"):
-        page = open_page(browser)
+        page = open_page(account)
         t0 = [time.time()]
         seen = image_responses(page, t0)
         if kind == "upload":
@@ -454,12 +459,12 @@ def probe_pictures(browser):
             kind, [(f["w"], f["h"], f["src"].split(":", 1)[0]) for f in page.evaluate(BIG_IMAGES)]))
         say("pictures", "{}: thread {}".format(kind, thread_of(page)))
         page.wait_for_timeout(20000)
-        page.context.close()
+        page.close()
 
 
-def probe_recall(browser):
+def probe_recall(account):
     """Does one conversation leak into another. Personal context must be off for 'Unknown'."""
-    page = open_page(browser)
+    page = open_page(account)
     token = "violet-{}".format(int(time.time()) % 100000)
     had = len(bubbles(page))
     send(page, "Remember this word for later, just acknowledge it: {}".format(token))
@@ -504,8 +509,8 @@ def open_row_menu(page, ident):
     return False
 
 
-def probe_purge(browser, ids):
-    page = open_page(browser)
+def probe_purge(account, ids):
+    page = open_page(account)
     here = {c["href"].rsplit("/", 1)[-1]: c["title"] for c in listed(page)}
     for cid in ids:
         say("purge", "target {} titled {!r}".format(cid, here.get(cid, "NOT IN LIST")))
@@ -545,8 +550,8 @@ FREE = ("open", "session", "settings-read", "banner", "list")
 
 
 def main():
-    if not SESSION.exists():
-        sys.exit("no session at {}; run scripts/login_provider.py gemini".format(SESSION))
+    if not profile_of(SESSIONS, "gemini").is_dir():
+        sys.exit("no session at {}; run scripts/login_provider.py gemini".format(profile_of(SESSIONS, "gemini")))
     wanted = (sys.argv[1] if len(sys.argv) > 1 else "open").split(",")
     ids = [x for x in (sys.argv[2] if len(sys.argv) > 2 else "").split(",") if x]
     names = list(FREE) if wanted == ["all"] else wanted
@@ -554,20 +559,23 @@ def main():
     if unknown:
         sys.exit("unknown probe(s) {}; one of {} or all".format(
             unknown, ", ".join(list(PROBES) + list(WITH_IDS))))
-    browser = cloakbrowser.launch(headless=True)
+    try:
+        account = open_session(SESSIONS, "gemini")
+    except ProviderError as exc:
+        sys.exit(str(exc))
     try:
         for name in names:
             say(name, "starting")
             try:
                 if name in WITH_IDS:
-                    WITH_IDS[name](browser, ids)
+                    WITH_IDS[name](account, ids)
                 else:
-                    PROBES[name](browser)
+                    PROBES[name](account)
             except Exception as exc:
                 crashed.append(name)
                 say(name, "PROBE CRASHED {}: {}".format(type(exc).__name__, str(exc)[:220]))
     finally:
-        browser.close()
+        account.close()
     print("=" * 50)
     print("{} probe(s) ran, {} crashed{}".format(
         len(names), len(crashed), ": " + ", ".join(crashed) if crashed else ""))

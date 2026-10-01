@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
-"""Open a real browser so a provider can be logged in by hand, then save the session.
+"""Open the provider's own browser so it can be logged in by hand; the session stays in its profile.
 
     ~/cloakbrowser-env/bin/python scripts/login_provider.py grok
 
-A window opens on the provider's own site. Log in there. The script watches the
-browser and saves the session by itself the moment the login is real, so there
-is no terminal step to get wrong, and it refuses to save a session that is not
-logged in. It prints cookie names and domains, never values.
+A window opens on the provider's own site, in the profile the worker opens afterwards
+(storage/sessions/<provider>/) and as the same device. Log in there. The script watches the
+browser and closes it by itself the moment the login is real, so there is no terminal step to
+get wrong, and it does not call a session real that is not logged in. Take the provider off the
+host worker first: a profile opens in one browser at a time. It prints cookie names and
+domains, never values.
 """
 
 import sys
 import time
 from pathlib import Path
 
-import cloakbrowser
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "worker"))
+
+from src.providers.base import ProviderError  # noqa: E402
+from src.providers.session import open_session, profile_of  # noqa: E402
 
 # Where to land, and the cookie that only exists once the login is real. A
 # provider that redirects (x.com/i/grok sends you to grok.com) must be opened at
@@ -26,6 +30,9 @@ PROVIDERS = {
         "home": "https://chatgpt.com/",
         "domain": "chatgpt.com",
         "cookies": ("__Secure-next-auth.session-token",),
+        # A profile keeps the cookie of a session the site has ended (2026-10-01: "the provider
+        # rejected a fresh session token"), so the account itself has to answer.
+        "proves_token": "/backend-api/settings/user",
     },
     "grok": {
         "home": "https://grok.com/",
@@ -53,6 +60,19 @@ ASK = """
 async (path) => {
     try {
         const r = await fetch(path, {credentials: 'include'});
+        return r.status;
+    } catch (e) { return 0; }
+}
+"""
+
+# The same question for a site whose account is read with the session's own token. The token is
+# asked for and used inside the page and never leaves it.
+ASK_WITH_TOKEN = """
+async (path) => {
+    try {
+        const token = (await (await fetch('/api/auth/session')).json()).accessToken;
+        if (!token) return 0;
+        const r = await fetch(path, {headers: {Authorization: 'Bearer ' + token}, credentials: 'include'});
         return r.status;
     } catch (e) { return 0; }
 }
@@ -86,14 +106,15 @@ def signed_in(context, spec, page=None):
     landing = spec.get("proves_page")
     if landing:
         return "{} and {} stayed put".format(found, landing) if page_stays(context, landing) else None
-    proof = spec.get("proves_it")
-    if proof and page is not None:
-        try:
-            if page.evaluate(ASK, proof) != 200:
+    for kind, ask in (("proves_it", ASK), ("proves_token", ASK_WITH_TOKEN)):
+        proof = spec.get(kind)
+        if proof and page is not None:
+            try:
+                if page.evaluate(ask, proof) != 200:
+                    return None
+            except Exception:
                 return None
-        except Exception:
-            return None
-        return "{} and {} answered".format(found, proof.split("?")[0])
+            return "{} and {} answered".format(found, proof.split("?")[0])
     return found
 
 
@@ -133,17 +154,18 @@ def main():
     provider = sys.argv[1]
     spec = PROVIDERS[provider]
     sessions = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "storage" / "sessions"
-    sessions.mkdir(parents=True, exist_ok=True)
-    target = sessions / "{}.json".format(provider)
 
-    browser = cloakbrowser.launch(headless=False)
-    context = browser.new_context()
-    page = context.new_page()
+    try:
+        context = open_session(sessions, provider, headless=False, create=True)
+    except ProviderError as exc:
+        print(exc)
+        return 1
+    page = context.pages[0] if context.pages else context.new_page()
     page.goto(spec["home"], wait_until="domcontentloaded", timeout=90000)
 
     print("\nA browser window is open at {}.".format(spec["home"]))
     print("Log in there. Stay on that site; do not navigate to another one.")
-    print("This script saves the session by itself once the login is real, then closes.")
+    print("This script closes the window by itself once the login is real; the session stays in its profile.")
     print("Waiting up to {} minutes...\n".format(WAIT_MINUTES))
 
     deadline = time.time() + WAIT_MINUTES * 60
@@ -154,36 +176,35 @@ def main():
                 found = signed_in(context, spec, page)
             except Exception:
                 print("the browser window was closed before the login finished")
-                browser.close()
+                context.close()
                 return 1
             if found:
                 break
             time.sleep(POLL_SECONDS)
     except KeyboardInterrupt:
         print("cancelled")
-        browser.close()
+        context.close()
         return 1
     except Exception as exc:
         print("stopped: {}: {}".format(type(exc).__name__, str(exc)[:120]))
-        browser.close()
+        context.close()
         return 1
 
     if not found:
         counts, names = summarise(context, spec)
-        print("no {} session after {} minutes; nothing was saved".format(provider, WAIT_MINUTES))
+        print("no {} session after {} minutes".format(provider, WAIT_MINUTES))
         print("cookies seen by domain: {}".format(counts))
         print("cookie names on {}: {}".format(spec["domain"], names or "none"))
-        browser.close()
+        context.close()
         return 1
 
     # A moment for the site to finish writing whatever it writes after sign-in.
     time.sleep(5)
-    context.storage_state(path=str(target))
     counts, names = summarise(context, spec)
-    browser.close()
+    context.close()
 
     print("signed in ({} cookie present)".format(found))
-    print("session saved to {}".format(target))
+    print("session saved to {}".format(profile_of(sessions, provider)))
     print("cookies by domain: {}".format(counts))
     print("cookie names on {}: {}".format(spec["domain"], names))
     return 0

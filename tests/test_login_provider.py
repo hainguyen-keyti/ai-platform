@@ -9,7 +9,8 @@ only: the owner logged in, the script never saw it, and Ctrl+C lost the login.
 
 The same day a state file saved by one browser and loaded by others cost two fresh logins, so the
 login opens the provider's own profile, the one the drivers open, and saves nothing beside it.
-Prints N/7 PASSED.
+A profile also keeps the cookie of a session its site has ended, so ChatGPT's login is real only once
+the account answers. Prints N/8 PASSED.
 """
 
 import contextlib
@@ -151,6 +152,21 @@ def main():
            "returned {}, opened by {} with {} {}, closed {} time(s), state files {}".format(
                code, how, [str(a)[-28:] for a in args[:2]], kwargs, context.closed,
                sorted(f.name for f in sessions.glob("*.json"))))
+
+    # A profile keeps its cookies, so a session the site has ended still shows its cookie when the owner
+    # comes back to log in again; the account has to answer before the login is called real.
+    class Answers:
+        def __init__(self, status):
+            self.status = status
+
+        def evaluate(self, script, *args):
+            return self.status
+
+    live = Context(*anonymous, (SESSION + ".0", ".chatgpt.com"), (SESSION + ".1", ".chatgpt.com"))
+    ended = login.signed_in(live, CHATGPT, Answers(401))
+    alive = login.signed_in(live, CHATGPT, Answers(200))
+    record("a session cookie the site no longer honours is not a sign-in", ended is None and bool(alive),
+           "the account answering 401: {!r}; answering 200: {!r}".format(ended, alive))
 
     def in_use(context):
         raise ProviderError("the grok session is open in another browser: stop that one first")

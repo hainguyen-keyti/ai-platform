@@ -6,8 +6,9 @@
 Each probe prints what it saw; nothing here asserts a wish. The account is on a
 free tier that allows very few turns per day, so `open` costs nothing and the
 others cost one turn each: run them by name, not `all`, unless the budget is
-known to be there. Reads the saved session in storage/sessions/grok.json.
-Stop the host worker first if the browser refuses a second session.
+known to be there. Opens the provider's own profile, storage/sessions/grok/, as
+the worker does: take grok off the host worker first, the profile opens in one
+browser at a time.
 """
 
 import json
@@ -16,10 +17,13 @@ import sys
 import time
 from pathlib import Path
 
-import cloakbrowser
-
 ROOT = Path(__file__).resolve().parents[1]
-SESSION = ROOT / "storage" / "sessions" / "grok.json"
+sys.path.insert(0, str(ROOT / "worker"))
+
+from src.providers.base import ProviderError  # noqa: E402
+from src.providers.session import open_session, profile_of  # noqa: E402
+
+SESSIONS = ROOT / "storage" / "sessions"
 HOME = "https://grok.com/"
 
 COMPOSER = ('[data-testid="chat-input"] .ProseMirror[contenteditable="true"]',
@@ -82,9 +86,8 @@ IMAGES = """
 say = lambda tag, detail: print("[{}] {}".format(tag, detail), flush=True)
 
 
-def open_page(browser, watch=False):
-    context = browser.new_context(storage_state=str(SESSION))
-    page = context.new_page()
+def open_page(account, watch=False):
+    page = account.new_page()
     seen = {"ws": [], "posts": []}
     if watch:
         page.on("websocket", lambda ws: seen["ws"].append(ws.url[:80]))
@@ -190,8 +193,8 @@ def await_reply(page, budget=180):
     return reply, thread, time.time() - t0
 
 
-def probe_turn(browser):
-    page, seen, cohort = open_page(browser, watch=True)
+def probe_turn(account):
+    page, seen, cohort = open_page(account, watch=True)
     if not cohort:
         say("turn", "no composer, stopping")
         return
@@ -219,8 +222,8 @@ def probe_turn(browser):
     quota(page, "quota after")
 
 
-def probe_image(browser):
-    page, seen, cohort = open_page(browser, watch=True)
+def probe_image(account):
+    page, seen, cohort = open_page(account, watch=True)
     if not cohort:
         say("image", "no composer, stopping")
         return
@@ -237,14 +240,14 @@ def probe_image(browser):
         say("image", "fetch in page {} -> {}".format(url[:70], got))
 
 
-def probe_thread(browser):
+def probe_thread(account):
     """Read one finished thread as the server tells it; costs no turn."""
     wanted = [a for a in sys.argv[2:] if re.match(r"^[0-9a-f-]{20,}$", a)]
     if not wanted:
         say("thread", "pass a conversation id to inspect")
         return
     cid = wanted[0]
-    page, _, _ = open_page(browser)
+    page, _, _ = open_page(account)
     last, done, status = server_turn(page, cid)
     say("thread", "responses {} done={} partial={}".format(status, done, last.get("partial")))
     text = GROK_RENDER.sub("", last.get("message") or "").strip()
@@ -253,13 +256,13 @@ def probe_thread(browser):
     say("thread", "keys on the turn: {}".format(sorted(last)[:14]))
 
 
-def probe_cleanup(browser):
+def probe_cleanup(account):
     """Delete one thread this probe made, then prove it is gone.
 
     The id comes from the command line so a probe can never remove a thread a
     person wrote; with no id it reports the newest and deletes nothing.
     """
-    page, _, _ = open_page(browser)
+    page, _, _ = open_page(account)
     listing = page.evaluate(FETCH, ["/rest/app-chat/conversations?pageSize=3", "GET", None])
     say("cleanup", "list {} {}".format(listing["status"], listing["body"][:200]))
     wanted = [a for a in sys.argv[2:] if re.match(r"^[0-9a-f-]{20,}$", a)]
@@ -280,25 +283,28 @@ PROBES = {"open": lambda b: open_page(b), "turn": probe_turn, "image": probe_ima
 
 
 def main():
-    if not SESSION.exists():
-        sys.exit("no session at {}; run scripts/login_provider.py grok".format(SESSION))
+    if not profile_of(SESSIONS, "grok").is_dir():
+        sys.exit("no session at {}; run scripts/login_provider.py grok".format(profile_of(SESSIONS, "grok")))
     wanted = sys.argv[1] if len(sys.argv) > 1 else "open"
     names = list(PROBES) if wanted == "all" else [w for w in wanted.split(",") if w in PROBES]
     if not names:
         sys.exit("usage: grok_probe.py [{}|all], comma separated".format("|".join(PROBES)))
 
-    browser = cloakbrowser.launch(headless=True)
+    try:
+        account = open_session(SESSIONS, "grok")
+    except ProviderError as exc:
+        sys.exit(str(exc))
     crashed = []
     try:
         for name in names:
             say(name, "starting")
             try:
-                PROBES[name](browser)
+                PROBES[name](account)
             except Exception as exc:
                 crashed.append(name)
                 say(name, "PROBE CRASHED {}: {}".format(type(exc).__name__, str(exc)[:220]))
     finally:
-        browser.close()
+        account.close()
     print("=" * 50)
     print("{} probe(s) ran, {} crashed{}".format(
         len(names), len(crashed), ": " + ", ".join(crashed) if crashed else ""))
