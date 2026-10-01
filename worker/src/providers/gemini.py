@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from src.providers.base import (BaseProvider, FeatureType, GenerationResult, JobCancelled,
                                 MediaArtifact, ProviderError)
+from src.providers.session import NO_SESSION, open_session, profile_of
 
 # Everything below was measured on the owner's account on 2026-09-25 and 2026-09-27; see
 # docs/research/2026-09-27-gemini.md. The interface is Vietnamese, so nothing keys on words.
@@ -130,8 +131,6 @@ class GeminiProvider(BaseProvider):
 
     def __init__(self, media_path, sessions_path):
         super().__init__(media_path, sessions_path)
-        self.session_file = self.sessions_path / "gemini.json"
-        self._browser = None
         self._context = None
         self._page = None
         self.last_settle = None
@@ -142,31 +141,23 @@ class GeminiProvider(BaseProvider):
         self.memory = None
 
     def start(self) -> None:
-        if not self.session_file.exists():
-            raise RuntimeError(
-                "no saved session at {}; run scripts/login_provider.py gemini".format(self.session_file))
+        profile = profile_of(self.sessions_path, self.name)
+        if not profile.is_dir():
+            raise RuntimeError(NO_SESSION.format(profile, self.name))
 
     def stop(self) -> None:
         if self._context is not None:
             try:
-                self._context.storage_state(path=str(self.session_file))
+                self._context.close()
             except Exception:
                 pass
-        if self._browser is not None:
-            try:
-                self._browser.close()
-            except Exception:
-                pass
-        self._browser = self._context = self._page = None
+        self._context = self._page = None
 
     def _ensure_page(self):
         if self._page is not None:
             return self._page
-        import cloakbrowser
-
-        self._browser = cloakbrowser.launch(headless=True)
-        self._context = self._browser.new_context(storage_state=str(self.session_file))
-        self._page = self._context.new_page()
+        self._context = open_session(self.sessions_path, self.name)
+        self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         return self._page
 
     @staticmethod
