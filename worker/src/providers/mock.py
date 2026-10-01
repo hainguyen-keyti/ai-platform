@@ -8,7 +8,7 @@ from typing import Optional
 
 from src.config import settings
 from src.providers.base import (MEMORY_ON_ERROR, BaseProvider, FeatureType, GenerationResult,
-                                MediaArtifact, ProviderError)
+                                JobCancelled, MediaArtifact, ProviderError)
 
 IMAGE_WORDS = ("image", "picture", "draw", "ảnh", "vẽ")
 FILE_WORDS = ("zip", "archive", "nén")
@@ -17,6 +17,7 @@ FILE_WORDS = ("zip", "archive", "nén")
 SLOW_PHRASE = "take your time"
 BROKEN_PHRASE = "pretend the provider broke"
 MEMORY_PHRASE = "pretend memory is on"
+UNSENT_PHRASE = "wait before you speak"
 SLOW_SECONDS = 6.0
 
 
@@ -57,6 +58,7 @@ class MockProvider(BaseProvider):
         self.memory = "off"
         self.deleted_threads = []
         self.last_cancelled_thread = None
+        self.last_stop = None
 
     def delete_thread(self, thread_url: str) -> bool:
         self.deleted_threads.append(thread_url)
@@ -96,6 +98,15 @@ class MockProvider(BaseProvider):
         lowered = message.lower()
         self.memory = "on" if MEMORY_PHRASE in lowered else "off"
         self._refuse_if_memory_on()
+        if UNSENT_PHRASE in lowered:
+            # Like ChatGPT since 4536183: a job taken away before its turn went out never sends
+            # it, so no thread is made, and the driver's stop record is the only word on that.
+            self.last_cancelled_thread = None
+            try:
+                self._pace(SLOW_SECONDS)
+            except JobCancelled:
+                self.last_stop = {"sent": False, "pressed": False, "at": round(time.time(), 1)}
+                raise
         # Like the real site, the thread exists the moment the message is sent,
         # cancelled or not; the api learns of it either way.
         thread = self._thread(thread_url)
