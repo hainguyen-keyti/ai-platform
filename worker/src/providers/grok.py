@@ -218,9 +218,17 @@ class GrokProvider(BaseProvider):
         return None
 
     def _signed_in(self, page) -> bool:
-        """The sidebar only lists threads for an account; an anonymous page has none."""
+        """The sidebar only lists threads for an account; an anonymous page has none.
+
+        Only the server refusing the account (401, 403) is signed out. Any other answer is the
+        provider unwell for a moment, and must not send the admin to log in again.
+        """
         status, _ = self._api(page, "/rest/app-chat/conversations?pageSize=1")
-        return status == 200
+        if status in (401, 403):
+            return False
+        if status != 200:
+            raise ProviderError("grok could not say whether the session is signed in (status {})".format(status))
+        return True
 
     def _open(self, thread_url: Optional[str] = None):
         page = self._ensure_page()
@@ -480,6 +488,12 @@ class GrokProvider(BaseProvider):
                     settled = True
                     break
         except JobCancelled:
+            # Already sent: a new chat gets its address seconds later, so wait for it, or the api can
+            # neither keep nor remove the thread.
+            waited = 0
+            while not self.thread_id(page.url) and waited < THREAD_WAIT:
+                page.wait_for_timeout(1000)
+                waited += 1
             landed = self.thread_id(page.url)
             if landed:
                 self.last_cancelled_thread = "{}c/{}".format(HOME, landed)

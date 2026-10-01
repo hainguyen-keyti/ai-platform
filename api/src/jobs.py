@@ -110,8 +110,9 @@ def create_job(user, provider, feature, payload, conversation_id=None,
                 payload["filename"] = _resolve_media(conn, user["id"], media_id)["filename"]
 
             # After every check that already refuses (404, 409, a missing picture), before
-            # anything is written or charged: a turn nobody would pick up is refused now instead
-            # of failing as no_worker minutes later.
+            # anything is written or charged: a turn that would only fail is refused now, one
+            # into an account its admin must fix, or one nobody would pick up (no_worker minutes
+            # later).
             if _held(conn, provider):
                 raise HTTPException(
                     status_code=503,

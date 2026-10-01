@@ -309,8 +309,9 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
     } catch (err) {
       // Refused before any job existed: nothing was sent, so the words go back in the box.
       if (!jobRef.current && draft) setInput(draft)
-      // Nobody serving it, or an account its admin must fix: unavailable, and the admin's words are not for this person.
-      if (err.status === 503 || err.kind === 'provider_misconfigured') setServed((s) => ({ ...s, [provider]: false }))
+      // Nobody serves it, or its account needs its admin: unavailable either way, not an error to read.
+      const unavailable = err.status === 503 || err.kind === 'provider_misconfigured'
+      if (unavailable) setServed((s) => ({ ...s, [provider]: false }))
       else setError(err.message)
     } finally {
       setStatus(null)

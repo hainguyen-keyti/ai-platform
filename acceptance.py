@@ -876,7 +876,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # site to stop.
     at_site = real and provider == "chatgpt"
     stop = None
-    deadline = time.time() + 30
+    # A stop is heard only once the page has opened, which can take two loads of a slow site.
+    deadline = time.time() + 150
     while at_site and job_id and time.time() < deadline:
         got = ((http("GET", worker_health)[1] or {}).get("providers") or {}).get(provider, {}).get("last_stop")
         if got and got.get("at", 0) >= cancelled_at - 1:
@@ -1195,16 +1196,28 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         wait_state(busy, ("running",), 20) if busy else {}
         refused = start_job(MEMORY_PHRASE + " for the first of the two")
         waiting = start_job("the second of the two, queued behind the refused one")
+        # The other provider's runner is busy three seconds longer, so one of its jobs is waiting too
+        # when the hold starts: a hold is its own provider's, never everybody's.
+        time.sleep(3)
+        start_job(SLOW_PHRASE + ": the other provider is busy too", as_provider=other_provider)
+        other_waiting = start_job("waiting for the other provider", as_provider=other_provider)
         settled = wait_state(refused, ("failed", "done"), 60) if refused else {}
         held_at = time.time()
         served = served_now()
         q_held = quota_now()
+        other_at_hold = job_state(other_waiting).get("status") if other_waiting else None
         rstatus, _ = http("POST", api + "/chat",
                           {"provider": provider, "message": "a turn into the hold"}, token=token)
         q_refused = quota_now()
         behind = wait_state(waiting, ("failed", "done", "cancelled"), 10) if waiting else {}
         behind_in = time.time() - held_at
         wait_state(busy, ("done", "failed"), 30) if busy else {}
+        # Still held three seconds on (the hold is five here), then back by itself.
+        time.sleep(max(0.0, held_at + 3 - time.time()))
+        still_held = served_now().get(provider) is False
+        back = served_within(15)
+        back_in = time.time() - held_at
+        other_final = wait_state(other_waiting, ("done", "failed", "cancelled"), 30) if other_waiting else {}
         if (ready and settled.get("status") == "failed"
                 and settled.get("error_kind") == "provider_misconfigured"
                 and served.get(provider) is False and served.get(other_provider) is True
@@ -1217,29 +1230,31 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                 "served before {} refused {} kind {} served after {} new turn {} quota {} -> {}".format(
                     ready, settled.get("status"), settled.get("error_kind"), served, rstatus,
                     q_held, q_refused))
-        # The slow turn is the only one that may cost: the refused one and the one behind it are
-        # given back, the second without ever reaching the worker.
+        # Of this provider's three only the slow turn may cost: the refused one and the one behind it
+        # are given back, the second without ever reaching the worker. The other provider's two are
+        # untouched: still charged at the hold, the waiting one still waiting, then done.
         if (behind.get("status") == "failed" and behind.get("error_kind") == "provider_misconfigured"
-                and behind.get("attempts") == 0 and behind_in < 5 and q_held == q0 - 1):
+                and behind.get("attempts") == 0 and behind_in < 5 and q_held == q0 - 3
+                and other_at_hold == "pending" and other_final.get("status") == "done"):
             c["jobs waiting for a held provider fail and refund at once"].passed(
-                "the job behind it failed {:.1f}s after the refusal, never claimed, quota {} -> {}".format(
-                    behind_in, q0, q_held))
+                "the job behind it failed {:.1f}s after the refusal, never claimed, quota {} -> {}; "
+                "{}'s waiting job untouched, then done".format(behind_in, q0, q_held, other_provider))
         else:
             c["jobs waiting for a held provider fail and refund at once"].failed(
-                "the job behind it {} kind {} attempts {} after {:.1f}s, quota {} -> {}".format(
-                    behind.get("status"), behind.get("error_kind"), behind.get("attempts"),
-                    behind_in, q0, q_held))
-        back = served_within(15)
-        back_in = time.time() - held_at
+                "the job behind it {} kind {} attempts {} after {:.1f}s, quota {} -> {}; {}'s waiting job "
+                "{} at the hold, then {}".format(
+                    behind.get("status"), behind.get("error_kind"), behind.get("attempts"), behind_in,
+                    q0, q_held, other_provider, other_at_hold, other_final.get("status")))
         after_hold = start_job("an ordinary turn once the hold is over")
         after_final = wait_state(after_hold, ("done", "failed"), job_timeout) if after_hold else {}
-        if back and after_final.get("status") == "done":
+        if still_held and back and after_final.get("status") == "done":
             c["a hold ends by itself"].passed(
-                "{} served again {:.1f}s after the refusal, an ordinary turn done".format(provider, back_in))
+                "{} still held 3s after the refusal, served again after {:.1f}s, an ordinary turn "
+                "done".format(provider, back_in))
         else:
             c["a hold ends by itself"].failed(
-                "served again {} after {:.1f}s, then a turn {} {}".format(
-                    back, back_in, after_final.get("status"), after_final.get("error")))
+                "held at 3s {}, served again {} after {:.1f}s, then a turn {} {}".format(
+                    still_held, back, back_in, after_final.get("status"), after_final.get("error")))
 
     if not real:
         # A served turn afterwards, so the reading below is of a provider that

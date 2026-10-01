@@ -10,7 +10,7 @@ turn leaves /c/local-chatgpt:<uuid> in the address. The driver used to call a
 signed-in session "probably logged out" whenever the composer did not appear.
 Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Send ran on at
 ChatGPT; the driver typed a turn its job had already lost and left a running reply unstopped.
-Prints N/21 PASSED.
+Prints N/22 PASSED.
 """
 
 import sys
@@ -102,6 +102,20 @@ class StopButton:
         self.page.writing = False
 
 
+class Attachments:
+    """The composer's file input: a picture set here rides along with the next turn sent."""
+
+    def __init__(self, page):
+        self.page = page
+
+    @property
+    def first(self):
+        return self
+
+    def set_input_files(self, path, *args, **kwargs):
+        self.page.attached.append(Path(path).name)
+
+
 class Keyboard:
     def __init__(self, page):
         self.page = page
@@ -157,6 +171,7 @@ class Page:
         self.deletions = []
         self.writing = False
         self.stop_presses = 0
+        self.attached = []
 
     def goto(self, url, *args, **kwargs):
         self.url = url
@@ -176,6 +191,8 @@ class Page:
     def locator(self, selector):
         if selector == chatgpt.STOP_BUTTON:
             return StopButton(self)
+        if selector == chatgpt.UPLOAD_INPUT:
+            return Attachments(self)
         # A comma is a list of alternatives, as in the browser: any part may match.
         parts = [p.strip() for p in selector.split(",")]
         mounted = PROSEMIRROR in self.has or (
@@ -374,11 +391,13 @@ def main():
                [s[:40] for s in page.sent], err[:60]))
 
     # A whole turn whose job the api takes away. stop says when the driver hears of it.
-    def run_on(page, stop):
+    def run_on(page, stop, upload=None):
         driver = provider_on(page)
         driver.bind(None, stop)
+        if upload:
+            (driver.media_path / upload).write_bytes(b"a picture")
         try:
-            driver._run("write a long essay about autumn in Hanoi")
+            driver._run("write a long essay about autumn in Hanoi", upload=upload)
             outcome = "returned"
         except JobCancelled:
             outcome = "cancelled"
@@ -389,9 +408,18 @@ def main():
     page = Page(clock, has={PROSEMIRROR})
     outcome, stopped = run_on(page, lambda: True)
     record("a job stopped before its send types nothing and sends nothing",
-           outcome == "cancelled" and page.sent == [] and page.enters == 0
+           outcome == "cancelled" and page.sent == [] and page.enters == 0 and page.text == ""
            and (stopped or {}).get("sent") is False,
-           "{}, sent {}, enters {}, last_stop {}".format(outcome, len(page.sent), page.enters, stopped))
+           "{}, sent {}, enters {}, typed {!r}, last_stop {}".format(
+               outcome, len(page.sent), page.enters, page.text[:30], stopped))
+
+    # A picture attached by a job already gone would sit in the shared composer for the next turn.
+    page = Page(clock, has={PROSEMIRROR})
+    outcome, stopped = run_on(page, lambda: True, upload="someone-elses-picture.png")
+    record("a job stopped before its send attaches no picture either",
+           outcome == "cancelled" and page.attached == [] and page.sent == []
+           and (stopped or {}).get("sent") is False,
+           "{}, attached {}, sent {}, last_stop {}".format(outcome, page.attached, len(page.sent), stopped))
 
     page = Page(clock, has={PROSEMIRROR})
     outcome, stopped = run_on(page, lambda: bool(page.sent))

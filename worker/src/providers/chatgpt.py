@@ -765,6 +765,14 @@ class ChatGPTProvider(BaseProvider):
     def _stopped(self, sent: bool, pressed: bool):
         self.last_stop = {"sent": sent, "pressed": pressed, "at": round(time.time(), 1)}
 
+    def _stop_unsent(self):
+        """Stop here if the job has been taken away, noting that its turn never went out."""
+        try:
+            self._check_stop()
+        except JobCancelled:
+            self._stopped(sent=False, pressed=False)
+            raise
+
     def _press_stop(self, page) -> bool:
         """Press the site's stop button if a reply is still being written; True once pressed."""
         try:
@@ -790,6 +798,8 @@ class ChatGPTProvider(BaseProvider):
             path = self.media_path / upload
             if not path.exists():
                 return GenerationResult.failure("reference image {} not found".format(upload))
+            # A picture attached for a job already gone would wait in the shared composer for the next turn.
+            self._stop_unsent()
             page.locator(UPLOAD_INPUT).first.set_input_files(str(path))
             page.wait_for_timeout(3000)
 
@@ -799,11 +809,7 @@ class ChatGPTProvider(BaseProvider):
         banner_before = self._banner(page)
         baseline_ids = self._baseline_ids(page)
         # The last moment a job taken away can stay unsent: once typed, the turn is the site's.
-        try:
-            self._check_stop()
-        except JobCancelled:
-            self._stopped(sent=False, pressed=False)
-            raise
+        self._stop_unsent()
         started = time.time()
         self.last_cancelled_thread = thread_url
         self._send(page, prompt)

@@ -15,8 +15,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))
 
-from src.providers.base import ProviderError  # noqa: E402
-from src.providers.grok import GrokProvider  # noqa: E402
+from src.providers.base import JobCancelled, ProviderError  # noqa: E402
+from src.providers.grok import SIGNED_OUT, GrokProvider  # noqa: E402
 
 results = []
 
@@ -49,6 +49,32 @@ class StubPage:
             status, body = self.settings
             return {"status": status, "body": body}
         return {"status": 404, "body": ""}
+
+
+class AccountPage(StubPage):
+    """Also answers the account read with `account`, and gets its thread's address only after
+    `lands_after` waits, as a new chat does a few seconds after its first message."""
+
+    def __init__(self, settings, account=200, lands_after=None):
+        super().__init__(settings)
+        self.account = account
+        self.lands_after = lands_after
+        self.waits = 0
+
+    def goto(self, *args, **kwargs):
+        return None
+
+    def wait_for_timeout(self, ms):
+        self.waits += 1
+        if self.lands_after is not None and self.waits >= self.lands_after:
+            self.url = "https://grok.com/c/0f3a9c1e-1b2d-4c3e-8f4a-5b6c7d8e9f00"
+
+    def evaluate(self, script, arg=None):
+        path = arg[0] if isinstance(arg, (list, tuple)) else arg
+        if isinstance(path, str) and path.startswith("/rest/app-chat/conversations"):
+            self.asked.append(tuple(arg))
+            return {"status": self.account, "body": ""}
+        return super().evaluate(script, arg)
 
 
 ON = (200, '{"enableMemory":true,"agentCustomizations":[],"allowGrokFinishedNotification":true,'
@@ -158,6 +184,60 @@ def main():
     record("the read is a GET with no body, never a write",
            len(reads) == 4 and all(ask[1] == "GET" and ask[2] is None for ask in reads),
            "requests {}".format(reads))
+
+    # Signed out is what holds a provider out for ten minutes and tells its admin to log in again
+    # (since 2026-10-01), so only the server refusing the account may read as that; a throttle or a
+    # server error is the provider being unwell for a moment.
+    def account_read(status):
+        try:
+            return "in" if provider()._signed_in(AccountPage(OFF, account=status)) else "out"
+        except ProviderError as exc:
+            return "error {}".format(exc.kind)
+        except Exception as exc:
+            return "crashed {}".format(type(exc).__name__)
+
+    reads = {status: account_read(status) for status in (200, 401, 403, 429, 500, 503)}
+    record("only the server refusing the account reads as signed out",
+           reads == {200: "in", 401: "out", 403: "out", 429: "error provider_error",
+                     500: "error provider_error", 503: "error provider_error"}, repr(reads))
+
+    def open_with(status):
+        p, page = provider(), AccountPage(OFF, account=status)
+        p._ensure_page = lambda: page
+        p._wait_for_challenge = lambda _page: True
+        p._dismiss_overlays = lambda _page: None
+        p._composer = lambda _page, seconds=30: "composer"
+        try:
+            p._open(None)
+            return "opened"
+        except ProviderError as exc:
+            return "{}: {}".format(exc.kind, exc)
+        except Exception as exc:
+            return "crashed {}: {}".format(type(exc).__name__, str(exc)[:60])
+
+    throttled, refused = open_with(429), open_with(401)
+    record("a throttled account read fails the open as a provider error, a refused one as signed out",
+           throttled.startswith("provider_error") and "signed out" not in throttled
+           and refused == "provider_misconfigured: {}".format(SIGNED_OUT) and open_with(200) == "opened",
+           "429 {!r}; 401 {!r}".format(throttled[:80], refused[:80]))
+
+    # A stop now reaches the driver within seconds of the send (it used to take up to 140s), when a
+    # new chat has no address yet: it has to be waited for, or the thread is lost to the account.
+    p, page, sent = provider(), AccountPage(OFF, lands_after=4), []
+    p._open = lambda thread_url=None: (page, "composer")
+    p._send = lambda _page, _composer, prompt: sent.append(prompt)
+    p.bind(None, lambda: bool(sent))
+    try:
+        p._run("hello")
+        what = "returned"
+    except JobCancelled:
+        what = "cancelled"
+    except Exception as exc:
+        what = "crashed {}: {}".format(type(exc).__name__, str(exc)[:60])
+    record("a turn stopped right after its send still reports the thread it landed in",
+           what == "cancelled" and sent == ["hello"]
+           and p.last_cancelled_thread == "https://grok.com/c/0f3a9c1e-1b2d-4c3e-8f4a-5b6c7d8e9f00",
+           "{}, sent {}, thread {!r} after {} waits".format(what, sent, p.last_cancelled_thread, page.waits))
 
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))
