@@ -59,6 +59,15 @@ async (path) => {
 """
 
 
+def is_cookie(name, wanted):
+    """The cookie itself, or one chunk of it: a long session cookie is kept as name.0, name.1.
+
+    Measured 2026-10-01: chatgpt.com's session cookie exists only in chunks, and waiting for the
+    plain name never ended although the login was real.
+    """
+    return name == wanted or (name.startswith(wanted + ".") and name[len(wanted) + 1:].isdigit())
+
+
 def signed_in(context, spec, page=None):
     """The provider's own session cookie, and where possible its own answer.
 
@@ -68,8 +77,9 @@ def signed_in(context, spec, page=None):
     """
     found = None
     for cookie in context.cookies():
-        if spec["domain"] in cookie.get("domain", "") and cookie.get("name") in spec["cookies"]:
-            found = cookie["name"]
+        name = cookie.get("name", "")
+        if spec["domain"] in cookie.get("domain", "") and any(is_cookie(name, w) for w in spec["cookies"]):
+            found = name
             break
     if not found:
         return None
