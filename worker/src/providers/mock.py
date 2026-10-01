@@ -60,10 +60,14 @@ class MockProvider(BaseProvider):
         # A message can flip it on; the next ordinary message flips it back.
         self.memory = "off"
         self.deleted_threads = []
+        self.slow_to_delete = set()
         self.last_cancelled_thread = None
         self.last_stop = None
 
     def delete_thread(self, thread_url: str) -> bool:
+        if thread_url in self.slow_to_delete:
+            # A misreported turn's thread stays a while, so a gate can be seen waiting for it.
+            time.sleep(LIE_SECONDS)
         self.deleted_threads.append(thread_url)
         return True
 
@@ -115,6 +119,7 @@ class MockProvider(BaseProvider):
                 if LYING_PHRASE in lowered:
                     time.sleep(LIE_SECONDS)
                     self.last_cancelled_thread = self._thread(thread_url)
+                    self.slow_to_delete.add(self.last_cancelled_thread)
                 raise
         # Like the real site, the thread exists the moment the message is sent,
         # cancelled or not; the api learns of it either way.

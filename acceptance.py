@@ -133,51 +133,54 @@ LYING_PHRASE = "and call it unsent"
 THREAD_MARKER = re.compile(r"\[thread=([^\]]+)\]")
 
 
-def thread_accounted(removed, stop, moment, owed):
+def thread_accounted(removed, stop, moment, owed, made):
     """What became, at the provider, of a turn taken away from a running job at `moment`.
 
     While anything is still owed for the turn (its result not handed back, a tombstone made since
     and not settled, the api's record unreadable), nothing accounts for it: None. After that,
-    "removed": the worker removed a thread tombstoned since. Or "unsent": the driver's own stop
-    record, made at or after that moment (its time is rounded to a tenth), says the turn never went
-    out, so there is no thread to remove. A record that says the turn was sent accounts for
-    nothing: only its thread's removal does.
+    "removed": the worker removed a thread tombstoned since. Or "unsent": no thread was tombstoned
+    since (`made` is False) and the driver's own stop record, made at or after that moment (its
+    time is rounded to a tenth), says the turn never went out, so there is no thread to remove.
+    A record that says the turn was sent accounts for nothing, and neither does any record of a
+    turn that made a thread: only that thread's removal does.
     """
     if owed:
         return None
     if removed:
         return "removed"
-    if stop and stop.get("at", 0) >= moment - 0.05 and stop.get("sent") is False:
+    if not made and stop and stop.get("at", 0) >= moment - 0.05 and stop.get("sent") is False:
         return "unsent"
     return None
 
 
 # The rule above, row by row: a thread removed, the driver's stop record, the moment the turn was
-# taken away (on the clock the gate shares with its worker), something still owed, the answer.
-# A record's time is rounded to a tenth: one made at or after a moment reads at most 0.05 below it.
+# taken away (on the clock the gate shares with its worker), something still owed, a thread
+# tombstoned since, the answer. A record's time is rounded to a tenth: one made at or after a
+# moment reads at most 0.05 below it.
 ACCOUNTED = (
-    (True, None, 1000.0, False, "removed"),
-    (True, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, False, "removed"),
-    (True, None, 1000.0, True, None),
-    (False, None, 1000.0, False, None),
-    (False, {}, 1000.0, False, None),
-    (False, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, False, "unsent"),
-    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.0, False, "unsent"),
-    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.049, False, "unsent"),
-    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.051, False, None),
-    (False, {"sent": False, "pressed": False, "at": 999.9}, 1000.0, False, None),
-    (False, {"sent": False, "pressed": False, "at": 990.0}, 1000.0, False, None),
-    (False, {"sent": False, "pressed": False, "at": 1005.0}, 2000.0, False, None),
-    (False, {"sent": False, "pressed": False, "at": 499.0}, 250.0, False, "unsent"),
-    (False, {"sent": False, "pressed": False}, 1000.0, False, None),
-    (False, {"sent": True, "pressed": True, "at": 1005.0}, 1000.0, False, None),
-    (False, {"sent": True, "pressed": False, "at": 1005.0}, 1000.0, False, None),
-    (False, {"sent": None, "pressed": False, "at": 1005.0}, 1000.0, False, None),
-    (False, {"sent": 0, "pressed": False, "at": 1005.0}, 1000.0, False, None),
-    (False, {"pressed": False, "at": 1005.0}, 1000.0, False, None),
-    (False, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, True, None),
+    (True, None, 1000.0, False, True, "removed"),
+    (True, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, False, True, "removed"),
+    (True, None, 1000.0, True, True, None),
+    (False, None, 1000.0, False, False, None),
+    (False, {}, 1000.0, False, False, None),
+    (False, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, False, False, "unsent"),
+    (False, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, False, True, None),
+    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.0, False, False, "unsent"),
+    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.049, False, False, "unsent"),
+    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.051, False, False, None),
+    (False, {"sent": False, "pressed": False, "at": 999.9}, 1000.0, False, False, None),
+    (False, {"sent": False, "pressed": False, "at": 990.0}, 1000.0, False, False, None),
+    (False, {"sent": False, "pressed": False, "at": 1005.0}, 2000.0, False, False, None),
+    (False, {"sent": False, "pressed": False, "at": 499.0}, 250.0, False, False, "unsent"),
+    (False, {"sent": False, "pressed": False}, 1000.0, False, False, None),
+    (False, {"sent": True, "pressed": True, "at": 1005.0}, 1000.0, False, False, None),
+    (False, {"sent": True, "pressed": False, "at": 1005.0}, 1000.0, False, False, None),
+    (False, {"sent": None, "pressed": False, "at": 1005.0}, 1000.0, False, False, None),
+    (False, {"sent": 0, "pressed": False, "at": 1005.0}, 1000.0, False, False, None),
+    (False, {"pressed": False, "at": 1005.0}, 1000.0, False, False, None),
+    (False, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, True, False, None),
 )
-ACCOUNTED_ROWS = 20
+ACCOUNTED_ROWS = 21
 
 
 def still_owed(handed_back, stones, known):
@@ -203,8 +206,9 @@ OWED = (
     (True, [(7, None)], {7}, False),
     (True, [(7, "2026-10-02 02:00:00"), (8, None)], {7}, True),
     (True, [(7, None), (8, "2026-10-02 02:00:00")], {7}, False),
+    (True, [(8, None), (9, "2026-10-02 02:00:00")], {7}, True),
 )
-OWED_ROWS = 9
+OWED_ROWS = 10
 
 
 class Check:
@@ -711,9 +715,11 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # A deletion counts when the worker says it deleted a thread (its own count) and the api's record,
     # read-only, says it is this thread, claimed by the worker and settled after this delete: the count
     # alone cannot tell one deletion from another, the record alone cannot tell the worker did it.
+    # A count the worker's health could not give is None, never 0: a failed read must not make the
+    # next good one look like growth.
     def threads_deleted():
-        _, health = http("GET", worker_health)
-        return (health or {}).get("threads_deleted") or 0
+        health = http("GET", worker_health)[1]
+        return (health.get("threads_deleted") or 0) if isinstance(health, dict) else None
 
     def read_db(sql, args, unreadable=()):
         try:
@@ -733,7 +739,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         """A new tombstone (for url, if given) claimed and settled, and the worker's count grown."""
         settled = any(stone_id not in stone_ids and gone and claimed and (url is None or thread == url)
                       for stone_id, thread, gone, claimed in tombstones())
-        return settled and threads_deleted() >= count_before + 1
+        count = threads_deleted()
+        return settled and count is not None and count_before is not None and count >= count_before + 1
 
     def stop_record():
         health = http("GET", worker_health)[1]
@@ -743,7 +750,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
 
     def results_refused():
         health = http("GET", worker_health)[1]
-        return (health.get("results_refused") or 0) if isinstance(health, dict) else 0
+        return (health.get("results_refused") or 0) if isinstance(health, dict) else None
 
     def own_thread(conversation_id):
         rows = read_db("SELECT provider_thread_url FROM conversations WHERE id = ?", (conversation_id,))
@@ -835,20 +842,29 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             if held["job"] else {}
         return held
 
+    def is_back(held):
+        refused = results_refused()
+        return refused is not None and held["refused_before"] is not None and refused > held["refused_before"]
+
     def look(held):
-        """(What accounts for the turn at this moment, the driver's stop record in hand)."""
+        """(What accounts for the turn at this moment, the driver's stop record in hand, and what
+        this look saw: the result back, a thread of the turn's still waiting to be removed)."""
         stop = stop_record()
+        # The refusals before the tombstones: a result that comes back between the two reads is
+        # then seen as still out, never as back with no tombstone.
+        back = is_back(held)
         stones = read_db("SELECT id, deleted_at FROM thread_tombstones WHERE provider = ?", (provider,), None)
-        owed = still_owed(results_refused() > held["refused_before"], stones, held["known"])
-        return thread_accounted(worker_removed(held["known"], held["deleted_before"]), stop,
-                                held["taken_at"], owed), stop
+        fresh = [settled for stone, settled in stones or () if stone not in held["known"]]
+        answer = thread_accounted(worker_removed(held["known"], held["deleted_before"]), stop,
+                                  held["taken_at"], still_owed(back, stones, held["known"]), bool(fresh))
+        return answer, stop, {"back": back, "waiting": any(not settled for settled in fresh)}
 
     def handed_back(held, seconds):
         """Wait for the worker to hand the turn's result back, which the api refuses."""
         deadline = time.time() + seconds
-        while time.time() < deadline and results_refused() <= held["refused_before"]:
+        while time.time() < deadline and not is_back(held):
             time.sleep(0.5)
-        return results_refused() > held["refused_before"]
+        return is_back(held)
 
     def cancelled_and_refunded(held):
         return (held["seen"] == "running" and held["delete"] == 204
@@ -873,7 +889,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         accounted, stop = None, None
         while held["job"] and time.time() < deadline and not accounted:
             time.sleep(1)
-            accounted, stop = look(held)
+            accounted, stop, _ = look(held)
         stones = new_stones(held)
         if cancelled_and_refunded(held) and accounted == "unsent" and not stones:
             c[unsent_check].passed(
@@ -900,39 +916,46 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         older = bool(stop) and stop.get("sent") is False and stop.get("at", held["taken_at"]) < held["taken_at"]
         stones = new_stones(held)
         if (cancelled_and_refunded(held) and back and older and not stones
-                and all(answer is None for answer, _ in looks)):
+                and all(look_[0] is None for look_ in looks)):
             c[silent_check].passed(
                 "job cancelled by the delete, credit returned, its result back and no thread: "
                 "unaccounted for at {} looks, with the older record {} in hand".format(len(looks), stop))
         else:
             c[silent_check].failed(
                 "{} result handed back {} answers {} stop record {} older than the taking {} "
-                "new tombstones {}".format(told(held), back, [answer for answer, _ in looks], stop,
+                "new tombstones {}".format(told(held), back, [look_[0] for look_ in looks], stop,
                                            older, len(stones)))
 
     # Nor is a driver's word enough while its own result is still out or a thread waits to be
-    # removed: this one says unsent, then reports the thread its turn made 2.5 seconds later.
+    # removed: this one says unsent, reports the thread its turn made 2.5 seconds later, and that
+    # thread takes 2.5 seconds to remove. The gate must be seen holding its answer through both.
     lying_check = "a driver that says unsent of a turn that made a thread is believed only once it is removed"
     if real:
         c[lying_check].skip("needs a provider that misreports on command; covered in mock mode")
     else:
         held = taken_away("{} {}, then delete me".format(UNSENT_PHRASE, LYING_PHRASE))
         deadline = time.time() + 60
-        accounted, stop = None, None
+        accounted, stop, held_out, held_waiting = None, None, 0, 0
         while held["job"] and time.time() < deadline and not accounted:
             time.sleep(0.5)
-            accounted, stop = look(held)
+            accounted, stop, saw = look(held)
+            said = bool(stop) and stop.get("sent") is False and stop.get("at", 0) >= held["taken_at"] - 0.05
+            held_out += accounted is None and said and not saw["back"]
+            held_waiting += accounted is None and said and saw["back"] and saw["waiting"]
         # Whatever was answered, let this turn's result come back before the next check counts.
         handed_back(held, 30)
-        lied = bool(stop) and stop.get("sent") is False and stop.get("at", 0) >= held["taken_at"] - 0.05
         stones = new_stones(held)
-        if cancelled_and_refunded(held) and accounted == "removed" and lied and len(stones) == 1:
+        if (cancelled_and_refunded(held) and accounted == "removed" and held_out >= 2
+                and held_waiting >= 2 and len(stones) == 1):
             c[lying_check].passed(
-                "job cancelled by the delete, credit returned; its driver said {} of a turn that "
-                "made a thread, and only that thread's removal accounted for it".format(stop))
+                "job cancelled by the delete, credit returned; its driver said {} of a turn that made "
+                "a thread: no answer at {} looks while its result was out, none at {} while the thread "
+                "waited, then removed".format(stop, held_out, held_waiting))
         else:
-            c[lying_check].failed("{} accounted {} stop record {} said after the taking {} "
-                                  "new tombstones {}".format(told(held), accounted, stop, lied, len(stones)))
+            c[lying_check].failed(
+                "{} accounted {} stop record {} looks held while the result was out {} and while the "
+                "thread waited {} new tombstones {}".format(
+                    told(held), accounted, stop, held_out, held_waiting, len(stones)))
 
     # Deleting a conversation whose job is still running ends the job and gives
     # the credit back; the worker's late result is refused, so nothing of the
@@ -955,7 +978,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         accounted, stop = None, None
         while held["job"] and time.time() < deadline and not accounted:
             time.sleep(1)
-            accounted, stop = look(held)
+            accounted, stop, _ = look(held)
         # The mock's slow picture always makes a thread; only a real driver can leave its turn unsent.
         answers = ("removed", "unsent") if real else ("removed",)
         media = (held["state"].get("result") or {}).get("media")
@@ -973,7 +996,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # The rule the checks above lean on is the gate's own judgement, so it is held to its tables
     # on every run, and the tables to their size.
     table_check = "the gate's rule for a turn taken away holds on its table"
-    wrong = [("accounted",) + row + (thread_accounted(*row[:4]),) for row in ACCOUNTED]
+    wrong = [("accounted",) + row + (thread_accounted(*row[:5]),) for row in ACCOUNTED]
     wrong += [("owed",) + row + (still_owed(*row[:3]),) for row in OWED]
     wrong = [row for row in wrong if row[-2] != row[-1]]
     if not wrong and (len(ACCOUNTED), len(OWED)) == (ACCOUNTED_ROWS, OWED_ROWS):
@@ -1085,7 +1108,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     # A stop is heard only once the page has opened, which can take two loads of a slow site.
     deadline = time.time() + 150
     while at_site and job_id and time.time() < deadline:
-        got = ((http("GET", worker_health)[1] or {}).get("providers") or {}).get(provider, {}).get("last_stop")
+        got = stop_record()
         if got and got.get("at", 0) >= cancelled_at - 1:
             stop = got
             break
