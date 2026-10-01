@@ -9,7 +9,7 @@ a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-g
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one. Measured 2026-10-01: for an
 account /saved-info stays put and shows one switch, saved info, the account's other memory switch.
-Prints N/83 PASSED.
+Prints N/111 PASSED.
 """
 
 import json
@@ -79,9 +79,12 @@ class Box:
 
 
 class Switches:
-    """The role=switch buttons a settings page shows: how many, and what the first one says."""
+    """The role=switch buttons a settings page shows: how many, and what the first one says
+    ("absent": it carries no aria-checked). Asking an element that is not there for an attribute
+    waits Playwright's 30 seconds and raises."""
 
-    def __init__(self, shown, checked):
+    def __init__(self, page, shown, checked):
+        self.page = page
         self.shown = shown
         self.checked = checked
 
@@ -93,7 +96,10 @@ class Switches:
         return self
 
     def get_attribute(self, name):
-        return self.checked if name == "aria-checked" else None
+        if not self.shown:
+            self.page.clock.now += 30
+            raise RuntimeError("Timeout 30000ms exceeded")
+        return self.checked if name == "aria-checked" and self.checked != "absent" else None
 
 
 class Keyboard:
@@ -217,8 +223,15 @@ class Page:
 
     An account, whose settings page stays put, has a saved-info page of its own (measured
     2026-10-01): `saved` is what its switch says (None paints none), `saved_shown` how many switches
-    it shows, `saved_landed` where a load of it ends up. `asked` keeps every address a load asked
-    for, `fails` makes the loads of an address raise, `closed` counts how often the tab was closed.
+    it shows, `saved_landed` where a load of it ends up; `shown` is how many the settings page
+    shows. A page paints its switches `paint_after` (`saved_paint_after`) seconds after its load,
+    and `later`, pairs of (seconds after the load, {name: value}), changes what it shows from
+    each of those moments on.
+    `lands` sends the load of an address ending in a key somewhere else. `asked` keeps every
+    address a load asked for, `fails` makes the loads of an address raise, `closed` counts how
+    often the tab was closed; a closed tab loads nothing until the context opens it again, and
+    `close_fails` makes closing it raise. `chain_on` is the load a redirect chain plays on.
+    `uploads` counts the pictures handed to the page.
     """
 
     def __init__(self, clock, composer=True, landed=None, checked=None, saved="false", saved_shown=1,
@@ -229,6 +242,9 @@ class Page:
         self.checked = checked
         self.saved, self.saved_shown, self.saved_landed = saved, saved_shown, saved_landed
         self.asked, self.fails, self.closed = [], (), 0
+        self.shown, self.paint_after, self.saved_paint_after, self.later = 1, 0, 0, []
+        self.lands, self.loaded_at, self.chain_on = {}, clock.now, 1
+        self.open, self.close_fails, self.uploads = True, False, 0
         self.url = "https://gemini.google.com/app"
         self.text = ""
         self.sent = []
@@ -307,22 +323,44 @@ class Page:
                     self.emit("requestfailed", response.request)
 
     def expect_response(self, predicate, timeout=None):
+        self.uploads += 1
         return Expected(self)
 
     def goto(self, url, *args, **kwargs):
         self.asked.append(url)
+        if not self.open:
+            raise RuntimeError("Target page, context or browser has been closed")
         if any(part in url for part in self.fails):
             raise RuntimeError("Timeout 60000ms exceeded")
+        self.loaded_at = self.clock.now
         self.url = self.landed or url
-        if url.endswith("/saved-info") and (self.landed or "").endswith("/personalization-settings"):
+        account = (self.landed or "").split("?")[0].rstrip("/").endswith("/personalization-settings")
+        if url.endswith("/saved-info") and account:
             self.url = self.saved_landed or url
+        for tail, where in self.lands.items():
+            if url.endswith(tail):
+                self.url = where
         self.went_at = None
-        if self.schedule and len(self.asked) == 1:
+        if self.schedule and len(self.asked) == self.chain_on:
             self.went_at = self.clock.now
             self.url = self.schedule[0][1]
 
     def at_saved_info(self):
         return self.url.split("?")[0].rstrip("/").endswith("/saved-info")
+
+    def switches(self):
+        """(how many, what the first one says) on the page the tab is on, at this moment."""
+        now = {"checked": self.checked, "shown": self.shown, "saved": self.saved,
+               "saved_shown": self.saved_shown}
+        since = self.clock.now - self.loaded_at
+        for after, changes in self.later:
+            if since >= after:
+                now.update(changes)
+        if self.at_saved_info():
+            painted = now["saved"] is not None and since >= self.saved_paint_after
+            return (now["saved_shown"] if painted else 0), now["saved"]
+        painted = now["checked"] is not None and since >= self.paint_after
+        return (now["shown"] if painted else 0), now["checked"]
 
     def wait_for_timeout(self, ms):
         self.clock.now += ms / 1000.0
@@ -339,10 +377,11 @@ class Page:
             return Bubbles(self)
         if 'input[type="file"]' in selector:
             return Box(self, self.file_input)
+        # Measured 2026-10-01: a settings page's switch is a button carrying role="switch".
+        if selector == 'button[role="switch"]':
+            return Switches(self, *self.switches())
         if "switch" in selector:
-            if self.at_saved_info():
-                return Switches(self.saved_shown if self.saved is not None else 0, self.saved)
-            return Switches(1 if self.checked is not None else 0, self.checked)
+            return Switches(self, 0, None)
         parts = [p.strip() for p in selector.split(",")]
         return Box(self, self.composer and any("ql-editor" in p or "contenteditable" in p
                                                 for p in parts))
@@ -375,6 +414,9 @@ class Page:
 
     def close(self, *args, **kwargs):
         self.closed += 1
+        self.open = False
+        if self.close_fails:
+            raise RuntimeError("Target page, context or browser has been closed")
 
     def __getattr__(self, name):
         return lambda *args, **kwargs: None
@@ -573,9 +615,13 @@ class Context:
         self.settings_page = settings_page
         self.request = Session()
         self.opened = 0
+        self.fails = False
 
     def new_page(self):
+        if self.fails:
+            raise RuntimeError("Target page, context or browser has been closed")
         self.opened += 1
+        self.settings_page.open = True
         return self.settings_page
 
 
@@ -1069,8 +1115,11 @@ def main():
     home, saved_url = "https://gemini.google.com/personalization-settings", "https://gemini.google.com/saved-info"
     signin = "https://accounts.google.com/v3/signin/identifier?continue=x"
 
-    def account(personal="false", **saved):
-        return Page(clock, composer=False, landed=home, checked=personal, **saved)
+    def account(personal="false", **more):
+        page = Page(clock, composer=False, landed=home, checked=personal)
+        for name, value in more.items():
+            setattr(page, name, value)
+        return page
 
     def look(settings, p=None):
         """(outcome, its words, the provider, seconds) of one look before speaking."""
@@ -1112,12 +1161,16 @@ def main():
                          ("two switches on the saved-info page, the first on",
                           {"saved_shown": 2, "saved": "true"}),
                          ("a saved-info switch that says neither true nor false", {"saved": "mixed"}),
+                         ("a saved-info switch with no aria-checked", {"saved": "absent"}),
                          ("a saved-info page sent elsewhere on the site",
-                          {"saved_landed": "https://gemini.google.com/app"})):
+                          {"saved_landed": "https://gemini.google.com/app"}),
+                         ("a page that only names saved info in its query",
+                          {"saved_landed": "https://gemini.google.com/app?continue=/saved-info"})):
         outcome, said, p, took = look(account(**saved))
+        # Two polls for personal context, then the whole 15 seconds for a page that never reads.
         record("{} reads unknown and does not block".format(label),
-               outcome == "sent" and p.memory == "unknown" and took < 20,
-               "outcome {!r} memory {!r} after {:.0f}s".format(outcome, p.memory, took))
+               outcome == "sent" and p.memory == "unknown" and abs(took - 16.0) < 0.3,
+               "outcome {!r} memory {!r} after {:.1f}s".format(outcome, p.memory, took))
 
     outcome, said, p, took = look(account(personal=None, saved="true"))
     record("saved info on refuses even when personal context could not be read",
@@ -1147,6 +1200,8 @@ def main():
             ("personal context on", account(personal="true", saved="true"), "provider_misconfigured",
              "on", "personal context"),
             ("a signed-out session", Page(clock, composer=False, landed=saved_url, checked="false"),
+             "provider_misconfigured", "signed-out", "signed out"),
+            ("a session sent to Google's sign-in", Page(clock, composer=False, landed=signin),
              "provider_misconfigured", "signed-out", "signed out"),
             ("Google's unusual-traffic check", Page(clock, composer=False, landed=sorry),
              "provider_error", "blocked", "unusual-traffic")):
@@ -1194,6 +1249,140 @@ def main():
     record("a saved-info page that fails to load reads unknown and does not block",
            outcome == "sent" and p.memory == "unknown" and failing.asked == [home, saved_url],
            "outcome {!r} memory {!r} loaded {}".format(outcome, p.memory, pages(failing)))
+
+    # The tier 2 review, 2026-10-02. A page is the account's own only on the site's own host.
+    for label, settings in (
+            ("a settings page", Page(clock, composer=False, checked="false",
+                                     landed="https://example.org/personalization-settings")),
+            ("a saved-info page", account(saved_landed="https://example.org/saved-info"))):
+        outcome, said, p, took = look(settings)
+        record("{} on another host is never read as the account's own".format(label),
+               outcome == "provider_misconfigured" and "signed out" in said and p.memory == "signed-out",
+               "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:50]))
+
+    # The same review: a first paint could be a default, so off is believed only when two polls in
+    # a row say so, while on is believed at once.
+    outcome, said, p, took = look(account())
+    record("off is believed only on two polls in a row: both switches off take four polls",
+           outcome == "sent" and p.memory == "off" and abs(took - 2.0) < 0.01,
+           "outcome {!r} memory {!r} after {:.1f}s".format(outcome, p.memory, took))
+
+    for label, change in (("personal context", {"checked": "true"}), ("saved info", {"saved": "true"})):
+        outcome, said, p, took = look(account(later=[(0.75, change)]))
+        record("{} painted off and switched on a moment later is read as on".format(label),
+               outcome == "provider_misconfigured" and label in said and p.memory == "on",
+               "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:50]))
+
+    outcome, said, p, took = look(account(later=[(0.75, {"saved_shown": 2})]))
+    record("a second switch painted a moment after the first makes the page unreadable",
+           outcome == "sent" and p.memory == "unknown", "outcome {!r} memory {!r}".format(outcome, p.memory))
+
+    flicker = [(0.75, {"saved_shown": 2}), (1.25, {"saved_shown": 1}), (1.75, {"saved": "true"})]
+    outcome, said, p, took = look(account(later=flicker))
+    record("two polls in a row means in a row: off, unreadable, off, then on is read as on",
+           outcome == "provider_misconfigured" and "saved info" in said and p.memory == "on",
+           "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:50]))
+
+    # A switch can take seconds to paint (6.6s measured on 2026-10-01), and each page is waited for.
+    for label, settings in (("personal context", account(personal="true", paint_after=7)),
+                            ("saved info", account(saved="true", saved_paint_after=7))):
+        outcome, said, p, took = look(settings)
+        record("a {} switch painted 7 seconds after its page loads is still read".format(label),
+               outcome == "provider_misconfigured" and label in said and p.memory == "on",
+               "outcome {!r} memory {!r} after {:.1f}s".format(outcome, p.memory, took))
+
+    outcome, said, p, took = look(account(saved="true", paint_after=10, saved_paint_after=10))
+    record("each page has its own wait: two switches painted 10 seconds after their loads are both read",
+           outcome == "provider_misconfigured" and "saved info" in said and p.memory == "on",
+           "outcome {!r} memory {!r} after {:.1f}s".format(outcome, p.memory, took))
+
+    # Whatever stops the settings page from being read, saved info is still read, and memory never
+    # says off on the saved-info reading alone.
+    for label, more in (("fails to load", {"fails": ("personalization-settings",)}),
+                        ("is sent elsewhere on the site",
+                         {"lands": {"/personalization-settings": "https://gemini.google.com/app"}}),
+                        ("shows two switches", {"shown": 2}),
+                        ("has a switch that says neither true nor false", {"checked": "mixed"}),
+                        ("has a switch with no aria-checked", {"checked": "absent"})):
+        settings = account(**more)
+        outcome, said, p, took = look(settings)
+        on, said, q, took = look(account(saved="true", **more))
+        record("a settings page that {} reads unknown, and saved info is read all the same".format(label),
+               outcome == "sent" and p.memory == "unknown" and settings.asked == [home, saved_url]
+               and on == "provider_misconfigured" and "saved info" in said and q.memory == "on",
+               "saved info off: {!r} memory {!r} loaded {}; on: {!r} memory {!r}".format(
+                   outcome, p.memory, pages(settings), on, q.memory))
+
+    cookie_check = "https://accounts.google.com/CheckCookie?continue=x"
+    outcome, said, p, took = look(account(personal="true", schedule=[(0, cookie_check), (2, home)]))
+    record("a settings page that went through Google and came back is read",
+           outcome == "provider_misconfigured" and "personal context" in said and p.memory == "on",
+           "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:50]))
+
+    outcome, said, p, took = look(account(saved="true", chain_on=2,
+                                          schedule=[(0, cookie_check), (2, saved_url)]))
+    record("a saved-info load that passes through Google and comes back is read, not signed out",
+           outcome == "provider_misconfigured" and "saved info" in said and p.memory == "on",
+           "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:50]))
+
+    settings = account(personal=None, schedule=[(0, cookie_check), (2, home)])
+    outcome, said, p, took = look(settings)
+    record("a page that came back from Google and paints no switch reads unknown, not signed out",
+           outcome == "sent" and p.memory == "unknown" and settings.asked == [home, saved_url],
+           "outcome {!r} memory {!r} loaded {}".format(outcome, p.memory, pages(settings)))
+
+    for label, settings in (
+            ("personal context", Page(clock, composer=False, landed=home + "/?hl=vi", checked="true")),
+            ("saved info", account(saved="true", saved_landed=saved_url + "/?hl=vi"))):
+        outcome, said, p, took = look(settings)
+        record("the {} page is still its own page with a slash and a query after its address".format(label),
+               outcome == "provider_misconfigured" and label in said and p.memory == "on",
+               "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:50]))
+
+    outcome, said, p, took = look(account(saved="true"))
+    other = look(account(personal="true"))[1]
+    record("the saved-info refusal says what the personal context one says, about its own switch",
+           "not sent" in said and "turn it off" in said and said == other.replace(
+               "personal context", "saved info").replace("/personalization-settings", "/saved-info"),
+           repr(said))
+
+    outcome, said, p, took = look(account(saved="true", close_fails=True))
+    quiet, _, q, took = look(account(close_fails=True))
+    record("a tab that will not close changes nothing about the look",
+           outcome == "provider_misconfigured" and "saved info" in said and p.memory == "on"
+           and quiet == "sent" and q.memory == "off",
+           "on: {!r} memory {!r}; off: {!r} memory {!r}".format(outcome, p.memory, quiet, q.memory))
+
+    settings = account()
+    outcome, said, p, took = look(settings)
+    p._context.fails = True
+    again, said, p, took = look(settings, p)
+    record("a browser that opens no tab fails as itself, and memory does not keep the earlier look",
+           outcome == "sent" and again == "crashed" and p.memory == "unknown",
+           "first {!r} then {!r} ({}) memory {!r}".format(outcome, again, said[:45], p.memory))
+
+    # The look comes before anything is handed to the account, whatever the turn carries.
+    page = Page(clock)
+    page.late = [(clock.now, [("query", "an earlier question"), ("answer", "an earlier answer")])]
+    page.answer, page.replies = "the new answer", [stream_ok]
+    what, result = run_on(page, account(saved="true"), thread_url=thread)
+    record("a turn in a reopened thread is looked at too",
+           what.startswith("refused: provider_misconfigured") and page.sent == [],
+           "{} sent {}".format(what, len(page.sent)))
+
+    picture = Path("/tmp/gemini-driver-test/guard-reference.png")
+    picture.parent.mkdir(parents=True, exist_ok=True)
+    picture.write_bytes(b"\x89PNG not really")
+    handed = {}
+    for label, settings in (("on", account(saved="true")), ("off", account())):
+        page = Page(clock)
+        page.file_input = True
+        page.answer, page.replies = "a script", [stream_ok]
+        what, result = run_on(page, settings, prompt="describe it", upload=picture.name)
+        handed[label] = (what.split(" the ")[0], page.uploads, len(page.sent))
+    record("a turn with a picture is looked at before the picture is handed over",
+           handed["on"] == ("refused: provider_misconfigured", 0, 0) and handed["off"] == ("returned", 1, 1),
+           repr(handed))
 
     tabs = []
     for label, settings in (("off", account()), ("saved info on", account(saved="true")),

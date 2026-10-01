@@ -190,32 +190,38 @@ class GeminiProvider(BaseProvider):
         """The one switch of a settings page as that page shows it: on, off, unknown, signed-out or
         blocked (Google's unusual-traffic check).
 
-        Only a page that stayed on its own path and shows exactly one switch is read: the labels
-        follow the interface's language, so a switch is told by where it is. A signed-out session
-        asking for /personalization-settings lands on /saved-info, whose two switches are neither.
+        Only a page of the site that stayed on its own path and shows exactly one switch is read:
+        the labels follow the interface's language, so a switch is told by where it is. On is
+        believed at once; off only when two polls in a row say so, since a first paint could be a
+        default. A signed-out session asking for /personalization-settings lands on /saved-info,
+        whose two switches are neither.
         """
         try:
             page.goto(url, timeout=60000, wait_until="domcontentloaded")
             deadline = time.time() + SETTINGS_WAIT
-            off_site = False
+            off_site = was_off = False
             while time.time() < deadline:
                 page.wait_for_timeout(500)
                 if is_blocked(page.url):
                     return "blocked"
                 landed = urlparse(page.url or "")
-                path = landed.path.rstrip("/")
-                # Sent to /saved-info from another page (measured): no account.
-                if path == SAVED_INFO_PATH and own != SAVED_INFO_PATH:
-                    return "signed-out"
                 # Off the site, to Google's sign-in: no account, unless it comes back, which a
                 # cookie refresh passing through Google would (re-review, 2026-09-27).
                 off_site = bool(landed.hostname and landed.hostname != GEMINI_HOST)
-                if path != own:
-                    continue
-                switches = page.locator(SWITCH)
-                if switches.count() == 1:
-                    checked = switches.first.get_attribute("aria-checked")
-                    return {"true": "on", "false": "off"}.get(checked, "unknown")
+                path = "" if off_site else landed.path.rstrip("/")
+                # Sent to /saved-info from another page (measured): no account.
+                if path == SAVED_INFO_PATH and own != SAVED_INFO_PATH:
+                    return "signed-out"
+                checked = None
+                if path == own:
+                    switches = page.locator(SWITCH)
+                    if switches.count() == 1:
+                        checked = switches.first.get_attribute("aria-checked")
+                if checked == "true":
+                    return "on"
+                if checked == "false" and was_off:
+                    return "off"
+                was_off = checked == "false"
             return "signed-out" if off_site else "unknown"
         except Exception:
             return "unknown"
