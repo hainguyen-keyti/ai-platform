@@ -7,8 +7,9 @@ Measured 2026-09-25 and 2026-09-27 (docs/research/2026-09-27-gemini.md): the com
 editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ during the turn, while
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
-sent to /saved-info, which also shows switches that are not this one.
-Prints N/62 PASSED.
+sent to /saved-info, which also shows switches that are not this one. Measured 2026-10-01: for an
+account /saved-info stays put and shows one switch, saved info, the account's other memory switch.
+Prints N/83 PASSED.
 """
 
 import json
@@ -75,6 +76,24 @@ class Box:
 
     def __getattr__(self, name):
         return lambda *args, **kwargs: None
+
+
+class Switches:
+    """The role=switch buttons a settings page shows: how many, and what the first one says."""
+
+    def __init__(self, shown, checked):
+        self.shown = shown
+        self.checked = checked
+
+    def count(self):
+        return self.shown
+
+    @property
+    def first(self):
+        return self
+
+    def get_attribute(self, name):
+        return self.checked if name == "aria-checked" else None
 
 
 class Keyboard:
@@ -194,14 +213,22 @@ class Page:
     page appends the query, paints `answer` after it (None paints nothing), emits `replies` (fake
     responses) to its listeners and moves to `thread`. `late` holds batches of earlier turns that
     paint above everything, each at its own time, the way a reopened thread paints its history.
-    `schedule` makes a page walk through urls over time, like a redirect chain.
+    `schedule` makes a page walk through urls over time, like a redirect chain, on its first load.
+
+    An account, whose settings page stays put, has a saved-info page of its own (measured
+    2026-10-01): `saved` is what its switch says (None paints none), `saved_shown` how many switches
+    it shows, `saved_landed` where a load of it ends up. `asked` keeps every address a load asked
+    for, `fails` makes the loads of an address raise, `closed` counts how often the tab was closed.
     """
 
-    def __init__(self, clock, composer=True, landed=None, checked=None):
+    def __init__(self, clock, composer=True, landed=None, checked=None, saved="false", saved_shown=1,
+                 saved_landed=None):
         self.clock = clock
         self.composer = composer
         self.landed = landed
         self.checked = checked
+        self.saved, self.saved_shown, self.saved_landed = saved, saved_shown, saved_landed
+        self.asked, self.fails, self.closed = [], (), 0
         self.url = "https://gemini.google.com/app"
         self.text = ""
         self.sent = []
@@ -283,10 +310,19 @@ class Page:
         return Expected(self)
 
     def goto(self, url, *args, **kwargs):
+        self.asked.append(url)
+        if any(part in url for part in self.fails):
+            raise RuntimeError("Timeout 60000ms exceeded")
         self.url = self.landed or url
-        if self.schedule:
+        if url.endswith("/saved-info") and (self.landed or "").endswith("/personalization-settings"):
+            self.url = self.saved_landed or url
+        self.went_at = None
+        if self.schedule and len(self.asked) == 1:
             self.went_at = self.clock.now
             self.url = self.schedule[0][1]
+
+    def at_saved_info(self):
+        return self.url.split("?")[0].rstrip("/").endswith("/saved-info")
 
     def wait_for_timeout(self, ms):
         self.clock.now += ms / 1000.0
@@ -304,7 +340,9 @@ class Page:
         if 'input[type="file"]' in selector:
             return Box(self, self.file_input)
         if "switch" in selector:
-            return Box(self, self.checked is not None)
+            if self.at_saved_info():
+                return Switches(self.saved_shown if self.saved is not None else 0, self.saved)
+            return Switches(1 if self.checked is not None else 0, self.checked)
         parts = [p.strip() for p in selector.split(",")]
         return Box(self, self.composer and any("ql-editor" in p or "contenteditable" in p
                                                 for p in parts))
@@ -336,7 +374,7 @@ class Page:
         return None
 
     def close(self, *args, **kwargs):
-        return None
+        self.closed += 1
 
     def __getattr__(self, name):
         return lambda *args, **kwargs: None
@@ -534,8 +572,10 @@ class Context:
     def __init__(self, settings_page):
         self.settings_page = settings_page
         self.request = Session()
+        self.opened = 0
 
     def new_page(self):
+        self.opened += 1
         return self.settings_page
 
 
@@ -710,9 +750,8 @@ def main():
     settings = Page(clock, composer=False, landed="https://gemini.google.com/personalization-settings",
                     checked="false")
     p = provider_on(Page(clock), settings)
-    got = p._read_personal_context()
-    record("personal context off reads off", got == "off" and p.memory == "off",
-           "read {!r}, health memory {!r}".format(got, p.memory))
+    p._guard()
+    record("personal context off reads off", p.memory == "off", "health memory {!r}".format(p.memory))
 
     settings = Page(clock, composer=False, landed="https://gemini.google.com/personalization-settings",
                     checked="true")
@@ -743,14 +782,14 @@ def main():
     settings = Page(clock, composer=False, landed="https://gemini.google.com/personalization-settings",
                     checked=None)
     p = provider_on(Page(clock), settings)
-    got = p._read_personal_context()
     try:
         p._guard()
         outcome = "sent"
     except ProviderError as exc:
         outcome = exc.kind
     record("a switch that never renders reads unknown and does not block",
-           got == "unknown" and outcome == "sent", "read {!r}, outcome {!r}".format(got, outcome))
+           p.memory == "unknown" and outcome == "sent",
+           "health memory {!r}, outcome {!r}".format(p.memory, outcome))
 
     # Whole turns, through _run, on the fake page.
     stream_ok = Response("https://gemini.google.com/_/BardChatUi/data/assistant.lamda."
@@ -1017,6 +1056,152 @@ def main():
            what.startswith("refused") and "unusual-traffic" in what and not page.deleted
            and clock.now - started < 5, "{} after {:.0f}s deleted {}".format(
                what[:120], clock.now - started, page.deleted))
+
+    # The account's other memory switch, measured 2026-10-01: saved info has /saved-info to itself,
+    # with one switch; /personalization-settings says nothing about it. Its label follows the
+    # interface's language and its id is the personal context switch's own, so it is told by its
+    # page and by being the only switch there.
+    home, saved_url = "https://gemini.google.com/personalization-settings", "https://gemini.google.com/saved-info"
+    signin = "https://accounts.google.com/v3/signin/identifier?continue=x"
+
+    def account(personal="false", **saved):
+        return Page(clock, composer=False, landed=home, checked=personal, **saved)
+
+    def look(settings, p=None):
+        """(outcome, its words, the provider, seconds) of one look before speaking."""
+        p, started = p or provider_on(Page(clock), settings), clock.now
+        try:
+            p._guard()
+            return "sent", "", p, clock.now - started
+        except ProviderError as exc:
+            return exc.kind, str(exc), p, clock.now - started
+        except Exception as exc:
+            return "crashed", "{}: {}".format(type(exc).__name__, exc), p, clock.now - started
+
+    def pages(settings):
+        return [url.rsplit("/", 1)[-1] for url in settings.asked]
+
+    settings = account(saved="true")
+    outcome, said, p, took = look(settings)
+    record("saved info on refuses the turn, naming the switch and its page",
+           outcome == "provider_misconfigured" and "saved info" in said
+           and "gemini.google.com/saved-info" in said and "personal context" not in said
+           and p.memory == "on", "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:120]))
+
+    page = Page(clock)
+    page.replies, page.answer = [stream_ok], "should never be asked"
+    what, result = run_on(page, account(saved="true"))
+    record("a turn with saved info on is refused before anything is sent",
+           what.startswith("refused: provider_misconfigured") and page.sent == [],
+           "{} sent {}".format(what, len(page.sent)))
+
+    settings = account()
+    outcome, said, p, took = look(settings)
+    record("both switches off read off, each from its own page, in one tab",
+           outcome == "sent" and p.memory == "off" and settings.asked == [home, saved_url]
+           and p._context.opened == 1, "outcome {!r} memory {!r} loaded {} tabs {}".format(
+               outcome, p.memory, pages(settings), p._context.opened))
+
+    for label, saved in (("a saved-info switch that never renders", {"saved": None}),
+                         ("two switches on the saved-info page, the first off", {"saved_shown": 2}),
+                         ("two switches on the saved-info page, the first on",
+                          {"saved_shown": 2, "saved": "true"}),
+                         ("a saved-info switch that says neither true nor false", {"saved": "mixed"}),
+                         ("a saved-info page sent elsewhere on the site",
+                          {"saved_landed": "https://gemini.google.com/app"})):
+        outcome, said, p, took = look(account(**saved))
+        record("{} reads unknown and does not block".format(label),
+               outcome == "sent" and p.memory == "unknown" and took < 20,
+               "outcome {!r} memory {!r} after {:.0f}s".format(outcome, p.memory, took))
+
+    outcome, said, p, took = look(account(personal=None, saved="true"))
+    record("saved info on refuses even when personal context could not be read",
+           outcome == "provider_misconfigured" and "saved info" in said and p.memory == "on",
+           "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:60]))
+
+    settings = account(personal=None)
+    outcome, said, p, took = look(settings)
+    record("personal context unread and saved info off reads unknown, never off",
+           outcome == "sent" and p.memory == "unknown" and settings.asked == [home, saved_url],
+           "outcome {!r} memory {!r} loaded {}".format(outcome, p.memory, pages(settings)))
+
+    page = Page(clock)
+    page.replies = [stream_ok]
+    kind, message, took, p = refusal(page, account(saved_landed=sorry))
+    record("Google's unusual-traffic check on the saved-info page is blocked, a provider error",
+           kind == "provider_error" and "unusual-traffic" in message and p.memory == "blocked"
+           and page.sent == [] and "q=" not in message and "EgQ" not in message,
+           "{} memory {} sent {}: {!r}".format(kind, p.memory, len(page.sent), message[:80]))
+
+    outcome, said, p, took = look(account(saved_landed=signin))
+    record("a saved-info page that ends at Google's sign-in is a signed-out session, refused",
+           outcome == "provider_misconfigured" and "signed out" in said and p.memory == "signed-out",
+           "outcome {!r} memory {!r} {!r}".format(outcome, p.memory, said[:60]))
+
+    for label, settings, kind, memory, words in (
+            ("personal context on", account(personal="true", saved="true"), "provider_misconfigured",
+             "on", "personal context"),
+            ("a signed-out session", Page(clock, composer=False, landed=saved_url, checked="false"),
+             "provider_misconfigured", "signed-out", "signed out"),
+            ("Google's unusual-traffic check", Page(clock, composer=False, landed=sorry),
+             "provider_error", "blocked", "unusual-traffic")):
+        outcome, said, p, took = look(settings)
+        record("{}: the look ends at the settings page, saved info is not loaded".format(label),
+               outcome == kind and p.memory == memory and words in said and "saved info" not in said
+               and settings.asked == [home], "outcome {!r} memory {!r} loaded {} {!r}".format(
+                   outcome, p.memory, pages(settings), said[:50]))
+
+    settings = account()
+    page = Page(clock)
+    page.answer, page.replies = "a plain reply", [stream_ok]
+    p = provider_on(page, settings)
+    first = p._run("hello")
+    settings.saved = "true"
+    try:
+        p._run("hello again")
+        second = "sent"
+    except ProviderError as exc:
+        second = exc.kind
+    record("every turn reads both switches again: saved info turned on between two turns refuses the second",
+           first.success and second == "provider_misconfigured" and len(page.sent) == 1
+           and settings.asked == [home, saved_url] * 2 and p.memory == "on",
+           "first {} second {!r} sent {} loaded {} memory {!r}".format(
+               first.success, second, len(page.sent), pages(settings), p.memory))
+
+    for label, after, expected in (("unreadable", None, "unknown"), ("off", "false", "off")):
+        settings = account(saved="true")
+        outcome, said, p, took = look(settings)
+        settings.saved = after
+        again, said, p, took = look(settings, p)
+        record("memory keeps no earlier reading: on, then {}, reads {}".format(label, expected),
+               outcome == "provider_misconfigured" and again == "sent" and p.memory == expected,
+               "first {!r} then {!r} memory {!r}".format(outcome, again, p.memory))
+
+    failing = account(saved="true")
+    failing.fails = ("personalization-settings",)
+    outcome, said, p, took = look(failing)
+    record("a settings page that fails to load does not stop saved info from being read",
+           outcome == "provider_misconfigured" and "saved info" in said and p.memory == "on",
+           "outcome {!r} memory {!r} loaded {}".format(outcome, p.memory, pages(failing)))
+
+    failing = account()
+    failing.fails = ("saved-info",)
+    outcome, said, p, took = look(failing)
+    record("a saved-info page that fails to load reads unknown and does not block",
+           outcome == "sent" and p.memory == "unknown" and failing.asked == [home, saved_url],
+           "outcome {!r} memory {!r} loaded {}".format(outcome, p.memory, pages(failing)))
+
+    tabs = []
+    for label, settings in (("off", account()), ("saved info on", account(saved="true")),
+                            ("unreadable", account(saved=None)), ("blocked", account(saved_landed=sorry)),
+                            ("personal context on", account(personal="true")),
+                            ("signed out", Page(clock, composer=False, landed=saved_url, checked="false")),
+                            ("a failed load", failing)):
+        before = settings.closed
+        outcome, said, p, took = look(settings)
+        tabs.append((label, p._context.opened, settings.closed - before))
+    record("the settings tab is closed whatever the look found",
+           all(opened == 1 and closed == 1 for label, opened, closed in tabs), repr(tabs))
 
     reference = Path("/tmp/gemini-driver-test/reference.png")
     reference.parent.mkdir(parents=True, exist_ok=True)
