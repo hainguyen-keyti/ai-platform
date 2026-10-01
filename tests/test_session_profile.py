@@ -10,7 +10,7 @@ back, and a Gemini login was signed out by Google after four such launches in 47
 profile directory and one seed a second launch reads the same device, keeps its cookies, and a
 second browser on the same profile is refused by Chromium itself.
 The sessions folder here is as this machine has it: each provider's old state file, a cookie still
-in it, lies beside the profile its login made. Prints N/11 PASSED.
+in it, lies beside the profile its login made. Prints N/12 PASSED.
 """
 
 import http.server
@@ -111,16 +111,26 @@ def log_in(sessions, name):
         context.close()
 
 
-def folder(seeds=None):
-    """A sessions folder: each provider's old state file, and a profile for each seed text given."""
+def folder(seeds=None, used=()):
+    """A sessions folder: each provider's old state file, and a profile for each seed given (text,
+    bytes, or None for no seed file). A used profile already holds what a browser left in it."""
     sessions = Path(tempfile.mkdtemp(prefix="session-profile-test-"))
     for name, _ in DRIVERS:
         (sessions / "{}.json".format(name)).write_text(OLD_STATE)
-    for name, text in (seeds or {}).items():
+    for name, seed in (seeds or {}).items():
         (sessions / name).mkdir()
-        if text is not None:
-            (sessions / name / SEED).write_text(text)
+        if seed is not None:
+            (sessions / name / SEED).write_bytes(seed if isinstance(seed, bytes) else seed.encode())
+        if name in used:
+            (sessions / name / "Local State").write_text("{}")
     return sessions
+
+
+def raw_seed(sessions, name):
+    try:
+        return (sessions / name / SEED).read_bytes()
+    except OSError:
+        return None
 
 
 def seeds(launch):
@@ -238,17 +248,40 @@ def main():
     check("the seed is drawn once, at the login, and a second login keeps the device", drawn_once)
 
     def lost_seed():
+        def login(sessions_):
+            first, opened, refused = len(launches), False, None
+            try:
+                session.open_session(sessions_, "chatgpt", create=True).close()
+                opened = True
+            except Exception as exc:
+                refused = exc
+            return opened, refused, len(launches) - first
+
+        def driver(sessions_):
+            return refusal(chatgpt.ChatGPTProvider, sessions_)
+
+        cases = [(label, seed, driver, ()) for label, seed in (
+            ("no seed file", None), ("empty", ""), ("words", "garbage"), ("negative", "-5"), ("zero", "0"),
+            ("underscore", "2_4680"), ("thirty digits", "9" * 30), ("just under", "9999"), ("just over", "100000"),
+            ("not text", b"\xff\xfe\x00\x01"), ("other digits", "12³45"), ("unreadable", "24680"))]
+        cases += [("a login into a used profile with no seed", None, login, ("chatgpt",)),
+                  ("a login onto a seed that is no seed", "garbage", login, ())]
         said = {}
-        for label, text in (("no seed file", None), ("empty", ""), ("words", "garbage"), ("negative", "-5"),
-                            ("zero", "0"), ("underscore", "2_4680"), ("thirty digits", "9" * 30)):
-            broken = folder({"chatgpt": text})
-            opened, refused, made = refusal(chatgpt.ChatGPTProvider, broken)
-            after = kept_seed(broken, "chatgpt")
+        for label, seed, opener, used in cases:
+            broken = folder({"chatgpt": seed}, used)
+            if label == "unreadable":
+                (broken / "chatgpt" / SEED).chmod(0)
+            before = None if label == "unreadable" else raw_seed(broken, "chatgpt")
+            opened, refused, made = opener(broken)
+            after = None if label == "unreadable" else raw_seed(broken, "chatgpt")
             fine = (not opened and made == 0 and isinstance(refused, ProviderError)
-                    and "scripts/login_provider.py chatgpt" in str(refused) and after == (text if text is None else text.strip()))
-            said[label] = "refused" if fine else "{}, {} launch(es), seed file now {!r}".format(
-                "OPENED" if opened else type(refused).__name__, made, after)
-        return all(v == "refused" for v in said.values()), str(said)
+                    and refused.kind == "provider_error"
+                    and "scripts/login_provider.py chatgpt" in str(refused) and after == before)
+            said[label] = "refused" if fine else "{}, {} launch(es), seed file {!r} then {!r}".format(
+                "OPENED" if opened else "{} ({})".format(type(refused).__name__, getattr(refused, "kind", "no kind")),
+                made, before, after)
+        wrong = {label: what for label, what in said.items() if what != "refused"}
+        return not wrong, "{} of {} refused{}".format(len(said) - len(wrong), len(said), ": " + str(wrong) if wrong else "")
     check("a profile whose seed is lost or unreadable is refused in words, not given a new device", lost_seed)
 
     def outlives():
@@ -289,12 +322,17 @@ def main():
                 except Exception as exc:
                     out[name] = "refused" if "scripts/login_provider.py {}".format(name) in str(exc) else str(exc)[:40]
             return out
+        names = [name for name, _ in DRIVERS]
         bare = starts(folder())
-        empty = starts(folder({name: None for name, _ in DRIVERS}))
-        one = starts(folder({"chatgpt": "24680"}))
+        empty = starts(folder({name: None for name in names}))
+        seedless = starts(folder({name: None for name in names}, used=names))
+        alone = {name: starts(folder({name: "24680"})) for name in names}
         ok = (set(bare.values()) == {"refused"} and set(empty.values()) == {"refused"}
-              and one == {"chatgpt": "started", "grok": "refused", "gemini": "refused"})
-        return ok, "old state files only {}; empty directories {}; only chatgpt logged in {}".format(bare, empty, one)
+              and set(seedless.values()) == {"refused"}
+              and all(alone[name] == {other: "started" if other == name else "refused" for other in names}
+                      for name in names))
+        return ok, ("old state files only {}; empty directories {}; used profiles with no seed {}; each provider "
+                    "logged in alone {}".format(bare, empty, seedless, alone))
     check("a provider whose login never made its profile says so at start", start_says)
 
     def stop_frees():
@@ -313,8 +351,10 @@ def main():
         for name, cls in DRIVERS:
             opened, refused, made = refusal(cls, bare)
             fine = (not opened and made == 0 and isinstance(refused, ProviderError)
+                    and refused.kind == "provider_error"
                     and "scripts/login_provider.py {}".format(name) in str(refused))
-            said[name] = "refused" if fine else ("OPENED" if opened else "{}: {}".format(type(refused).__name__, str(refused)[:40]))
+            said[name] = "refused" if fine else ("OPENED" if opened else "{} ({}): {}".format(
+                type(refused).__name__, getattr(refused, "kind", "no kind"), str(refused)[:40]))
         left = sorted(f.name for f in bare.iterdir())
         return (set(said.values()) == {"refused"} and left == sorted("{}.json".format(name) for name, _ in DRIVERS),
                 "{}; the folder holds {}".format(said, left))
@@ -335,6 +375,7 @@ def main():
             cloakbrowser.launch_persistent_context = answer("a browser")
             seen["window"] = session.open_session(given, "chatgpt", headless=False)
             seen["default"] = session.open_session(given, "chatgpt")
+            seen["edges"] = [session.open_session(folder({"chatgpt": edge}), "chatgpt") for edge in ("10000", "99999")]
             for label, error in (("other", RuntimeError("the binary would not start")),
                                  ("held", RuntimeError("Failed to create a ProcessSingleton for your profile directory"))):
                 cloakbrowser.launch_persistent_context = answer(error)
@@ -345,11 +386,21 @@ def main():
                     seen[label] = "{}: {}".format(type(exc).__name__, str(exc)[:70])
         finally:
             cloakbrowser.launch_persistent_context = real
-        ok = (asked[:2] == [False, True] and seen["other"] == "RuntimeError: the binary would not start"
+        ok = (asked[:2] == [False, True] and seen["edges"] == ["a browser", "a browser"]
+              and seen["other"] == "RuntimeError: the binary would not start"
               and seen["held"].startswith("ProviderError: the chatgpt session is open in another browser"))
-        return ok, "asked for a window, then by default: headless {}; another failure {!r}; a held profile {!r}".format(
-            asked[:2], seen.get("other"), seen.get("held"))
+        return ok, ("asked for a window, then by default: headless {}; the smallest and the largest seed open {}; "
+                    "another failure {!r}; a held profile {!r}".format(
+                        asked[:2], len(seen.get("edges") or []), seen.get("other"), seen.get("held")))
     check("the way in opens with a window when asked, and a launch that fails says its own reason", way_in)
+
+    def only_the_login_makes():
+        sources = (list((ROOT / "worker" / "src").rglob("*.py")) + list((ROOT / "scripts").glob("*.py"))
+                   + [ROOT / "tests" / name for name in ("gemini_probe.py", "grok_probe.py", "provider_probe.py")])
+        asking = sorted(str(path.relative_to(ROOT)) for path in sources if "create=True" in path.read_text())
+        return asking == ["scripts/login_provider.py"], "create=True is written in {}, of {} files read".format(
+            asking, len(sources))
+    check("only the login script asks for a profile to be made", only_the_login_makes)
 
     server.shutdown()
     passed = sum(1 for ok in results if ok)

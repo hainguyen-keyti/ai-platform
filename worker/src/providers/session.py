@@ -31,15 +31,23 @@ def saved(sessions_path, name: str) -> bool:
 
 
 def device_seed(profile: Path, draw: bool = False) -> int:
-    """The profile's own seed, kept beside its cookies. Only a login draws one, and only once."""
+    """The profile's own seed, kept beside its cookies.
+
+    Only a login draws one, once, and only into a profile no browser has used: a used profile whose
+    seed is gone holds a session made as a device nobody can name any more.
+    """
     kept = profile / SEED_FILE
-    if draw and not kept.exists():
-        kept.write_text(str(random.randint(*SEEDS)))
+    if draw and not kept.exists() and not any(entry.name != ".DS_Store" for entry in profile.iterdir()):
+        try:
+            with open(kept, "x") as fresh:
+                fresh.write(str(random.randint(*SEEDS)))
+        except FileExistsError:
+            pass
     try:
         text = kept.read_text().strip()
-    except OSError:
+    except (OSError, ValueError):
         text = ""
-    if not text.isdigit() or not SEEDS[0] <= int(text) <= SEEDS[1]:
+    if not (text.isascii() and text.isdigit()) or not SEEDS[0] <= int(text) <= SEEDS[1]:
         raise ProviderError(BAD_SEED.format(kept, profile.name))
     return int(text)
 

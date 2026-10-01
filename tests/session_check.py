@@ -3,6 +3,7 @@
 against the running stack, as a person would send it.
 
     INVITE_CODE=... python tests/session_check.py [chatgpt] [grok] [gemini] [--keep] [--mock]
+    python tests/session_check.py --self-test     # its verdict against a table, no stack needed
 
 Standard library only. It registers a throwaway user and asks each provider named (or every provider
 a worker serves, when none is named) for the single word "pong". A provider passes only when its turn
@@ -62,6 +63,49 @@ def account_reading(provider):
     return health.get("mode"), ((health.get("providers") or {}).get(provider) or {}).get("memory")
 
 
+def answered(status, text, mode, memory, mock):
+    """Whether this turn shows a provider's own session answering (or, with mock, the check working)."""
+    if mock:
+        return status == "done" and mode == "mock" and "pong" in text.casefold()
+    return status == "done" and re.sub(r"[^a-z]", "", text.casefold()) == "pong" and mode == "real" and memory == "off"
+
+
+ECHO = "mock reply from chatgpt to: Reply with the single word: pong"
+# status, reply, the worker's mode, its reading of the account's memory, --mock, the verdict owed.
+VERDICTS = (
+    ("done", "pong", "real", "off", False, True),
+    ("done", " Pong. ", "real", "off", False, True),
+    ("done", ECHO, "real", "off", False, False),
+    ("done", "ping pong", "real", "off", False, False),
+    ("done", "", "real", "off", False, False),
+    ("done", "pong", "mock", "off", False, False),
+    ("done", "pong", None, "off", False, False),
+    ("done", "pong", "real", "unknown", False, False),
+    ("done", "pong", "real", "on", False, False),
+    ("done", "pong", "real", "signed-out", False, False),
+    ("done", "pong", "real", None, False, False),
+    ("failed", "pong", "real", "off", False, False),
+    ("cancelled", "pong", "real", "off", False, False),
+    (None, "pong", "real", "off", False, False),
+    ("done", ECHO, "mock", "off", True, True),
+    ("done", ECHO, "mock", None, True, True),
+    ("done", ECHO, "real", "off", True, False),
+    ("done", "pong", "real", "off", True, False),
+    ("done", ECHO, None, None, True, False),
+    ("failed", ECHO, "mock", "off", True, False),
+    ("done", "no word here", "mock", "off", True, False),
+)
+
+
+def self_test():
+    """The verdict against its own table: no stack, no turn."""
+    wrong = [row for row in VERDICTS if bool(answered(*row[:5])) is not row[5]]
+    for row in wrong:
+        print("[FAIL] status {!r}, reply {!r}, mode {!r}, memory {!r}, mock {}: owed {}".format(*row))
+    print("{}/{} PASSED".format(len(VERDICTS) - len(wrong), len(VERDICTS)))
+    return 1 if wrong else 0
+
+
 def ask(provider, token, made, mock):
     status, body = http("POST", API + "/chat", {"provider": provider, "message": PROMPT}, token)
     if status != 202:
@@ -75,17 +119,15 @@ def ask(provider, token, made, mock):
         time.sleep(1)
     text = " ".join(((job.get("result") or {}).get("text") or "").split())
     mode, memory = account_reading(provider)
-    if mock:
-        ok = job.get("status") == "done" and mode == "mock" and "pong" in text.casefold()
-    else:
-        ok = (job.get("status") == "done" and re.sub(r"[^a-z]", "", text.casefold()) == "pong"
-              and mode == "real" and memory == "off")
+    ok = answered(job.get("status"), text, mode, memory, mock)
     return ok, "{} in {:.0f}s, reply {!r}{}, worker mode {}, memory {}".format(
         job.get("status") or "no answer", time.time() - started, text[:60],
         ", error {!r}".format((job.get("error") or "")[:90]) if job.get("error") else "", mode, memory)
 
 
 def main():
+    if "--self-test" in sys.argv[1:]:
+        return self_test()
     named = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
     keep, mock = "--keep" in sys.argv[1:], "--mock" in sys.argv[1:]
     invite = os.environ.get("INVITE_CODE")
