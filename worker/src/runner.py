@@ -11,6 +11,9 @@ TOMBSTONE_INTERVAL_SECONDS = 10.0
 # How often a runner busy outside a live job (deleting a thread, finishing a cancelled one) says it
 # is alive, as often as its pauses between turns do.
 BUSY_PING_SECONDS = 5.0
+# How long a runner in a job goes at most without asking whether the job is still its own, whatever the
+# lease: a third of production's lease was 140s, and a Stop reached the driver after its turn had ended.
+CANCEL_CHECK_SECONDS = 5.0
 
 
 class Runner(threading.Thread):
@@ -136,7 +139,7 @@ class Runner(threading.Thread):
             self.last_error = "thread deletion failed: {}".format(result.error)
 
     def _heartbeat(self, client, job_id, attempt, lease_seconds, lost, finished):
-        interval = max(0.5, lease_seconds / 3.0)
+        interval = max(0.5, min(lease_seconds / 3.0, CANCEL_CHECK_SECONDS))
         while not finished.wait(interval):
             try:
                 response = client.post("/internal/jobs/{}/heartbeat".format(job_id),

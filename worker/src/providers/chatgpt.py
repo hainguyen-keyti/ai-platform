@@ -265,6 +265,8 @@ class ChatGPTProvider(BaseProvider):
         # Where a cancelled turn had already landed, so the api can still keep
         # or remove that thread even though the result itself is refused.
         self.last_cancelled_thread = None
+        # The last stop: whether its turn had been sent and the site's stop pressed. Shown in health.
+        self.last_stop = None
 
     def start(self) -> None:
         # The browser itself is created on first use: the sync driver is bound to
@@ -760,6 +762,20 @@ class ChatGPTProvider(BaseProvider):
             )
         return artifacts
 
+    def _stopped(self, sent: bool, pressed: bool):
+        self.last_stop = {"sent": sent, "pressed": pressed, "at": round(time.time(), 1)}
+
+    def _press_stop(self, page) -> bool:
+        """Press the site's stop button if a reply is still being written; True once pressed."""
+        try:
+            button = page.locator(STOP_BUTTON).first
+            if button.count():
+                button.click(timeout=5000)
+                return True
+        except Exception:
+            pass
+        return False
+
     def _run(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
         # Never let a cancel report the previous turn's thread as this one's.
         self.last_cancelled_thread = None
@@ -782,6 +798,12 @@ class ChatGPTProvider(BaseProvider):
         # A banner left over from an earlier turn is not this turn's failure.
         banner_before = self._banner(page)
         baseline_ids = self._baseline_ids(page)
+        # The last moment a job taken away can stay unsent: once typed, the turn is the site's.
+        try:
+            self._check_stop()
+        except JobCancelled:
+            self._stopped(sent=False, pressed=False)
+            raise
         started = time.time()
         self.last_cancelled_thread = thread_url
         self._send(page, prompt)
@@ -806,6 +828,9 @@ class ChatGPTProvider(BaseProvider):
                     page, self._thread_id(page) or "", fresh, prompt, {upload} if upload else set())
                 media += files or self._save_files(page, seen_downloads, prompt)
         except JobCancelled:
+            # Left alone the site writes or draws the turn out for nobody; measured 2026-10-01, its stop
+            # button ends a text where it is and a picture before it arrives.
+            self._stopped(sent=True, pressed=self._press_stop(page))
             # The message is already on the site, so a thread exists or is
             # about to: wait for its address (measured: a few seconds after
             # sending) so the api can keep or remove it instead of losing it to

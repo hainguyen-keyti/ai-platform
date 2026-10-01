@@ -867,17 +867,32 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     q0 = quota_now()
     job_id = start_job(SLOW_PHRASE + ": cancel me") if wanted("a running job can be cancelled") else None
     seen = wait_state(job_id, ("running",), 10) if job_id else {}
+    cancelled_at = time.time()
     cancel_status, _ = http("POST", "{}/jobs/{}/cancel".format(api, job_id), token=token) \
         if job_id else (0, None)
     final = wait_state(job_id, ("cancelled", "done", "failed"), 20) if job_id else {}
+    # Against ChatGPT the turn also stops at the site: never sent, or its stop button pressed, as the
+    # driver says in health. Measured 2026-10-01: a stopped turn used to run on there. The mock has no
+    # site to stop.
+    at_site = real and provider == "chatgpt"
+    stop = None
+    deadline = time.time() + 30
+    while at_site and job_id and time.time() < deadline:
+        got = ((http("GET", worker_health)[1] or {}).get("providers") or {}).get(provider, {}).get("last_stop")
+        if got and got.get("at", 0) >= cancelled_at - 1:
+            stop = got
+            break
+        time.sleep(1)
+    stopped = not at_site or bool(stop and (stop.get("sent") is False or stop.get("pressed") is True))
     if (cancel_status == 200 and final.get("status") == "cancelled"
-            and not ((final.get("result") or {}).get("media")) and quota_now() == q0):
+            and not ((final.get("result") or {}).get("media")) and quota_now() == q0 and stopped):
         c["a running job can be cancelled"].passed(
-            "cancelled while {}, credit returned".format(seen.get("status")))
+            "cancelled while {}, credit returned{}".format(
+                seen.get("status"), ", at the site {}".format(stop) if at_site else ""))
     else:
         c["a running job can be cancelled"].failed(
-            "cancel {} final {} quota {} -> {}".format(
-                cancel_status, final.get("status"), q0, quota_now()))
+            "cancel {} final {} quota {} -> {} stopped at the site {}".format(
+                cancel_status, final.get("status"), q0, quota_now(), stop if at_site else "n/a"))
 
     # A day passes (the api is restarted with its clock moved forward): the
     # balance comes back to the cap once, does not stack on a second look, and a

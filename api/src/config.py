@@ -31,8 +31,8 @@ class Settings:
         # before it is failed and refunded, floored below so a healthy worker in
         # the middle of a long turn is never mistaken for a missing one.
         self.no_worker_seconds = int(os.environ.get("NO_WORKER_SECONDS", "180"))
-        # A busy worker proves it is alive by its heartbeat, one beat per third
-        # of the lease. Two intervals covers a missed beat, and thirty seconds
+        # A busy worker proves it is alive by its heartbeat, at most a third of
+        # the lease apart. Two intervals covers a missed beat, and thirty seconds
         # covers a restart; shorter than that and a job queued behind a healthy
         # long turn is failed as unserved.
         floor = int(self.job_lease_seconds / 3.0) * 2 + 30
