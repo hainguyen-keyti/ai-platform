@@ -5,14 +5,25 @@
 
 Measured 2026-10-01: chatgpt.com keeps its session cookie in chunks, `...session-token.0` and
 `.1` (the names in the session saved on 2026-09-27), and the script waited for the plain name
-only: the owner logged in, the script never saw it, and Ctrl+C lost the login. Prints N/5 PASSED.
+only: the owner logged in, the script never saw it, and Ctrl+C lost the login.
+
+The same day a state file saved by one browser and loaded by others cost two fresh logins, so the
+login opens the provider's own profile, the one the drivers open, and saves nothing beside it.
+Prints N/7 PASSED.
 """
 
+import contextlib
 import importlib.util
+import io
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "worker"))
+
+from src.providers.base import ProviderError  # noqa: E402
+
 spec = importlib.util.spec_from_file_location("login_provider", ROOT / "scripts" / "login_provider.py")
 login = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(login)
@@ -36,6 +47,73 @@ class Context:
 
     def cookies(self):
         return self.jar
+
+
+class LoginPage:
+    url = "https://grok.com/"
+
+    def goto(self, url, **kwargs):
+        self.url = url
+
+    def evaluate(self, script, *args):
+        return 200
+
+
+class LoggedIn(Context):
+    """A browser in which the owner has just signed in to Grok."""
+
+    def __init__(self):
+        super().__init__(("sso", ".grok.com"), ("sso-rw", ".grok.com"))
+        self.pages = [LoginPage()]
+        self.closed = 0
+
+    def new_page(self):
+        return self.pages[0]
+
+    def storage_state(self, path=None):
+        Path(path).write_text("{}")
+
+    def close(self):
+        self.closed += 1
+
+
+class OldWay:
+    """What the script opened before: a browser with no profile, launched for the occasion."""
+
+    def __init__(self, context, seen):
+        self.context, self.seen = context, seen
+
+    def launch(self, **kwargs):
+        self.seen.append(("launch", (), kwargs))
+        return self
+
+    def new_context(self, **kwargs):
+        return self.context
+
+    def close(self):
+        self.context.closed += 1
+
+
+def run_login(opener):
+    """The script's own main for grok, on fakes: no window, no waiting. What it returned, said and left."""
+    sessions = Path(tempfile.mkdtemp(prefix="login-provider-test-"))
+    context, seen, said = LoggedIn(), [], io.StringIO()
+
+    def open_session(*args, **kwargs):
+        seen.append(("open_session", args, kwargs))
+        return opener(context)
+
+    kept = sys.argv, login.time.sleep, getattr(login, "cloakbrowser", None), getattr(login, "open_session", None)
+    sys.argv, login.time.sleep = ["login_provider.py", "grok", str(sessions)], lambda seconds: None
+    login.cloakbrowser, login.open_session = OldWay(context, seen), open_session
+    try:
+        with contextlib.redirect_stdout(said):
+            code = login.main()
+    except Exception as exc:
+        code = "{}: {}".format(type(exc).__name__, str(exc)[:80])
+    finally:
+        sys.argv, login.time.sleep, login.cloakbrowser, login.open_session = kept
+    return code, seen, context, sessions, said.getvalue()
 
 
 def main():
@@ -62,6 +140,27 @@ def main():
     chatgpt = login.signed_in(Context(*anonymous, *lookalikes), CHATGPT)
     record("a cookie whose name only starts the same does not count", google is None and chatgpt is None,
            "google {!r}, chatgpt {!r}".format(google, chatgpt))
+
+    code, seen, context, sessions, said = run_login(lambda context: context)
+    how = [call[0] for call in seen]
+    args, kwargs = (seen[0][1], seen[0][2]) if seen else ((), {})
+    record("the login opens the provider's own profile, with a window, and writes no state file",
+           code == 0 and how == ["open_session"] and [str(a) for a in args[:2]] == [str(sessions), "grok"]
+           and kwargs.get("headless") is False and kwargs.get("create") is True and context.closed == 1
+           and not list(sessions.glob("*.json")),
+           "returned {}, opened by {} with {} {}, closed {} time(s), state files {}".format(
+               code, how, [str(a)[-28:] for a in args[:2]], kwargs, context.closed,
+               sorted(f.name for f in sessions.glob("*.json"))))
+
+    def in_use(context):
+        raise ProviderError("the grok session is open in another browser: stop that one first")
+
+    code, seen, context, sessions, said = run_login(in_use)
+    record("a profile open elsewhere is said in words and the login gives up",
+           code == 1 and [call[0] for call in seen] == ["open_session"] and "another browser" in said
+           and context.closed == 0 and not list(sessions.iterdir()),
+           "returned {}, opened by {}, said {!r}, left {}".format(
+               code, [call[0] for call in seen], said.strip()[-70:], sorted(f.name for f in sessions.iterdir())))
 
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))
