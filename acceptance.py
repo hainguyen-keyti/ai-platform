@@ -51,6 +51,8 @@ CHECKS = (
     "a conversation's media downloads as one zip",
     "deleting a conversation removes its media files and the provider thread",
     "a turn taken away before it was sent leaves no thread, by the worker's own word",
+    "a silent driver leaves its turn unaccounted for, whatever an older record says",
+    "a driver that says unsent of a turn that made a thread is believed only once it is removed",
     "deleting a conversation cancels its running job and refunds",
     "the gate's rule for a turn taken away holds on its table",
     "a tombstone is handed out once per attempt",
@@ -125,45 +127,84 @@ SLOW_PHRASE = "take your time"
 BROKEN_PHRASE = "pretend the provider broke"
 MEMORY_PHRASE = "pretend memory is on"
 UNSENT_PHRASE = "wait before you speak"
+SILENT_PHRASE = "and say nothing of it"
+LYING_PHRASE = "and call it unsent"
 
 THREAD_MARKER = re.compile(r"\[thread=([^\]]+)\]")
 
 
-def thread_accounted(removed, stop, moment, waiting):
+def thread_accounted(removed, stop, moment, owed):
     """What became, at the provider, of a turn taken away from a running job at `moment`.
 
-    "removed": the worker removed a thread tombstoned after that moment. "unsent": the driver's own
-    stop record, made after that moment (its time is rounded to a tenth), says the turn never went
-    out, and no tombstone waits, so there is no thread to remove. None: nothing accounts for the
-    turn yet. A record that says the turn was sent accounts for nothing: only its thread's removal
-    does.
+    While anything is still owed for the turn (its result not handed back, a tombstone made since
+    and not settled, the api's record unreadable), nothing accounts for it: None. After that,
+    "removed": the worker removed a thread tombstoned since. Or "unsent": the driver's own stop
+    record, made at or after that moment (its time is rounded to a tenth), says the turn never went
+    out, so there is no thread to remove. A record that says the turn was sent accounts for
+    nothing: only its thread's removal does.
     """
+    if owed:
+        return None
     if removed:
         return "removed"
-    if stop and stop.get("at", 0) >= moment - 0.1 and stop.get("sent") is False and not waiting:
+    if stop and stop.get("at", 0) >= moment - 0.05 and stop.get("sent") is False:
         return "unsent"
     return None
 
 
-# The rule above, row by row, for a turn taken away at 1000 on the clock the gate shares with its
-# worker: a thread removed, the driver's stop record, a tombstone still waiting, the answer owed.
+# The rule above, row by row: a thread removed, the driver's stop record, the moment the turn was
+# taken away (on the clock the gate shares with its worker), something still owed, the answer.
+# A record's time is rounded to a tenth: one made at or after a moment reads at most 0.05 below it.
 ACCOUNTED = (
-    (True, None, False, "removed"),
-    (True, {"sent": False, "pressed": False, "at": 1005.0}, False, "removed"),
-    (False, None, False, None),
-    (False, {}, False, None),
-    (False, {"sent": False, "pressed": False, "at": 1005.0}, False, "unsent"),
-    (False, {"sent": False, "pressed": False, "at": 999.95}, False, "unsent"),
-    (False, {"sent": False, "pressed": False, "at": 999.5}, False, None),
-    (False, {"sent": False, "pressed": False, "at": 990.0}, False, None),
-    (False, {"sent": False, "pressed": False}, False, None),
-    (False, {"sent": True, "pressed": True, "at": 1005.0}, False, None),
-    (False, {"sent": True, "pressed": False, "at": 1005.0}, False, None),
-    (False, {"sent": None, "pressed": False, "at": 1005.0}, False, None),
-    (False, {"sent": 0, "pressed": False, "at": 1005.0}, False, None),
-    (False, {"pressed": False, "at": 1005.0}, False, None),
-    (False, {"sent": False, "pressed": False, "at": 1005.0}, True, None),
+    (True, None, 1000.0, False, "removed"),
+    (True, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, False, "removed"),
+    (True, None, 1000.0, True, None),
+    (False, None, 1000.0, False, None),
+    (False, {}, 1000.0, False, None),
+    (False, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, False, "unsent"),
+    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.0, False, "unsent"),
+    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.049, False, "unsent"),
+    (False, {"sent": False, "pressed": False, "at": 1000.0}, 1000.051, False, None),
+    (False, {"sent": False, "pressed": False, "at": 999.9}, 1000.0, False, None),
+    (False, {"sent": False, "pressed": False, "at": 990.0}, 1000.0, False, None),
+    (False, {"sent": False, "pressed": False, "at": 1005.0}, 2000.0, False, None),
+    (False, {"sent": False, "pressed": False, "at": 499.0}, 250.0, False, "unsent"),
+    (False, {"sent": False, "pressed": False}, 1000.0, False, None),
+    (False, {"sent": True, "pressed": True, "at": 1005.0}, 1000.0, False, None),
+    (False, {"sent": True, "pressed": False, "at": 1005.0}, 1000.0, False, None),
+    (False, {"sent": None, "pressed": False, "at": 1005.0}, 1000.0, False, None),
+    (False, {"sent": 0, "pressed": False, "at": 1005.0}, 1000.0, False, None),
+    (False, {"pressed": False, "at": 1005.0}, 1000.0, False, None),
+    (False, {"sent": False, "pressed": False, "at": 1005.0}, 1000.0, True, None),
 )
+ACCOUNTED_ROWS = 20
+
+
+def still_owed(handed_back, stones, known):
+    """Whether anything is still owed for a turn taken away from a running job.
+
+    Its result not handed back yet (the api refuses it, and only then knows the turn's thread); the
+    api's record of tombstones unreadable (`stones` is None: no word is not a clean word); or a
+    tombstone made since (its id not in `known`) and not settled. `stones` holds (id, settled).
+    """
+    return (not handed_back or stones is None
+            or any(stone not in known and not settled for stone, settled in stones))
+
+
+# The same, row by row: the result handed back, the record of tombstones, the ones known before
+# the turn, the answer.
+OWED = (
+    (False, [], set(), True),
+    (False, [(7, "2026-10-02 02:00:00")], set(), True),
+    (True, None, set(), True),
+    (True, [], set(), False),
+    (True, [(7, "2026-10-02 02:00:00")], set(), False),
+    (True, [(7, None)], set(), True),
+    (True, [(7, None)], {7}, False),
+    (True, [(7, "2026-10-02 02:00:00"), (8, None)], {7}, True),
+    (True, [(7, None), (8, "2026-10-02 02:00:00")], {7}, False),
+)
+OWED_ROWS = 9
 
 
 class Check:
@@ -674,7 +715,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         _, health = http("GET", worker_health)
         return (health or {}).get("threads_deleted") or 0
 
-    def read_db(sql, args):
+    def read_db(sql, args, unreadable=()):
         try:
             con = sqlite3.connect(Path(db_path).as_uri() + "?mode=ro", uri=True)
             try:
@@ -682,7 +723,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             finally:
                 con.close()
         except sqlite3.Error:
-            return []
+            return unreadable
 
     def tombstones():
         return read_db("SELECT id, thread_url, deleted_at, claimed_at FROM thread_tombstones WHERE provider = ?",
@@ -695,11 +736,14 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         return settled and threads_deleted() >= count_before + 1
 
     def stop_record():
-        return ((http("GET", worker_health)[1] or {}).get("providers") or {}).get(provider, {}).get("last_stop")
+        health = http("GET", worker_health)[1]
+        if not isinstance(health, dict):
+            return None
+        return ((health.get("providers") or {}).get(provider) or {}).get("last_stop")
 
-    def waiting_stones(stone_ids):
-        """A tombstone new since stone_ids and not settled: a thread still to be removed."""
-        return any(stone_id not in stone_ids and not gone for stone_id, thread, gone, claimed in tombstones())
+    def results_refused():
+        health = http("GET", worker_health)[1]
+        return (health.get("results_refused") or 0) if isinstance(health, dict) else 0
 
     def own_thread(conversation_id):
         rows = read_db("SELECT provider_thread_url FROM conversations WHERE id = ?", (conversation_id,))
@@ -773,118 +817,172 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         c["deleting a conversation removes its media files and the provider thread"].failed(
             "no conversation to delete")
 
+    # ---- what became of a turn taken away from a running job ----
+
+    def taken_away(message):
+        """Post a turn, see its job running, delete its conversation: what the gate then holds."""
+        held = {"q0": quota_now(), "known": {stone[0] for stone in tombstones()},
+                "deleted_before": threads_deleted(), "refused_before": results_refused()}
+        status, body = http("POST", api + "/chat", {"provider": provider, "message": message}, token=token)
+        held["job"] = (body or {}).get("job_id") if status == 202 else None
+        conversation = (body or {}).get("conversation_id") if status == 202 else None
+        held["seen"] = (wait_state(held["job"], ("running", "done", "failed"), 20)
+                        if held["job"] else {}).get("status")
+        held["taken_at"] = time.time()
+        held["delete"] = http("DELETE", "{}/conversations/{}".format(api, conversation), token=token)[0] \
+            if conversation else 0
+        held["state"] = wait_state(held["job"], ("cancelled", "done", "failed"), job_timeout) \
+            if held["job"] else {}
+        return held
+
+    def look(held):
+        """(What accounts for the turn at this moment, the driver's stop record in hand)."""
+        stop = stop_record()
+        stones = read_db("SELECT id, deleted_at FROM thread_tombstones WHERE provider = ?", (provider,), None)
+        owed = still_owed(results_refused() > held["refused_before"], stones, held["known"])
+        return thread_accounted(worker_removed(held["known"], held["deleted_before"]), stop,
+                                held["taken_at"], owed), stop
+
+    def handed_back(held, seconds):
+        """Wait for the worker to hand the turn's result back, which the api refuses."""
+        deadline = time.time() + seconds
+        while time.time() < deadline and results_refused() <= held["refused_before"]:
+            time.sleep(0.5)
+        return results_refused() > held["refused_before"]
+
+    def cancelled_and_refunded(held):
+        return (held["seen"] == "running" and held["delete"] == 204
+                and held["state"].get("status") == "cancelled" and quota_now() == held["q0"])
+
+    def new_stones(held):
+        return [stone for stone in tombstones() if stone[0] not in held["known"]]
+
+    def told(held):
+        return "seen {} delete {} final {} quota {} -> {}".format(
+            held["seen"], held["delete"], held["state"].get("status"), held["q0"], quota_now())
+
     # Since 4536183 ChatGPT does not send a turn whose job is gone: no thread is made, nothing can
     # be removed, and the driver's own stop record is the only word on it. The mock plays that on
-    # command, so every run meets what the real gate of 2026-10-01 met. It runs before the check
-    # below, whose turn is sent: the record it leaves behind must not account for that one.
+    # command, so every run meets what the real gate of 2026-10-01 met.
     unsent_check = "a turn taken away before it was sent leaves no thread, by the worker's own word"
     if real:
         c[unsent_check].skip("needs a provider that stops before its send on command; covered in mock mode")
     else:
-        q0 = quota_now()
-        known = {stone[0] for stone in tombstones()}
-        deleted_before = threads_deleted()
-        status, body = http("POST", api + "/chat",
-                            {"provider": provider, "message": UNSENT_PHRASE + ", then delete me"},
-                            token=token)
-        unsent_job = (body or {}).get("job_id") if status == 202 else None
-        unsent_conv = (body or {}).get("conversation_id") if status == 202 else None
-        seen = wait_state(unsent_job, ("running", "done", "failed"), 20) if unsent_job else {}
-        taken_at = time.time()
-        dstatus, _ = http("DELETE", "{}/conversations/{}".format(api, unsent_conv), token=token) \
-            if unsent_conv else (0, None)
-        final = wait_state(unsent_job, ("cancelled", "done", "failed"), job_timeout) if unsent_job else {}
+        held = taken_away(UNSENT_PHRASE + ", then delete me")
         deadline = time.time() + 30
         accounted, stop = None, None
-        while unsent_job and time.time() < deadline and not accounted:
+        while held["job"] and time.time() < deadline and not accounted:
             time.sleep(1)
-            stop = stop_record()
-            accounted = thread_accounted(worker_removed(known, deleted_before), stop, taken_at,
-                                         waiting_stones(known))
-        new_stones = [stone for stone in tombstones() if stone[0] not in known]
-        if (seen.get("status") == "running" and dstatus == 204 and final.get("status") == "cancelled"
-                and quota_now() == q0 and accounted == "unsent" and not new_stones):
+            accounted, stop = look(held)
+        stones = new_stones(held)
+        if cancelled_and_refunded(held) and accounted == "unsent" and not stones:
             c[unsent_check].passed(
                 "job cancelled by the delete, credit returned, no thread made: the worker's stop "
                 "record {} and no tombstone".format(stop))
         else:
-            c[unsent_check].failed(
-                "seen {} delete {} final {} quota {} -> {} accounted {} stop record {} "
-                "new tombstones {}".format(
-                    seen.get("status"), dstatus, final.get("status"), q0, quota_now(), accounted,
-                    stop, len(new_stones)))
+            c[unsent_check].failed("{} accounted {} stop record {} new tombstones {}".format(
+                told(held), accounted, stop, len(stones)))
+
+    # No thread is not a clean word by itself. A driver that says nothing of its turn leaves it
+    # unaccounted for, even once its result is back and with an older record in hand: the one the
+    # check above left, which is why this one runs after it.
+    silent_check = "a silent driver leaves its turn unaccounted for, whatever an older record says"
+    if real:
+        c[silent_check].skip("needs a provider that keeps silent on command; covered in mock mode")
+    else:
+        held = taken_away("{} {}, then delete me".format(UNSENT_PHRASE, SILENT_PHRASE))
+        back = handed_back(held, 30)
+        looks = []
+        for _ in range(3):
+            time.sleep(1)
+            looks.append(look(held))
+        stop = looks[-1][1]
+        older = bool(stop) and stop.get("sent") is False and stop.get("at", held["taken_at"]) < held["taken_at"]
+        stones = new_stones(held)
+        if (cancelled_and_refunded(held) and back and older and not stones
+                and all(answer is None for answer, _ in looks)):
+            c[silent_check].passed(
+                "job cancelled by the delete, credit returned, its result back and no thread: "
+                "unaccounted for at {} looks, with the older record {} in hand".format(len(looks), stop))
+        else:
+            c[silent_check].failed(
+                "{} result handed back {} answers {} stop record {} older than the taking {} "
+                "new tombstones {}".format(told(held), back, [answer for answer, _ in looks], stop,
+                                           older, len(stones)))
+
+    # Nor is a driver's word enough while its own result is still out or a thread waits to be
+    # removed: this one says unsent, then reports the thread its turn made 2.5 seconds later.
+    lying_check = "a driver that says unsent of a turn that made a thread is believed only once it is removed"
+    if real:
+        c[lying_check].skip("needs a provider that misreports on command; covered in mock mode")
+    else:
+        held = taken_away("{} {}, then delete me".format(UNSENT_PHRASE, LYING_PHRASE))
+        deadline = time.time() + 60
+        accounted, stop = None, None
+        while held["job"] and time.time() < deadline and not accounted:
+            time.sleep(0.5)
+            accounted, stop = look(held)
+        # Whatever was answered, let this turn's result come back before the next check counts.
+        handed_back(held, 30)
+        lied = bool(stop) and stop.get("sent") is False and stop.get("at", 0) >= held["taken_at"] - 0.05
+        stones = new_stones(held)
+        if cancelled_and_refunded(held) and accounted == "removed" and lied and len(stones) == 1:
+            c[lying_check].passed(
+                "job cancelled by the delete, credit returned; its driver said {} of a turn that "
+                "made a thread, and only that thread's removal accounted for it".format(stop))
+        else:
+            c[lying_check].failed("{} accounted {} stop record {} said after the taking {} "
+                                  "new tombstones {}".format(told(held), accounted, stop, lied, len(stones)))
 
     # Deleting a conversation whose job is still running ends the job and gives
     # the credit back; the worker's late result is refused, so nothing of the
     # deleted conversation is written afterwards: no row, and no file either.
     # A picture is asked for so that there would be something to write.
     # The thread that turn had already opened on the provider's site is removed
-    # too, once the worker reports where it landed.
-    q0 = quota_now()
-    files_before = set(os.listdir(media_dir))
-    # The turn's thread is known only once its late result lands, so it is the tombstone that did not
-    # exist before this delete.
-    known = {stone[0] for stone in tombstones()}
-    deleted_before = threads_deleted()
-    status, body = http("POST", api + "/chat",
-                        {"provider": provider,
-                         "message": SLOW_PHRASE + ": draw a picture, then delete me while running"},
-                        token=token) \
-        if wanted("deleting a conversation cancels its running job and refunds") else (0, {})
-    doomed_job = (body or {}).get("job_id") if status == 202 else None
-    doomed_conv = (body or {}).get("conversation_id") if status == 202 else None
-    seen = wait_state(doomed_job, ("running", "done", "failed"), 20) if doomed_job else {}
-    taken_at = time.time()
-    dstatus, _ = http("DELETE", "{}/conversations/{}".format(api, doomed_conv), token=token) \
-        if doomed_conv else (0, None)
-    final = wait_state(doomed_job, ("cancelled", "done", "failed"), job_timeout) if doomed_job else {}
-    # The mock's slow picture finishes anyway and is refused; wait for that
-    # refusal so the file it had saved has been removed before looking. The
-    # real provider stops mid-turn and posts nothing to refuse.
-    refused_before = (http("GET", worker_health)[1] or {}).get("results_refused") or 0
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        if ((http("GET", worker_health)[1] or {}).get("results_refused") or 0) > refused_before:
-            break
-        time.sleep(1)
-    time.sleep(1.5)
-    files_after = set(os.listdir(media_dir))
-    deadline = time.time() + 150
-    accounted, stop = None, None
-    while doomed_job and time.time() < deadline and not accounted:
-        time.sleep(1)
-        stop = stop_record()
-        accounted = thread_accounted(worker_removed(known, deleted_before), stop, taken_at,
-                                     waiting_stones(known))
-    # The mock's slow picture always makes a thread; only a real driver can leave its turn unsent.
-    answers = ("removed", "unsent") if real else ("removed",)
-    if (seen.get("status") == "running" and dstatus == 204 and final.get("status") == "cancelled"
-            and not ((final.get("result") or {}).get("media")) and quota_now() == q0
-            and files_after == files_before and accounted in answers):
-        c["deleting a conversation cancels its running job and refunds"].passed(
-            "job cancelled by the delete, credit returned, no media row or file written, " + (
-                "a thread tombstoned after its delete removed by the worker" if accounted == "removed"
-                else "its turn never sent, by the worker's stop record {}: no thread to remove".format(stop)))
-    else:
-        c["deleting a conversation cancels its running job and refunds"].failed(
-            "seen {} delete {} final {} media {} quota {} -> {} new files {} its thread accounted {} "
-            "stop record {}".format(
-                seen.get("status"), dstatus, final.get("status"),
-                (final.get("result") or {}).get("media"), q0, quota_now(),
-                sorted(files_after - files_before)[:3], accounted, stop))
+    # too, once the worker reports where it landed; a turn the driver never sent
+    # has none, and then the driver's own stop record says so.
+    doomed_check = "deleting a conversation cancels its running job and refunds"
+    if wanted(doomed_check):
+        files_before = set(os.listdir(media_dir))
+        held = taken_away(SLOW_PHRASE + ": draw a picture, then delete me while running")
+        # The worker hands the turn's result back and the api refuses it (the mock's slow picture
+        # finishes first; a real driver's stopped turn is posted and refused too). What it had
+        # saved is removed then, so wait for that before looking at the files.
+        handed_back(held, 20)
+        time.sleep(1.5)
+        files_after = set(os.listdir(media_dir))
+        deadline = time.time() + 150
+        accounted, stop = None, None
+        while held["job"] and time.time() < deadline and not accounted:
+            time.sleep(1)
+            accounted, stop = look(held)
+        # The mock's slow picture always makes a thread; only a real driver can leave its turn unsent.
+        answers = ("removed", "unsent") if real else ("removed",)
+        media = (held["state"].get("result") or {}).get("media")
+        if (cancelled_and_refunded(held) and not media and files_after == files_before
+                and accounted in answers):
+            c[doomed_check].passed(
+                "job cancelled by the delete, credit returned, no media row or file written, " + (
+                    "a thread tombstoned after its delete removed by the worker" if accounted == "removed"
+                    else "its turn never sent, by the worker's stop record {}: no thread to remove".format(stop)))
+        else:
+            c[doomed_check].failed(
+                "{} media {} new files {} its thread accounted {} stop record {}".format(
+                    told(held), media, sorted(files_after - files_before)[:3], accounted, stop))
 
-    # The rule both checks above lean on is the gate's own judgement, so it is held to its table
-    # on every run.
+    # The rule the checks above lean on is the gate's own judgement, so it is held to its tables
+    # on every run, and the tables to their size.
     table_check = "the gate's rule for a turn taken away holds on its table"
-    wrong = [(removed, stop, waiting, owed, thread_accounted(removed, stop, 1000.0, waiting))
-             for removed, stop, waiting, owed in ACCOUNTED]
-    wrong = [row for row in wrong if row[3] != row[4]]
-    if not wrong:
-        c[table_check].passed("{} rows".format(len(ACCOUNTED)))
+    wrong = [("accounted",) + row + (thread_accounted(*row[:4]),) for row in ACCOUNTED]
+    wrong += [("owed",) + row + (still_owed(*row[:3]),) for row in OWED]
+    wrong = [row for row in wrong if row[-2] != row[-1]]
+    if not wrong and (len(ACCOUNTED), len(OWED)) == (ACCOUNTED_ROWS, OWED_ROWS):
+        c[table_check].passed("{}/{} rows on what accounts for the turn, {}/{} on what is still owed".format(
+            len(ACCOUNTED), ACCOUNTED_ROWS, len(OWED), OWED_ROWS))
     else:
-        c[table_check].failed(
-            "{} of {} rows wrong, the first: removed {} stop record {} tombstone waiting {} owed {!r} "
-            "got {!r}".format(len(wrong), len(ACCOUNTED), *wrong[0]))
+        c[table_check].failed("{} rows wrong; {} and {} rows held, {} and {} owed{}".format(
+            len(wrong), len(ACCOUNTED), len(OWED), ACCOUNTED_ROWS, OWED_ROWS,
+            "; the first: {}".format(wrong[0]) if wrong else ""))
 
     # The tombstone queue's promises, checked on a throwaway database rather than
     # through a racing worker: once per attempt, settled stays settled, a failed

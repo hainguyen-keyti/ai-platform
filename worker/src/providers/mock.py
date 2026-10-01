@@ -18,7 +18,10 @@ SLOW_PHRASE = "take your time"
 BROKEN_PHRASE = "pretend the provider broke"
 MEMORY_PHRASE = "pretend memory is on"
 UNSENT_PHRASE = "wait before you speak"
+SILENT_PHRASE = "and say nothing of it"
+LYING_PHRASE = "and call it unsent"
 SLOW_SECONDS = 6.0
+LIE_SECONDS = 2.5
 
 
 def solid_png(width: int, height: int, rgb: tuple) -> bytes:
@@ -101,11 +104,17 @@ class MockProvider(BaseProvider):
         if UNSENT_PHRASE in lowered:
             # Like ChatGPT since 4536183: a job taken away before its turn went out never sends
             # it, so no thread is made, and the driver's stop record is the only word on that.
+            # Two more phrases play a driver not to be believed: one that keeps silent, and one
+            # that says unsent of a turn whose thread it reports a moment later.
             self.last_cancelled_thread = None
             try:
                 self._pace(SLOW_SECONDS)
             except JobCancelled:
-                self.last_stop = {"sent": False, "pressed": False, "at": round(time.time(), 1)}
+                if SILENT_PHRASE not in lowered:
+                    self.last_stop = {"sent": False, "pressed": False, "at": round(time.time(), 1)}
+                if LYING_PHRASE in lowered:
+                    time.sleep(LIE_SECONDS)
+                    self.last_cancelled_thread = self._thread(thread_url)
                 raise
         # Like the real site, the thread exists the moment the message is sent,
         # cancelled or not; the api learns of it either way.
