@@ -750,8 +750,13 @@ def main():
     settings = Page(clock, composer=False, landed="https://gemini.google.com/personalization-settings",
                     checked="false")
     p = provider_on(Page(clock), settings)
-    p._guard()
-    record("personal context off reads off", p.memory == "off", "health memory {!r}".format(p.memory))
+    try:
+        p._guard()
+        outcome = "sent"
+    except ProviderError as exc:
+        outcome = exc.kind
+    record("personal context off reads off", outcome == "sent" and p.memory == "off",
+           "outcome {!r}, health memory {!r}".format(outcome, p.memory))
 
     settings = Page(clock, composer=False, landed="https://gemini.google.com/personalization-settings",
                     checked="true")
@@ -1155,18 +1160,17 @@ def main():
     page = Page(clock)
     page.answer, page.replies = "a plain reply", [stream_ok]
     p = provider_on(page, settings)
-    first = p._run("hello")
-    settings.saved = "true"
-    try:
-        p._run("hello again")
-        second = "sent"
-    except ProviderError as exc:
-        second = exc.kind
+    turns = []
+    for prompt in ("hello", "hello again"):
+        try:
+            turns.append("done" if p._run(prompt).success else "failed")
+        except ProviderError as exc:
+            turns.append(exc.kind)
+        settings.saved = "true"
     record("every turn reads both switches again: saved info turned on between two turns refuses the second",
-           first.success and second == "provider_misconfigured" and len(page.sent) == 1
+           turns == ["done", "provider_misconfigured"] and len(page.sent) == 1
            and settings.asked == [home, saved_url] * 2 and p.memory == "on",
-           "first {} second {!r} sent {} loaded {} memory {!r}".format(
-               first.success, second, len(page.sent), pages(settings), p.memory))
+           "turns {} sent {} loaded {} memory {!r}".format(turns, len(page.sent), pages(settings), p.memory))
 
     for label, after, expected in (("unreadable", None, "unknown"), ("off", "false", "off")):
         settings = account(saved="true")
