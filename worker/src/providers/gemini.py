@@ -23,8 +23,10 @@ PICTURE_PATH = "/rd-gg-dl/"
 GEMINI_HOST = "gemini.google.com"
 SETTINGS_URL = "https://gemini.google.com/personalization-settings"
 SETTINGS_PATH = "/personalization-settings"
-# Where a signed-out session is sent instead of the settings page.
-SIGNED_OUT_PATH = "/saved-info"
+# The account's other memory switch has this page to itself (measured 2026-10-01), and it is where
+# a signed-out session asking for the settings page is sent instead.
+SAVED_INFO_URL = "https://gemini.google.com/saved-info"
+SAVED_INFO_PATH = "/saved-info"
 # Where Google sends a machine it suspects of automated traffic (measured 2026-09-27); its query's
 # token holds the network's address, so that url never goes into an error.
 BLOCK_HOST = "www.google.com"
@@ -80,6 +82,12 @@ BLOCKED = ("Google is showing this machine its unusual-traffic check for Gemini 
 PERSONAL_CONTEXT_ON = ("the shared Gemini account has personal context switched on, so this turn "
                        "was not sent; ask the account owner to turn it off "
                        "(gemini.google.com/personalization-settings) and try again")
+SAVED_INFO_ON = ("the shared Gemini account has saved info switched on, so this turn was not "
+                 "sent; ask the account owner to turn it off (gemini.google.com/saved-info) and "
+                 "try again")
+# Each memory switch: its page, that page's own path, and the refusal while it is on.
+MEMORY_SWITCHES = ((SETTINGS_URL, SETTINGS_PATH, PERSONAL_CONTEXT_ON),
+                   (SAVED_INFO_URL, SAVED_INFO_PATH, SAVED_INFO_ON))
 
 
 def query_words(prompt: str) -> list:
@@ -176,64 +184,69 @@ class GeminiProvider(BaseProvider):
                 return True
         return False
 
-    # --- the leak switch -------------------------------------------------------------
+    # --- the leak switches -----------------------------------------------------------
 
-    def _read_personal_context(self) -> str:
-        """The personal context switch as the settings page shows it: on, off, unknown, signed-out
-        or blocked (Google's unusual-traffic check).
+    def _switch(self, page, url: str, own: str) -> str:
+        """The one switch of a settings page as that page shows it: on, off, unknown, signed-out or
+        blocked (Google's unusual-traffic check).
 
-        Read in a tab of its own, so the conversation's page is never moved. Only a page that
-        stayed on /personalization-settings is read: a signed-out session lands on /saved-info,
-        whose own switches are not this one.
+        Only a page that stayed on its own path and shows exactly one switch is read: the labels
+        follow the interface's language, so a switch is told by where it is. A signed-out session
+        asking for /personalization-settings lands on /saved-info, whose two switches are neither.
         """
-        self.memory = "unknown"
-        page = self._context.new_page()
         try:
-            page.goto(SETTINGS_URL, timeout=60000, wait_until="domcontentloaded")
+            page.goto(url, timeout=60000, wait_until="domcontentloaded")
             deadline = time.time() + SETTINGS_WAIT
             off_site = False
             while time.time() < deadline:
                 page.wait_for_timeout(500)
                 if is_blocked(page.url):
-                    self.memory = "blocked"
-                    return self.memory
+                    return "blocked"
                 landed = urlparse(page.url or "")
                 path = landed.path.rstrip("/")
-                # Sent to /saved-info (measured): no account.
-                if path == SIGNED_OUT_PATH:
-                    self.memory = "signed-out"
-                    return self.memory
+                # Sent to /saved-info from another page (measured): no account.
+                if path == SAVED_INFO_PATH and own != SAVED_INFO_PATH:
+                    return "signed-out"
                 # Off the site, to Google's sign-in: no account, unless it comes back, which a
                 # cookie refresh passing through Google would (re-review, 2026-09-27).
                 off_site = bool(landed.hostname and landed.hostname != GEMINI_HOST)
-                if path != SETTINGS_PATH:
+                if path != own:
                     continue
                 switches = page.locator(SWITCH)
                 if switches.count() == 1:
                     checked = switches.first.get_attribute("aria-checked")
-                    self.memory = {"true": "on", "false": "off"}.get(checked, "unknown")
-                    return self.memory
-            if off_site:
-                self.memory = "signed-out"
-            return self.memory
+                    return {"true": "on", "false": "off"}.get(checked, "unknown")
+            return "signed-out" if off_site else "unknown"
         except Exception:
-            return self.memory
+            return "unknown"
+
+    def _guard(self):
+        """Look before speaking, at both of the account's memory switches, in a tab of its own so
+        the conversation's page is never moved. A switch on refuses, naming it; signed out refuses;
+        blocked refuses as a provider error, so the pool backs off; unknown does not block. A page
+        that refuses is the last one loaded, and `memory` says off only when both read off."""
+        self.memory = "unknown"
+        read = []
+        page = self._context.new_page()
+        try:
+            for url, own, refusal in MEMORY_SWITCHES:
+                state = self._switch(page, url, own)
+                if state in ("blocked", "signed-out", "on"):
+                    self.memory = state
+                if state == "blocked":
+                    raise ProviderError(BLOCKED)
+                if state == "signed-out":
+                    raise ProviderError(SIGNED_OUT, kind="provider_misconfigured")
+                if state == "on":
+                    raise ProviderError(refusal, kind="provider_misconfigured")
+                read.append(state)
         finally:
             try:
                 page.close()
             except Exception:
                 pass
-
-    def _guard(self):
-        """Look before speaking. On refuses; signed out refuses; blocked refuses as a provider error,
-        so the pool backs off; unknown does not block."""
-        state = self._read_personal_context()
-        if state == "blocked":
-            raise ProviderError(BLOCKED)
-        if state == "signed-out":
-            raise ProviderError(SIGNED_OUT, kind="provider_misconfigured")
-        if state == "on":
-            raise ProviderError(PERSONAL_CONTEXT_ON, kind="provider_misconfigured")
+        if all(state == "off" for state in read):
+            self.memory = "off"
 
     # --- opening and typing ------------------------------------------------------------
 
