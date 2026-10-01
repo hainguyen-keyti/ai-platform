@@ -83,6 +83,8 @@ VERDICTS = (
     ("done", "pong", "real", "unknown", False, False),
     ("done", "pong", "real", "on", False, False),
     ("done", "pong", "real", "signed-out", False, False),
+    ("done", "pong", "real", "blocked", False, False),
+    ("done", "pong pong", "real", "off", False, False),
     ("done", "pong", "real", None, False, False),
     ("failed", "pong", "real", "off", False, False),
     ("cancelled", "pong", "real", "off", False, False),

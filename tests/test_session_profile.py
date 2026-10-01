@@ -375,7 +375,13 @@ def main():
             cloakbrowser.launch_persistent_context = answer("a browser")
             seen["window"] = session.open_session(given, "chatgpt", headless=False)
             seen["default"] = session.open_session(given, "chatgpt")
-            seen["edges"] = [session.open_session(folder({"chatgpt": edge}), "chatgpt") for edge in ("10000", "99999")]
+            seen["edges"] = [session.open_session(folder({"chatgpt": edge}), "chatgpt")
+                             for edge in ("10000", "99999", "24680\n")]
+            first = Path(tempfile.mkdtemp(prefix="session-profile-first-")) / "no" / "sessions" / "yet"
+            viewed = folder({"chatgpt": None})
+            (viewed / "chatgpt" / ".DS_Store").write_text("left by the Finder")
+            seen["logins"] = [session.open_session(where, "chatgpt", create=True) for where in (first, viewed)]
+            seen["drawn"] = [kept_seed(where, "chatgpt") for where in (first, viewed)]
             for label, error in (("other", RuntimeError("the binary would not start")),
                                  ("held", RuntimeError("Failed to create a ProcessSingleton for your profile directory"))):
                 cloakbrowser.launch_persistent_context = answer(error)
@@ -386,12 +392,14 @@ def main():
                     seen[label] = "{}: {}".format(type(exc).__name__, str(exc)[:70])
         finally:
             cloakbrowser.launch_persistent_context = real
-        ok = (asked[:2] == [False, True] and seen["edges"] == ["a browser", "a browser"]
+        ok = (asked[:2] == [False, True] and seen["edges"] == ["a browser"] * 3
+              and seen["logins"] == ["a browser"] * 2 and all(seed and seed.isdigit() for seed in seen["drawn"])
               and seen["other"] == "RuntimeError: the binary would not start"
               and seen["held"].startswith("ProviderError: the chatgpt session is open in another browser"))
-        return ok, ("asked for a window, then by default: headless {}; the smallest and the largest seed open {}; "
-                    "another failure {!r}; a held profile {!r}".format(
-                        asked[:2], len(seen.get("edges") or []), seen.get("other"), seen.get("held")))
+        return ok, ("asked for a window, then by default: headless {}; the smallest seed, the largest and one "
+                    "ending in a newline open {}; a first login with no sessions folder and one into a "
+                    "directory the Finder has looked at drew {}; another failure {!r}; a held profile {!r}".format(
+                        asked[:2], len(seen.get("edges") or []), seen.get("drawn"), seen.get("other"), seen.get("held")))
     check("the way in opens with a window when asked, and a launch that fails says its own reason", way_in)
 
     def only_the_login_makes():
