@@ -9,8 +9,9 @@ only: the owner logged in, the script never saw it, and Ctrl+C lost the login.
 
 The same day a state file saved by one browser and loaded by others cost two fresh logins, so the
 login opens the provider's own profile, the one the drivers open, and saves nothing beside it.
-A profile also keeps the cookie of a session its site has ended, so ChatGPT's login is real only once
-the account answers. Prints N/8 PASSED.
+A profile also keeps the cookie of a session its site has ended: ChatGPT's login is real only once
+the account answers, and Google's settings page, the proof that opens a tab, is not asked again
+for the same cookie more than once a minute. Prints N/10 PASSED.
 """
 
 import contextlib
@@ -33,6 +34,7 @@ SESSION = "__Secure-next-auth.session-token"
 CHATGPT = login.PROVIDERS["chatgpt"]
 # Gemini's cookie without its settings page proof, which needs a real tab.
 GOOGLE = {"domain": "google.com", "cookies": login.PROVIDERS["gemini"]["cookies"]}
+SETTINGS = login.PROVIDERS["gemini"]["proves_page"]
 
 results = []
 
@@ -42,30 +44,53 @@ def record(name, ok, detail):
     print("[{}] {}  {}".format("PASS" if ok else "FAIL", name, detail), flush=True)
 
 
+class Clock:
+    """The script's own clock: sleeping moves it, nothing waits."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 class Context:
     def __init__(self, *cookies):
-        self.jar = [{"name": name, "domain": domain} for name, domain in cookies]
+        self.jar = [{"name": name, "domain": domain, "value": "SECRET-" + name} for name, domain in cookies]
 
     def cookies(self):
         return self.jar
 
 
 class LoginPage:
+    """The page the owner logs in on. Asked whether the account answers, it says what it was told to,
+    and refuses an account read that does not carry the session's token, as the site does."""
     url = "https://grok.com/"
+
+    def __init__(self, statuses=()):
+        self.statuses, self.asked = list(statuses), []
 
     def goto(self, url, **kwargs):
         self.url = url
 
     def evaluate(self, script, *args):
-        return 200
+        path = args[0] if args else ""
+        with_token = "Authorization" in script
+        self.asked.append(("token" if with_token else "plain", path))
+        if path.startswith("/backend-api/") and not with_token:
+            return 403
+        return self.statuses.pop(0) if self.statuses else 200
 
 
 class LoggedIn(Context):
     """A browser in which the owner has just signed in to Grok."""
 
-    def __init__(self):
+    def __init__(self, statuses=()):
         super().__init__(("sso", ".grok.com"), ("sso-rw", ".grok.com"))
-        self.pages = [LoginPage()]
+        self.pages = [LoginPage(statuses)]
         self.closed = 0
 
     def new_page(self):
@@ -73,6 +98,52 @@ class LoggedIn(Context):
 
     def storage_state(self, path=None):
         Path(path).write_text("{}")
+
+    def close(self):
+        self.closed += 1
+
+
+class ProbeTab:
+    """The tab the script opens on Google's settings page: it stays put only for an account."""
+
+    def __init__(self, context):
+        self.context, self.url = context, ""
+
+    def goto(self, url, **kwargs):
+        self.url = url if self.context.proves() else "https://gemini.google.com/saved-info"
+
+    def wait_for_timeout(self, ms):
+        self.context.clock.sleep(ms / 1000.0)
+
+    def close(self):
+        pass
+
+
+class EndedThenLoggedIn(Context):
+    """A Gemini profile that still holds the cookie of a session Google ended; the owner logs in again
+    five minutes after the window opens. misses: how many times the settings page is still not the
+    account's right after that login."""
+
+    def __init__(self, clock, misses=0):
+        super().__init__()
+        self.clock, self.at, self.misses = clock, clock.now + 300, misses
+        self.pages, self.closed, self.probes = [LoginPage()], 0, []
+
+    def signed(self):
+        return self.clock.now >= self.at
+
+    def proves(self):
+        if not self.signed():
+            return False
+        self.misses -= 1
+        return self.misses < 0
+
+    def cookies(self):
+        return [{"name": "__Secure-1PSID", "domain": ".google.com", "value": "fresh" if self.signed() else "ended"}]
+
+    def new_page(self):
+        self.probes.append(self.clock.now)
+        return ProbeTab(self)
 
     def close(self):
         self.closed += 1
@@ -95,17 +166,20 @@ class OldWay:
         self.context.closed += 1
 
 
-def run_login(opener):
-    """The script's own main for grok, on fakes: no window, no waiting. What it returned, said and left."""
+def run_login(opener, provider="grok", context=None, clock=None):
+    """The script's own main on fakes: no window, no waiting. What it returned, said and left."""
     sessions = Path(tempfile.mkdtemp(prefix="login-provider-test-"))
-    context, seen, said = LoggedIn(), [], io.StringIO()
+    context, clock = context or LoggedIn(), clock or Clock()
+    seen, said = [], io.StringIO()
 
     def open_session(*args, **kwargs):
         seen.append(("open_session", args, kwargs))
         return opener(context)
 
-    kept = sys.argv, login.time.sleep, getattr(login, "cloakbrowser", None), getattr(login, "open_session", None)
-    sys.argv, login.time.sleep = ["login_provider.py", "grok", str(sessions)], lambda seconds: None
+    kept = (sys.argv, login.time.sleep, login.time.time, getattr(login, "cloakbrowser", None),
+            getattr(login, "open_session", None))
+    sys.argv = ["login_provider.py", provider, str(sessions)]
+    login.time.sleep, login.time.time = clock.sleep, clock.time
     login.cloakbrowser, login.open_session = OldWay(context, seen), open_session
     try:
         with contextlib.redirect_stdout(said):
@@ -113,7 +187,7 @@ def run_login(opener):
     except Exception as exc:
         code = "{}: {}".format(type(exc).__name__, str(exc)[:80])
     finally:
-        sys.argv, login.time.sleep, login.cloakbrowser, login.open_session = kept
+        sys.argv, login.time.sleep, login.time.time, login.cloakbrowser, login.open_session = kept
     return code, seen, context, sessions, said.getvalue()
 
 
@@ -145,28 +219,29 @@ def main():
     code, seen, context, sessions, said = run_login(lambda context: context)
     how = [call[0] for call in seen]
     args, kwargs = (seen[0][1], seen[0][2]) if seen else ((), {})
-    record("the login opens the provider's own profile, with a window, and writes no state file",
+    record("the login opens the provider's own profile, with a window, writes no state file and prints no cookie value",
            code == 0 and how == ["open_session"] and [str(a) for a in args[:2]] == [str(sessions), "grok"]
            and kwargs.get("headless") is False and kwargs.get("create") is True and context.closed == 1
-           and not list(sessions.glob("*.json")),
-           "returned {}, opened by {} with {} {}, closed {} time(s), state files {}".format(
+           and not list(sessions.glob("*.json")) and "SECRET" not in said and "sso" in said,
+           "returned {}, opened by {} with {} {}, closed {} time(s), state files {}, a cookie value printed {}".format(
                code, how, [str(a)[-28:] for a in args[:2]], kwargs, context.closed,
-               sorted(f.name for f in sessions.glob("*.json"))))
+               sorted(f.name for f in sessions.glob("*.json")), "SECRET" in said))
+
+    waiting = LoggedIn(statuses=[401, 401, 200])
+    code, seen, context, sessions, said = run_login(lambda context: context, context=waiting)
+    asked = waiting.pages[0].asked
+    record("the login waits until the account answers", code == 0 and len(asked) == 3 and waiting.closed == 1,
+           "returned {}, asked the account {} time(s), closed {} time(s)".format(code, len(asked), waiting.closed))
 
     # A profile keeps its cookies, so a session the site has ended still shows its cookie when the owner
-    # comes back to log in again; the account has to answer before the login is called real.
-    class Answers:
-        def __init__(self, status):
-            self.status = status
-
-        def evaluate(self, script, *args):
-            return self.status
-
+    # comes back to log in again; the account has to answer, asked with the session's own token.
     live = Context(*anonymous, (SESSION + ".0", ".chatgpt.com"), (SESSION + ".1", ".chatgpt.com"))
-    ended = login.signed_in(live, CHATGPT, Answers(401))
-    alive = login.signed_in(live, CHATGPT, Answers(200))
-    record("a session cookie the site no longer honours is not a sign-in", ended is None and bool(alive),
-           "the account answering 401: {!r}; answering 200: {!r}".format(ended, alive))
+    ended = login.signed_in(live, CHATGPT, LoginPage([401]))
+    page = LoginPage([200])
+    alive = login.signed_in(live, CHATGPT, page)
+    record("a session cookie the site no longer honours is not a sign-in",
+           ended is None and bool(alive) and page.asked == [("token", "/backend-api/settings/user")],
+           "the account answering 401: {!r}; answering 200: {!r}, asked {}".format(ended, alive, page.asked))
 
     def in_use(context):
         raise ProviderError("the grok session is open in another browser: stop that one first")
@@ -177,6 +252,26 @@ def main():
            and context.closed == 0 and not list(sessions.iterdir()),
            "returned {}, opened by {}, said {!r}, left {}".format(
                code, [call[0] for call in seen], said.strip()[-70:], sorted(f.name for f in sessions.iterdir())))
+
+    # Google's proof opens a tab on its settings page. With an ended session's cookie still in the
+    # profile that tab would open at every poll, in front of the owner, about a hundred times.
+    clock = Clock()
+    google = EndedThenLoggedIn(clock)
+    code, seen, context, sessions, said = run_login(lambda context: context, "gemini", google, clock)
+    before = [at for at in google.probes if at < google.at]
+    after = [at for at in google.probes if at >= google.at]
+    clock = Clock()
+    slow = EndedThenLoggedIn(clock, misses=1)
+    late, _, _, _, _ = run_login(lambda context: context, "gemini", slow, clock)
+    again = [at for at in slow.probes if at >= slow.at]
+    record("a cookie already there is not proved more than once a minute, and the new login ends at its next poll",
+           code == 0 and 1 <= len(before) <= 6 and len(after) == 1 and after[0] - google.at <= 9
+           and google.closed == 1 and SETTINGS.split("://", 1)[-1] in said
+           and late == 0 and len(again) == 2 and 60 <= again[1] - again[0] <= 75,
+           "returned {}; in the 300s before the login the settings tab opened {} time(s); after it {} time(s), {}s "
+           "after the cookie changed; a first proof that missed was asked again {}s later (returned {})".format(
+               code, len(before), len(after), round(after[0] - google.at, 1) if after else "never",
+               round(again[1] - again[0], 1) if len(again) > 1 else "never", late))
 
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))

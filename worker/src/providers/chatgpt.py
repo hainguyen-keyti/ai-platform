@@ -9,7 +9,7 @@ from urllib.parse import unquote
 
 from src.providers.base import (MEMORY_ON_ERROR, BaseProvider, FeatureType, GenerationResult,
                                 JobCancelled, MediaArtifact, ProviderError)
-from src.providers.session import NO_SESSION, open_session, profile_of
+from src.providers.session import NO_SESSION, open_session, profile_of, saved
 
 HOME = "https://chatgpt.com/"
 # Measured 2026-09-27 (docs/research/2026-09-27-chatgpt-composer.md): the page
@@ -270,9 +270,8 @@ class ChatGPTProvider(BaseProvider):
     def start(self) -> None:
         # The browser itself is created on first use: the sync driver is bound to
         # the thread that creates it, and that must be the runner thread.
-        profile = profile_of(self.sessions_path, self.name)
-        if not profile.is_dir():
-            raise RuntimeError(NO_SESSION.format(profile, self.name))
+        if not saved(self.sessions_path, self.name):
+            raise RuntimeError(NO_SESSION.format(profile_of(self.sessions_path, self.name), self.name))
 
     def stop(self) -> None:
         if self._context is not None:

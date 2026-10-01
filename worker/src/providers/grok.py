@@ -7,7 +7,7 @@ from typing import Optional
 
 from src.providers.base import (BaseProvider, FeatureType, GenerationResult, JobCancelled,
                                 MediaArtifact, ProviderError)
-from src.providers.session import NO_SESSION, open_session, profile_of
+from src.providers.session import NO_SESSION, open_session, profile_of, saved
 
 HOME = "https://grok.com/"
 
@@ -118,9 +118,8 @@ class GrokProvider(BaseProvider):
         self.memory = None
 
     def start(self) -> None:
-        profile = profile_of(self.sessions_path, self.name)
-        if not profile.is_dir():
-            raise RuntimeError(NO_SESSION.format(profile, self.name))
+        if not saved(self.sessions_path, self.name):
+            raise RuntimeError(NO_SESSION.format(profile_of(self.sessions_path, self.name), self.name))
 
     def stop(self) -> None:
         if self._context is not None:

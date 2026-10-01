@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""Does each provider still answer through the platform? One short turn per provider, against the
-running stack, as a person would send it.
+"""Does each provider's own session still answer through the platform? One short turn per provider,
+against the running stack, as a person would send it.
 
-    INVITE_CODE=... python tests/session_check.py [chatgpt] [grok] [gemini] [--keep]
+    INVITE_CODE=... python tests/session_check.py [chatgpt] [grok] [gemini] [--keep] [--mock]
 
-Standard library only. It registers a throwaway user, asks each provider named (or every provider a
-worker serves, when none is named) for the single word "pong", and reads beside the reply what the
-worker's health says of that provider's account (memory off, on, unknown). A provider no worker serves
-fails. With a real worker each turn is a real one: it spends a turn of that account and makes a thread
+Standard library only. It registers a throwaway user and asks each provider named (or every provider
+a worker serves, when none is named) for the single word "pong". A provider passes only when its turn
+is done, the reply is that word and nothing else, and the worker's own health says it runs real
+providers and read that account's memory as off: a mock worker echoes the prompt, word included, and
+proves nothing about a session, so it fails here unless --mock says the check itself is being tried.
+A provider no worker serves fails. Each real turn spends a turn of that account and makes a thread
 there, so the check deletes the conversations it made, which has the platform remove their threads
-(--keep leaves them). Run it after each start of the worker to see that a saved session still lives.
-Prints a PASS/FAIL table and N/M PASSED; exits 1 on any failure.
+(--keep leaves them); the throwaway user stays. Run it after each start of the worker to see that a
+saved session still lives. Prints a PASS/FAIL table and N/M PASSED; exits 1 on any failure.
 """
 
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -52,13 +55,14 @@ def http(method, url, body=None, token=None):
 
 
 def account_reading(provider):
+    """What the worker itself says: the mode it runs in and how it read this provider's account."""
     status, health = http("GET", WORKER + "/health")
-    if status != 200:
-        return "the worker's health unread"
-    return "memory {}".format(((health.get("providers") or {}).get(provider) or {}).get("memory"))
+    if status != 200 or not health:
+        return None, None
+    return health.get("mode"), ((health.get("providers") or {}).get(provider) or {}).get("memory")
 
 
-def ask(provider, token, made):
+def ask(provider, token, made, mock):
     status, body = http("POST", API + "/chat", {"provider": provider, "message": PROMPT}, token)
     if status != 202:
         return False, "the turn was refused ({})".format(status)
@@ -70,15 +74,20 @@ def ask(provider, token, made):
             break
         time.sleep(1)
     text = " ".join(((job.get("result") or {}).get("text") or "").split())
-    ok = job.get("status") == "done" and "pong" in text.casefold()
-    return ok, "{} in {:.0f}s, reply {!r}{}, {}".format(
+    mode, memory = account_reading(provider)
+    if mock:
+        ok = job.get("status") == "done" and mode == "mock" and "pong" in text.casefold()
+    else:
+        ok = (job.get("status") == "done" and re.sub(r"[^a-z]", "", text.casefold()) == "pong"
+              and mode == "real" and memory == "off")
+    return ok, "{} in {:.0f}s, reply {!r}{}, worker mode {}, memory {}".format(
         job.get("status") or "no answer", time.time() - started, text[:60],
-        ", error {!r}".format((job.get("error") or "")[:90]) if job.get("error") else "", account_reading(provider))
+        ", error {!r}".format((job.get("error") or "")[:90]) if job.get("error") else "", mode, memory)
 
 
 def main():
     named = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
-    keep = "--keep" in sys.argv[1:]
+    keep, mock = "--keep" in sys.argv[1:], "--mock" in sys.argv[1:]
     invite = os.environ.get("INVITE_CODE")
     if not invite:
         sys.exit("INVITE_CODE is not set (set -a; . ./.env; set +a)")
@@ -95,15 +104,19 @@ def main():
     if not wanted:
         record("a provider is served", False, "no worker serves any provider: {}".format(served))
     made = []
-    for provider in wanted:
-        if not served.get(provider):
-            record("{} answers".format(provider), False, "no worker serves it")
-            continue
-        ok, detail = ask(provider, token, made)
-        record("{} answers".format(provider), ok, detail)
-    if made and not keep:
-        gone = [http("DELETE", "{}/conversations/{}".format(API, conversation), token=token)[0] for conversation in made]
-        print("deleted the {} conversation(s) this check made: {}".format(len(made), gone))
+    try:
+        for provider in wanted:
+            if not served.get(provider):
+                record("{} answers".format(provider), False, "no worker serves it")
+                continue
+            ok, detail = ask(provider, token, made, mock)
+            record("{} answers".format(provider), ok, detail)
+    finally:
+        if made and not keep:
+            gone = [http("DELETE", "{}/conversations/{}".format(API, conversation), token=token)[0]
+                    for conversation in made]
+            record("the platform took the deletion of this check's own conversations",
+                   all(status == 204 for status in gone), "{} conversation(s), answers {}".format(len(made), gone))
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))
     return 0 if passed == len(results) else 1

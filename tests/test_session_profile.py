@@ -4,13 +4,13 @@ browser on a local page; no site, no account.
 
     ~/cloakbrowser-env/bin/python tests/test_session_profile.py
 
-Measured 2026-10-01: every cloakbrowser launch draws a random device seed (two launches read the GPU
-as "Apple M3", then "Apple M1 Pro"), the drivers loaded a state file saved on the login day and never
-wrote it back, and a Gemini login was signed out by Google after four such launches in 47 minutes.
-With one profile directory and one seed a second launch reads the same device, keeps its cookies,
-and a second browser on the same profile is refused by Chromium itself.
-The sessions folder here is as this machine has it: the old state file still lies beside the profile.
-Prints N/9 PASSED.
+Measured 2026-10-01: every cloakbrowser launch draws a random device seed (three launches read the
+GPU as M1, M4 Pro, M1), the drivers loaded a state file saved on the login day and never wrote it
+back, and a Gemini login was signed out by Google after four such launches in 47 minutes. With one
+profile directory and one seed a second launch reads the same device, keeps its cookies, and a
+second browser on the same profile is refused by Chromium itself.
+The sessions folder here is as this machine has it: each provider's old state file, a cookie still
+in it, lies beside the profile its login made. Prints N/11 PASSED.
 """
 
 import http.server
@@ -27,12 +27,14 @@ import cloakbrowser
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))
 
-from src.providers import chatgpt, gemini, grok  # noqa: E402
+from src.providers import chatgpt, gemini, grok, session  # noqa: E402
 from src.providers.base import ProviderError  # noqa: E402
 
 DRIVERS = (("chatgpt", chatgpt.ChatGPTProvider), ("grok", grok.GrokProvider), ("gemini", gemini.GeminiProvider))
 SEED = "device-seed"
-OLD_STATE = json.dumps({"cookies": [], "origins": []})
+OLD_STATE = json.dumps({"origins": [], "cookies": [{
+    "name": "stale", "value": "1", "domain": "127.0.0.1", "path": "/", "expires": time.time() + 86400,
+    "httpOnly": False, "secure": False, "sameSite": "Lax"}]})
 GPU = """
 () => { try { const gl = document.createElement('canvas').getContext('webgl');
     return gl.getParameter(gl.getExtension('WEBGL_debug_renderer_info').UNMASKED_RENDERER_WEBGL);
@@ -53,6 +55,7 @@ time.sleep(600)
 
 results = []
 launches = []
+base = None
 
 
 def record(name, ok, detail):
@@ -60,10 +63,20 @@ def record(name, ok, detail):
     print("[{}] {}  {}".format("PASS" if ok else "FAIL", name, detail), flush=True)
 
 
+def check(name, body):
+    """Run one check; a check that cannot even run is a failed check, said as such."""
+    try:
+        ok, detail = body()
+    except Exception as exc:
+        ok, detail = False, "could not run: {}: {}".format(type(exc).__name__, str(exc).strip().split("\n")[0][:110])
+    record(name, ok, detail)
+
+
 def recording(how, real):
     def launch(*args, **kwargs):
         where = kwargs.get("user_data_dir") or (args[0] if args else None)
-        launches.append({"how": how, "args": list(kwargs.get("args") or []), "where": str(where or "")})
+        launches.append({"how": how, "args": list(kwargs.get("args") or []), "where": str(where or ""),
+                         "headless": kwargs.get("headless")})
         return real(*args, **kwargs)
     return launch
 
@@ -83,18 +96,31 @@ class Page(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def folder(profiles=True):
-    """A sessions folder: each provider's old state file, and its profile as a login leaves it."""
+def media():
+    return Path(tempfile.mkdtemp(prefix="session-profile-media-"))
+
+
+def log_in(sessions, name):
+    """The login script's way in: the profile made and opened, then closed. The GPU its page read."""
+    context = session.open_session(sessions, name, create=True)
+    try:
+        page = context.pages[0] if context.pages else context.new_page()
+        page.goto(base + "/", wait_until="domcontentloaded", timeout=20000)
+        return page.evaluate(GPU)
+    finally:
+        context.close()
+
+
+def folder(seeds=None):
+    """A sessions folder: each provider's old state file, and a profile for each seed text given."""
     sessions = Path(tempfile.mkdtemp(prefix="session-profile-test-"))
     for name, _ in DRIVERS:
         (sessions / "{}.json".format(name)).write_text(OLD_STATE)
-        if profiles:
-            (sessions / name).mkdir()
+    for name, text in (seeds or {}).items():
+        (sessions / name).mkdir()
+        if text is not None:
+            (sessions / name / SEED).write_text(text)
     return sessions
-
-
-def media():
-    return Path(tempfile.mkdtemp(prefix="session-profile-media-"))
 
 
 def seeds(launch):
@@ -106,6 +132,10 @@ def kept_seed(sessions, name):
         return (sessions / name / SEED).read_text().strip()
     except OSError:
         return None
+
+
+def model(gpu):
+    return gpu.split("Renderer: ")[-1].split(",")[0]
 
 
 def hold(sessions, url):
@@ -132,130 +162,194 @@ def end(child, sessions):
         time.sleep(0.5)
 
 
-def same_device(name, cls, sessions, url):
-    first, gpus, error = len(launches), [], None
+def refusal(cls, sessions):
+    """What a driver says when asked to open: (opened, the error or None, launches made)."""
+    first, opened, refused = len(launches), False, None
+    p = cls(media(), sessions)
     try:
+        p._ensure_page()
+        opened = True
+    except Exception as exc:
+        refused = exc
+    finally:
+        p.stop()
+    return opened, refused, len(launches) - first
+
+
+def same_device(name, cls, sessions, at_login):
+    def body():
+        first, gpus = len(launches), []
         for _ in range(3):
             p = cls(media(), sessions)
             page = p._ensure_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=20000)
+            page.goto(base + "/", wait_until="domcontentloaded", timeout=20000)
             gpus.append(page.evaluate(GPU))
             p.stop()
-    except Exception as exc:
-        error = "{}: {}".format(type(exc).__name__, str(exc).strip().split("\n")[0][:90])
-    mine = launches[first:]
-    named = [seeds(launch) for launch in mine]
-    kept = kept_seed(sessions, name)
-    ok = (error is None and len(mine) == 3 and all(len(n) == 1 for n in named)
-          and {n[0] for n in named} == {kept} and len(set(gpus)) == 1
-          and all(launch["where"] == str(sessions / name) for launch in mine))
-    record("{}: every launch is the same device".format(name), ok,
-           "seed named at each launch {}, kept in the profile {}, gpu {}, profile {}{}".format(
-               [n[0] if n else None for n in named], kept, [g.split("Renderer: ")[-1].split(",")[0] for g in gpus],
-               sorted({launch["where"].rsplit("/", 1)[-1] or "none" for launch in mine}),
-               ", " + error if error else ""))
+        mine = launches[first:]
+        named = [seeds(launch) for launch in mine]
+        kept = kept_seed(sessions, name)
+        ok = (len(mine) == 3 and all(len(n) == 1 for n in named) and {n[0] for n in named} == {kept}
+              and set(gpus) == {at_login} and all(launch["where"] == str(sessions / name) for launch in mine))
+        return ok, "the login read {}; three launches named {} (kept {}), read {}, on profile {}".format(
+            model(at_login), [n[0] if n else None for n in named], kept, [model(g) for g in gpus],
+            sorted({launch["where"].rsplit("/", 1)[-1] or "none" for launch in mine}))
+    check("{}: every launch is the device of its login".format(name), body)
 
 
 def main():
+    global base
     cloakbrowser.launch = recording("launch", cloakbrowser.launch)
     cloakbrowser.launch_persistent_context = recording("profile", cloakbrowser.launch_persistent_context)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Page)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = "http://127.0.0.1:{}".format(server.server_address[1])
+
     sessions = folder()
-
+    at_login = {}
     for name, cls in DRIVERS:
-        same_device(name, cls, sessions, base + "/")
+        try:
+            at_login[name] = log_in(sessions, name)
+        except Exception as exc:
+            at_login[name] = "the login could not open: {}".format(str(exc)[:60])
+        same_device(name, cls, sessions, at_login[name])
 
-    own = {name: kept_seed(sessions, name) for name, _ in DRIVERS}
-    given = folder()
-    (given / "chatgpt" / SEED).write_text("24680")
-    first, error = len(launches), None
-    try:
+    def drawn_once():
+        own = {name: kept_seed(sessions, name) for name, _ in DRIVERS}
+        first = len(launches)
+        again = log_in(sessions, "chatgpt")
+        second = seeds(launches[first])
+        fresh = []
+        for _ in range(6):
+            profile = Path(tempfile.mkdtemp(prefix="session-profile-draw-"))
+            fresh.append(session.device_seed(profile, draw=True))
+        given = folder({"chatgpt": "24680"})
+        first = len(launches)
         p = chatgpt.ChatGPTProvider(media(), given)
         p._ensure_page()
         p.stop()
-    except Exception as exc:
-        error = "{}: {}".format(type(exc).__name__, str(exc).strip().split("\n")[0][:90])
-    used = [seeds(launch) for launch in launches[first:]]
-    record("the seed is drawn once and each provider has its own",
-           error is None and all(seed and seed.isdigit() and 10000 <= int(seed) <= 99999 for seed in own.values())
-           and used == [["24680"]] and kept_seed(given, "chatgpt") == "24680",
-           "a seed in each profile {}; a seed written before the first launch: used {}, kept {}{}".format(
-               own, used, kept_seed(given, "chatgpt"), ", " + error if error else ""))
+        used = [seeds(launch) for launch in launches[first:]]
+        ok = (all(seed and seed.isdigit() and 10000 <= int(seed) <= 99999 for seed in own.values())
+              and second == [own["chatgpt"]] and kept_seed(sessions, "chatgpt") == own["chatgpt"]
+              and again == at_login["chatgpt"] and len(set(fresh)) > 1
+              and used == [["24680"]] and kept_seed(given, "chatgpt") == "24680")
+        return ok, ("a seed in each profile {}; a second login named {} and kept {}; six fresh draws {}; "
+                    "a seed written before the first launch: used {}".format(
+                        own, second, kept_seed(sessions, "chatgpt"), sorted(set(fresh)), used))
+    check("the seed is drawn once, at the login, and a second login keeps the device", drawn_once)
 
-    child, ready = hold(sessions, base + "/learn")
-    end(child, sessions)
-    names, error = [], None
-    try:
-        p = chatgpt.ChatGPTProvider(media(), sessions)
-        page = p._ensure_page()
-        page.goto(base + "/", wait_until="domcontentloaded", timeout=20000)
-        names = sorted(c["name"] for c in p._context.cookies(base))
-        p.stop()
-    except Exception as exc:
-        error = "{}: {}".format(type(exc).__name__, str(exc).strip().split("\n")[0][:90])
-    record("what a browser learned outlives a killed worker", ready and "learned" in names,
-           "the killed worker's browser had the page {}; cookies at the next open {}{}".format(
-               ready, names, ", " + error if error else ""))
+    def lost_seed():
+        said = {}
+        for label, text in (("no seed file", None), ("empty", ""), ("words", "garbage"), ("negative", "-5"),
+                            ("zero", "0"), ("underscore", "2_4680"), ("thirty digits", "9" * 30)):
+            broken = folder({"chatgpt": text})
+            opened, refused, made = refusal(chatgpt.ChatGPTProvider, broken)
+            after = kept_seed(broken, "chatgpt")
+            fine = (not opened and made == 0 and isinstance(refused, ProviderError)
+                    and "scripts/login_provider.py chatgpt" in str(refused) and after == (text if text is None else text.strip()))
+            said[label] = "refused" if fine else "{}, {} launch(es), seed file now {!r}".format(
+                "OPENED" if opened else type(refused).__name__, made, after)
+        return all(v == "refused" for v in said.values()), str(said)
+    check("a profile whose seed is lost or unreadable is refused in words, not given a new device", lost_seed)
 
-    child, ready = hold(sessions, base + "/")
-    refused, opened = None, False
-    p = chatgpt.ChatGPTProvider(media(), sessions)
-    try:
-        p._ensure_page()
-        opened = True
-    except Exception as exc:
-        refused = exc
-    finally:
-        p.stop()
+    def outlives():
+        child, ready = hold(sessions, base + "/learn")
         end(child, sessions)
-    words = str(refused or "")
-    record("a second browser on an open session is refused in words",
-           ready and not opened and isinstance(refused, ProviderError) and "chatgpt" in words
-           and "another browser" in words,
-           "the first had the session {}; the second {}".format(
-               ready, "opened" if opened else "{}: {}".format(type(refused).__name__, words[:110])))
-
-    bare = folder(profiles=False)
-    said = {}
-    for name, cls in DRIVERS:
+        p = chatgpt.ChatGPTProvider(media(), sessions)
         try:
-            cls(media(), bare).start()
-            said[name] = "started"
-        except Exception as exc:
-            said[name] = str(exc)
-    record("a provider with no profile says so at start, an old state file notwithstanding",
-           all("scripts/login_provider.py {}".format(name) in said[name] for name, _ in DRIVERS),
-           str({name: words[-48:] for name, words in said.items()}))
+            page = p._ensure_page()
+            page.goto(base + "/", wait_until="domcontentloaded", timeout=20000)
+            names = sorted(c["name"] for c in p._context.cookies(base))
+        finally:
+            p.stop()
+        return ready and names == ["learned"], "the killed worker's browser had the page {}; cookies at the next open {}".format(
+            ready, names)
+    check("what a browser learned outlives a killed worker, and the old state file is not read", outlives)
 
-    p = chatgpt.ChatGPTProvider(media(), sessions)
-    error = None
-    try:
-        p._ensure_page()
-    except Exception as exc:
-        error = "{}: {}".format(type(exc).__name__, str(exc).strip().split("\n")[0][:90])
-    p.stop()
-    child, ready = hold(sessions, base + "/")
-    end(child, sessions)
-    record("stop leaves the session free for the next opener", error is None and ready,
-           "after stop another process had the session {}{}".format(ready, ", " + error if error else ""))
+    def second_refused():
+        child, ready = hold(sessions, base + "/")
+        try:
+            opened, refused, _ = refusal(chatgpt.ChatGPTProvider, sessions)
+        finally:
+            end(child, sessions)
+        words = str(refused or "")
+        ok = (ready and not opened and isinstance(refused, ProviderError) and "chatgpt" in words
+              and "another browser" in words and refused.kind == "provider_error")
+        return ok, "the first had the session {}; the second {}".format(
+            ready, "opened" if opened else "{} ({}): {}".format(
+                type(refused).__name__, getattr(refused, "kind", "no kind"), words[:96]))
+    check("a second browser on an open session is refused in words, as the provider's own error", second_refused)
 
-    opened, refused = False, None
-    p = chatgpt.ChatGPTProvider(media(), bare)
-    try:
+    def start_says():
+        def starts(folder_):
+            out = {}
+            for name, cls in DRIVERS:
+                try:
+                    cls(media(), folder_).start()
+                    out[name] = "started"
+                except Exception as exc:
+                    out[name] = "refused" if "scripts/login_provider.py {}".format(name) in str(exc) else str(exc)[:40]
+            return out
+        bare = starts(folder())
+        empty = starts(folder({name: None for name, _ in DRIVERS}))
+        one = starts(folder({"chatgpt": "24680"}))
+        ok = (set(bare.values()) == {"refused"} and set(empty.values()) == {"refused"}
+              and one == {"chatgpt": "started", "grok": "refused", "gemini": "refused"})
+        return ok, "old state files only {}; empty directories {}; only chatgpt logged in {}".format(bare, empty, one)
+    check("a provider whose login never made its profile says so at start", start_says)
+
+    def stop_frees():
+        p = chatgpt.ChatGPTProvider(media(), sessions)
         p._ensure_page()
-        opened = True
-    except Exception as exc:
-        refused = exc
-    finally:
         p.stop()
-    record("a driver does not make a profile that is not there",
-           not opened and isinstance(refused, ProviderError)
-           and "scripts/login_provider.py chatgpt" in str(refused) and not (bare / "chatgpt").exists(),
-           "{}; the folder holds {}".format(
-               "it opened a browser" if opened else "{}: {}".format(type(refused).__name__, str(refused)[-48:]),
-               sorted(f.name for f in bare.iterdir())))
+        child, ready = hold(sessions, base + "/")
+        end(child, sessions)
+        files = {f.name: f.read_text() == OLD_STATE for f in sorted(sessions.glob("*.json"))}
+        ok = ready and files == {"{}.json".format(name): True for name, _ in sorted(DRIVERS)}
+        return ok, "after stop another process had the session {}; state files untouched {}".format(ready, files)
+    check("stop leaves the session free for the next opener, and no state file is written", stop_frees)
+
+    def makes_none():
+        bare, said = folder(), {}
+        for name, cls in DRIVERS:
+            opened, refused, made = refusal(cls, bare)
+            fine = (not opened and made == 0 and isinstance(refused, ProviderError)
+                    and "scripts/login_provider.py {}".format(name) in str(refused))
+            said[name] = "refused" if fine else ("OPENED" if opened else "{}: {}".format(type(refused).__name__, str(refused)[:40]))
+        left = sorted(f.name for f in bare.iterdir())
+        return (set(said.values()) == {"refused"} and left == sorted("{}.json".format(name) for name, _ in DRIVERS),
+                "{}; the folder holds {}".format(said, left))
+    check("a driver does not make a profile that is not there", makes_none)
+
+    def way_in():
+        real, asked = cloakbrowser.launch_persistent_context, []
+
+        def answer(outcome):
+            def launcher(*args, **kwargs):
+                asked.append(kwargs.get("headless"))
+                if isinstance(outcome, Exception):
+                    raise outcome
+                return outcome
+            return launcher
+        given, seen = folder({"chatgpt": "24680"}), {}
+        try:
+            cloakbrowser.launch_persistent_context = answer("a browser")
+            seen["window"] = session.open_session(given, "chatgpt", headless=False)
+            seen["default"] = session.open_session(given, "chatgpt")
+            for label, error in (("other", RuntimeError("the binary would not start")),
+                                 ("held", RuntimeError("Failed to create a ProcessSingleton for your profile directory"))):
+                cloakbrowser.launch_persistent_context = answer(error)
+                try:
+                    session.open_session(given, "chatgpt")
+                    seen[label] = "opened"
+                except Exception as exc:
+                    seen[label] = "{}: {}".format(type(exc).__name__, str(exc)[:70])
+        finally:
+            cloakbrowser.launch_persistent_context = real
+        ok = (asked[:2] == [False, True] and seen["other"] == "RuntimeError: the binary would not start"
+              and seen["held"].startswith("ProviderError: the chatgpt session is open in another browser"))
+        return ok, "asked for a window, then by default: headless {}; another failure {!r}; a held profile {!r}".format(
+            asked[:2], seen.get("other"), seen.get("held"))
+    check("the way in opens with a window when asked, and a launch that fails says its own reason", way_in)
 
     server.shutdown()
     passed = sum(1 for ok in results if ok)

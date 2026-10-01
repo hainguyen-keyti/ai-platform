@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))
 
 from src.providers.base import ProviderError  # noqa: E402
-from src.providers.session import open_session, profile_of  # noqa: E402
+from src.providers.session import open_session  # noqa: E402
 
 SESSIONS = ROOT / "storage" / "sessions"
 HOME = "https://grok.com/"
@@ -283,8 +283,6 @@ PROBES = {"open": lambda b: open_page(b), "turn": probe_turn, "image": probe_ima
 
 
 def main():
-    if not profile_of(SESSIONS, "grok").is_dir():
-        sys.exit("no session at {}; run scripts/login_provider.py grok".format(profile_of(SESSIONS, "grok")))
     wanted = sys.argv[1] if len(sys.argv) > 1 else "open"
     names = list(PROBES) if wanted == "all" else [w for w in wanted.split(",") if w in PROBES]
     if not names:

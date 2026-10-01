@@ -18,6 +18,7 @@ setting. Measured first on 2026-09-25 with a throwaway copy of this file; see do
 import base64
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -27,7 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))
 
 from src.providers.base import ProviderError  # noqa: E402
-from src.providers.session import open_session, profile_of  # noqa: E402
+from src.providers.session import open_session  # noqa: E402
 
 SESSIONS = ROOT / "storage" / "sessions"
 HOME = "https://gemini.google.com/app"
@@ -66,9 +67,12 @@ def flat(text):
     return " ".join((text or "").split())
 
 
-def open_page(account, url=HOME, stored=True):
-    """A tab of the account's own browser or, for a comparison, a page of a browser with no account."""
-    page = account.new_page() if stored else cloakbrowser.launch(headless=True).new_page()
+def open_page(account, url=HOME):
+    """A tab of the account's own browser, on the app."""
+    return land(account.new_page(), url)
+
+
+def land(page, url=HOME):
     t0 = time.time()
     page.goto(url, wait_until="domcontentloaded", timeout=90000)
     for _ in range(40):
@@ -159,26 +163,44 @@ async (path) => {
 PROOF_PATHS = ("/app", "/usage", "/personalization-settings")
 
 
+def read_session(page, who):
+    body = (page.inner_text("body") or "").lower()
+    say("session", "{}: sign-in wording {}".format(who, [w for w in SIGN_IN if w in body] or "none"))
+    for path in PROOF_PATHS:
+        say("session", "{}: {} -> {}".format(who, path, page.evaluate(PROOF, path)))
+    # Every path answers 200 either way (measured 2026-09-27), so the proof has to be
+    # something only an account's page renders: its own settings switch.
+    page.goto("https://gemini.google.com/personalization-settings",
+              wait_until="domcontentloaded", timeout=90000)
+    page.wait_for_timeout(6000)
+    say("session", "{}: settings page lands on {}, role=switch count {}".format(
+        who, page.url, page.locator('button[role="switch"]').count()))
+
+
 def probe_session(account):
     """What a proof of sign-in could be: the same fetches, signed in and anonymous."""
-    for stored in (True, False):
-        page = open_page(account, stored=stored)
-        who = "signed in" if stored else "anonymous"
-        body = (page.inner_text("body") or "").lower()
-        say("session", "{}: sign-in wording {}".format(who, [w for w in SIGN_IN if w in body] or "none"))
-        for path in PROOF_PATHS:
-            say("session", "{}: {} -> {}".format(who, path, page.evaluate(PROOF, path)))
-        # Every path answers 200 either way (measured 2026-09-27), so the proof has to be
-        # something only an account's page renders: its own settings switch.
-        page.goto("https://gemini.google.com/personalization-settings",
-                  wait_until="domcontentloaded", timeout=90000)
-        page.wait_for_timeout(6000)
-        say("session", "{}: settings page lands on {}, role=switch count {}".format(
-            who, page.url, page.locator('button[role="switch"]').count()))
-        if stored:
-            page.close()
-        else:
-            page.context.browser.close()
+    page = open_page(account)
+    read_session(page, "signed in")
+    page.close()
+    failed = []
+
+    def anonymous():
+        try:
+            browser = cloakbrowser.launch(headless=True)
+            try:
+                read_session(land(browser.new_page()), "anonymous")
+            finally:
+                browser.close()
+        except Exception as exc:
+            failed.append(exc)
+
+    # One thread holds one Playwright, and this one holds the account's: the browser with no
+    # account runs on a thread of its own.
+    other = threading.Thread(target=anonymous)
+    other.start()
+    other.join()
+    if failed:
+        raise failed[0]
 
 
 def probe_settings_read(account):
@@ -550,8 +572,6 @@ FREE = ("open", "session", "settings-read", "banner", "list")
 
 
 def main():
-    if not profile_of(SESSIONS, "gemini").is_dir():
-        sys.exit("no session at {}; run scripts/login_provider.py gemini".format(profile_of(SESSIONS, "gemini")))
     wanted = (sys.argv[1] if len(sys.argv) > 1 else "open").split(",")
     ids = [x for x in (sys.argv[2] if len(sys.argv) > 2 else "").split(",") if x]
     names = list(FREE) if wanted == ["all"] else wanted

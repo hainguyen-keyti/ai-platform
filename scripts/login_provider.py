@@ -54,6 +54,7 @@ PROVIDERS = {
 
 WAIT_MINUTES = 15
 POLL_SECONDS = 3
+PROOF_AGAIN_SECONDS = 60
 
 
 ASK = """
@@ -88,24 +89,34 @@ def is_cookie(name, wanted):
     return name == wanted or (name.startswith(wanted + ".") and name[len(wanted) + 1:].isdigit())
 
 
-def signed_in(context, spec, page=None):
+def signed_in(context, spec, page=None, asked=None):
     """The provider's own session cookie, and where possible its own answer.
 
     A cookie can be present on a page that is not really signed in, which is how
     one login was lost on 2026-09-24. When the provider offers an endpoint that
     only an account can read, that is what decides.
+
+    asked remembers, per cookie as it is now, when its settings page last failed to stay: a profile
+    keeps the cookie of a session the site has ended, and the page proof opens a tab, so the same
+    cookie is not proved again within PROOF_AGAIN_SECONDS. A new login changes the cookie.
     """
-    found = None
+    found = mark = None
     for cookie in context.cookies():
         name = cookie.get("name", "")
         if spec["domain"] in cookie.get("domain", "") and any(is_cookie(name, w) for w in spec["cookies"]):
-            found = name
+            found, mark = name, hash((name, cookie.get("value")))
             break
     if not found:
         return None
     landing = spec.get("proves_page")
     if landing:
-        return "{} and {} stayed put".format(found, landing) if page_stays(context, landing) else None
+        if asked is not None and time.time() - asked.get(mark, float("-inf")) < PROOF_AGAIN_SECONDS:
+            return None
+        if page_stays(context, landing):
+            return "{} and {} stayed put".format(found, landing)
+        if asked is not None:
+            asked[mark] = time.time()
+        return None
     for kind, ask in (("proves_it", ASK), ("proves_token", ASK_WITH_TOKEN)):
         proof = spec.get(kind)
         if proof and page is not None:
@@ -169,11 +180,11 @@ def main():
     print("Waiting up to {} minutes...\n".format(WAIT_MINUTES))
 
     deadline = time.time() + WAIT_MINUTES * 60
-    found = None
+    found, asked = None, {}
     try:
         while time.time() < deadline:
             try:
-                found = signed_in(context, spec, page)
+                found = signed_in(context, spec, page, asked)
             except Exception:
                 print("the browser window was closed before the login finished")
                 context.close()

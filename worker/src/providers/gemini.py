@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from src.providers.base import (BaseProvider, FeatureType, GenerationResult, JobCancelled,
                                 MediaArtifact, ProviderError)
-from src.providers.session import NO_SESSION, open_session, profile_of
+from src.providers.session import NO_SESSION, open_session, profile_of, saved
 
 # Everything below was measured on the owner's account on 2026-09-25 and 2026-09-27; see
 # docs/research/2026-09-27-gemini.md. The interface is Vietnamese, so nothing keys on words.
@@ -141,9 +141,8 @@ class GeminiProvider(BaseProvider):
         self.memory = None
 
     def start(self) -> None:
-        profile = profile_of(self.sessions_path, self.name)
-        if not profile.is_dir():
-            raise RuntimeError(NO_SESSION.format(profile, self.name))
+        if not saved(self.sessions_path, self.name):
+            raise RuntimeError(NO_SESSION.format(profile_of(self.sessions_path, self.name), self.name))
 
     def stop(self) -> None:
         if self._context is not None:
