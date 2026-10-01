@@ -66,6 +66,9 @@ CHECKS = (
     "a conversation keeps to one provider",
     "a job queued behind a long turn is not failed as unserved",
     "memory on refuses the turn and refunds",
+    "an account its admin must fix holds its provider out at once",
+    "jobs waiting for a held provider fail and refund at once",
+    "a hold ends by itself",
     "health reports the provider's memory setting",
     "health shows code version and pacing",
     "the provider's error banner is recognised by shape",
@@ -1144,6 +1147,86 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             c["memory on refuses the turn and refunds"].failed(
                 "status {} kind {} quota {} -> {} health memory {!r}".format(
                     final.get("status"), final.get("error_kind"), q0, quota_now(), memory))
+
+    # An account its admin must fix (signed out, memory on) fails every turn until then, so the
+    # provider is held out: not offered, a new turn refused uncharged, and the jobs already waiting
+    # for it failed and refunded at once instead of each failing the same way in turn. The hold ends
+    # by itself (5s here, 10 minutes in production) and the next turn is tried again. Measured
+    # 2026-10-01: Gemini signed out, the web kept offering it and every turn failed in English.
+    hold_checks = ("an account its admin must fix holds its provider out at once",
+                   "jobs waiting for a held provider fail and refund at once",
+                   "a hold ends by itself")
+    if real:
+        for name in hold_checks:
+            c[name].skip("needs a provider that can pretend memory is on; covered in mock mode")
+    else:
+        def served_now():
+            _, listing = http("GET", api + "/providers", token=token)
+            return {p.get("name"): p.get("served") for p in ((listing or {}).get("providers") or [])
+                    if isinstance(p, dict)}
+
+        def served_within(seconds):
+            deadline = time.time() + seconds
+            while time.time() < deadline:
+                if served_now().get(provider) is True:
+                    return True
+                time.sleep(0.5)
+            return False
+
+        # The memory check above may have started a hold of its own.
+        ready = served_within(15)
+        q0 = quota_now()
+        busy = start_job(SLOW_PHRASE + ": keep the runner busy while two wait")
+        wait_state(busy, ("running",), 20) if busy else {}
+        refused = start_job(MEMORY_PHRASE + " for the first of the two")
+        waiting = start_job("the second of the two, queued behind the refused one")
+        settled = wait_state(refused, ("failed", "done"), 60) if refused else {}
+        held_at = time.time()
+        served = served_now()
+        q_held = quota_now()
+        rstatus, _ = http("POST", api + "/chat",
+                          {"provider": provider, "message": "a turn into the hold"}, token=token)
+        q_refused = quota_now()
+        behind = wait_state(waiting, ("failed", "done", "cancelled"), 10) if waiting else {}
+        behind_in = time.time() - held_at
+        wait_state(busy, ("done", "failed"), 30) if busy else {}
+        if (ready and settled.get("status") == "failed"
+                and settled.get("error_kind") == "provider_misconfigured"
+                and served.get(provider) is False and served.get(other_provider) is True
+                and rstatus == 503 and q_refused == q_held):
+            c["an account its admin must fix holds its provider out at once"].passed(
+                "{} not served right after the refusal, {} still served, a new turn 503 and "
+                "uncharged".format(provider, other_provider))
+        else:
+            c["an account its admin must fix holds its provider out at once"].failed(
+                "served before {} refused {} kind {} served after {} new turn {} quota {} -> {}".format(
+                    ready, settled.get("status"), settled.get("error_kind"), served, rstatus,
+                    q_held, q_refused))
+        # The slow turn is the only one that may cost: the refused one and the one behind it are
+        # given back, the second without ever reaching the worker.
+        if (behind.get("status") == "failed" and behind.get("error_kind") == "provider_misconfigured"
+                and behind.get("attempts") == 0 and behind_in < 5 and q_held == q0 - 1):
+            c["jobs waiting for a held provider fail and refund at once"].passed(
+                "the job behind it failed {:.1f}s after the refusal, never claimed, quota {} -> {}".format(
+                    behind_in, q0, q_held))
+        else:
+            c["jobs waiting for a held provider fail and refund at once"].failed(
+                "the job behind it {} kind {} attempts {} after {:.1f}s, quota {} -> {}".format(
+                    behind.get("status"), behind.get("error_kind"), behind.get("attempts"),
+                    behind_in, q0, q_held))
+        back = served_within(15)
+        back_in = time.time() - held_at
+        after_hold = start_job("an ordinary turn once the hold is over")
+        after_final = wait_state(after_hold, ("done", "failed"), job_timeout) if after_hold else {}
+        if back and after_final.get("status") == "done":
+            c["a hold ends by itself"].passed(
+                "{} served again {:.1f}s after the refusal, an ordinary turn done".format(provider, back_in))
+        else:
+            c["a hold ends by itself"].failed(
+                "served again {} after {:.1f}s, then a turn {} {}".format(
+                    back, back_in, after_final.get("status"), after_final.get("error")))
+
+    if not real:
         # A served turn afterwards, so the reading below is of a provider that
         # looked again, not of the pretend switch.
         job_id = start_job("a plain turn after the memory check")
@@ -1215,6 +1298,9 @@ def main():
         # Comfortably above the gate's own pacing gap, so a worker pausing
         # between turns is never mistaken for a dead one.
         "NO_WORKER_SECONDS": "20",
+        # A provider whose account needs its admin is held out this long (10 minutes in production),
+        # so the check that the hold ends by itself does not wait out the production one.
+        "PROVIDER_HOLD_SECONDS": "5",
     }
 
     try:

@@ -6,7 +6,9 @@
 Traced 2026-09-29 from the third Gemini real gate: while a runner deleted a thread (55s on Gemini),
 and while it finished a job the api had cancelled, it claimed and pinged nothing, so past the
 served window the api refused the next turn with 503 and failed a queued job as no_worker.
-Prints N/3 PASSED.
+Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Send ran on at
+ChatGPT, because the runner asked about its job only every lease/3, 140s with production's 420s.
+Prints N/4 PASSED.
 """
 
 import sys
@@ -22,6 +24,9 @@ from src import runner as runner_module  # noqa: E402
 
 PING = "/internal/workers/ping"
 runner_module.BUSY_PING_SECONDS = 0.2
+# The cadence the runner ships with is what the check below holds to 5s; the test itself runs faster.
+SHIPPED_CANCEL_CHECK = getattr(runner_module, "CANCEL_CHECK_SECONDS", None)
+runner_module.CANCEL_CHECK_SECONDS = 0.3
 
 
 class Response:
@@ -142,6 +147,22 @@ def main():
            and stopped_in is not None and stopped_in < 0.5,
            "told the job was gone {}, the driver told to stop {}s later, {} pings until it returned, "
            "{} after".format(told is not None, stopped_in, len(during), len(after)))
+
+    # Production's lease: the api answers at once that the job is gone, and the driver, three seconds
+    # into its turn, must hear it within the cancel cadence rather than at lease/3.
+    client = Client({"/heartbeat": Response(200, {"alive": False})})
+    pool = Pool(busy=3.0)
+    runner = runner_module.Runner(pool, "chatgpt")
+    job = {"id": "job-2", "attempt": 1, "feature": "chat", "provider": "chatgpt", "payload": {},
+           "thread_url": None, "lease_seconds": 420}
+    started = time.time()
+    runner._handle(client, job)
+    stopped_after = round(pool.stop_seen - started, 2) if pool.stop_seen else None
+    record("a cancel reaches the driver within the cancel cadence whatever the lease",
+           SHIPPED_CANCEL_CHECK is not None and SHIPPED_CANCEL_CHECK <= 5
+           and stopped_after is not None and stopped_after < 1.5,
+           "shipped cadence {}s; with a 420s lease the driver was told to stop {}s into a 3s turn".format(
+               SHIPPED_CANCEL_CHECK, stopped_after))
 
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))

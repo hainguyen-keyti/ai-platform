@@ -8,7 +8,9 @@ paints textarea#pending-home-input and mounts the real composer, a ProseMirror
 div with no id, about ten seconds later; #prompt-textarea is gone; a failed first
 turn leaves /c/local-chatgpt:<uuid> in the address. The driver used to call a
 signed-in session "probably logged out" whenever the composer did not appear.
-Prints N/19 PASSED.
+Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Send ran on at
+ChatGPT; the driver typed a turn its job had already lost and left a running reply unstopped.
+Prints N/21 PASSED.
 """
 
 import sys
@@ -18,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))
 
 from src.providers import chatgpt  # noqa: E402
-from src.providers.base import ProviderError  # noqa: E402
+from src.providers.base import JobCancelled, ProviderError  # noqa: E402
 
 PROSEMIRROR = "ProseMirror"
 PLACEHOLDER = "pending-home-input"
@@ -77,6 +79,29 @@ class Box:
         return lambda *args, **kwargs: None
 
 
+class StopButton:
+    """The site's stop button: there while a reply is being written, pressing it ends the reply."""
+
+    def __init__(self, page):
+        self.page = page
+
+    def count(self):
+        return 1 if self.page.writing else 0
+
+    @property
+    def first(self):
+        return self
+
+    def is_visible(self):
+        return self.page.writing
+
+    def click(self, *args, **kwargs):
+        if not self.page.writing:
+            raise Missing("no stop button")
+        self.page.stop_presses += 1
+        self.page.writing = False
+
+
 class Keyboard:
     def __init__(self, page):
         self.page = page
@@ -98,6 +123,8 @@ class Keyboard:
             self.page.enters += 1
             if self.page.text.strip():
                 self.page.sent.append(self.page.text)
+                # The site starts writing its reply the moment a turn is sent.
+                self.page.writing = True
             self.page.text = ""
         elif key in ("ControlOrMeta+a", "Backspace"):
             # stuck: a composer that refuses to be cleared.
@@ -128,6 +155,8 @@ class Page:
         self.token_after = token_after
         self.token_reads = 0
         self.deletions = []
+        self.writing = False
+        self.stop_presses = 0
 
     def goto(self, url, *args, **kwargs):
         self.url = url
@@ -145,6 +174,8 @@ class Page:
         self.clock.now += ms / 1000.0
 
     def locator(self, selector):
+        if selector == chatgpt.STOP_BUTTON:
+            return StopButton(self)
         # A comma is a list of alternatives, as in the browser: any part may match.
         parts = [p.strip() for p in selector.split(",")]
         mounted = PROSEMIRROR in self.has or (
@@ -164,6 +195,12 @@ class Page:
         if script == chatgpt.DELETE_THREAD:
             self.deletions.append(args[0][0])
             return {"status": 200}
+        # What a whole turn reads around its send: memory off, nothing on the page yet.
+        if script == chatgpt.FETCH_USER_SETTINGS:
+            return {"status": 200, "values": {key: False for key in chatgpt.MEMORY_KEYS}}
+        if script in (chatgpt.SNAPSHOT_IMAGES, chatgpt.SNAPSHOT_DOWNLOADS,
+                      chatgpt.COLLECT_CANDIDATE_IMAGES, chatgpt.ERROR_BANNER_PRESENT):
+            return []
         return None
 
     def __getattr__(self, name):
@@ -335,6 +372,34 @@ def main():
     record("a composer that cannot be cleared is not typed into twice",
            page.sent == [] and bool(err), "sent {!r} error {!r}".format(
                [s[:40] for s in page.sent], err[:60]))
+
+    # A whole turn whose job the api takes away. stop says when the driver hears of it.
+    def run_on(page, stop):
+        driver = provider_on(page)
+        driver.bind(None, stop)
+        try:
+            driver._run("write a long essay about autumn in Hanoi")
+            outcome = "returned"
+        except JobCancelled:
+            outcome = "cancelled"
+        except Exception as exc:
+            outcome = "{}: {}".format(type(exc).__name__, str(exc)[:60])
+        return outcome, getattr(driver, "last_stop", None)
+
+    page = Page(clock, has={PROSEMIRROR})
+    outcome, stopped = run_on(page, lambda: True)
+    record("a job stopped before its send types nothing and sends nothing",
+           outcome == "cancelled" and page.sent == [] and page.enters == 0
+           and (stopped or {}).get("sent") is False,
+           "{}, sent {}, enters {}, last_stop {}".format(outcome, len(page.sent), page.enters, stopped))
+
+    page = Page(clock, has={PROSEMIRROR})
+    outcome, stopped = run_on(page, lambda: bool(page.sent))
+    record("a job stopped while its reply runs presses the site's stop button",
+           outcome == "cancelled" and len(page.sent) == 1 and page.stop_presses == 1 and not page.writing
+           and (stopped or {}).get("pressed") is True,
+           "{}, sent {}, stop pressed {} times, still writing {}, last_stop {}".format(
+               outcome, len(page.sent), page.stop_presses, page.writing, stopped))
 
     for url, expected in (("https://chatgpt.com/c/local-chatgpt%3A79ca01df-bb1f", None),
                           ("https://chatgpt.com/c/WEB:79ca01df-bb1f", None),

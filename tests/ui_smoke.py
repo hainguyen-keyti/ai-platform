@@ -1390,6 +1390,79 @@ def main():
             faint.append("the typing bubble after a minute: not measured, {}: {}".format(
                 type(exc).__name__, str(exc)[:80]))
 
+        # A turn the provider's account refuses (signed out, memory on) means the provider is
+        # unavailable until its admin acts: the person is told so in their own language, like for a
+        # provider nobody serves, and the admin's instruction stays in the job's record. Measured
+        # 2026-10-01: "the gemini session is signed out; run scripts/login_provider.py gemini" in the
+        # header. Answered in the browser: no job is made.
+        admin_text = "the chatgpt session is signed out; run scripts/login_provider.py chatgpt"
+
+        def refused_by_account(lang):
+            stamp = "2026-10-01 10:00:00"
+            json_headers = {"access-control-allow-origin": "*", "content-type": "application/json"}
+            said = {"messages": []}
+
+            def answer(route):
+                request = route.request
+                path = urlparse(request.url).path
+                if request.method == "OPTIONS":
+                    route.continue_()
+                    return
+                if path == "/providers":
+                    body = {"providers": [{"name": n, "served": True} for n in ("chatgpt", "grok", "gemini")]}
+                elif path == "/conversations":
+                    body = {"items": [{"id": "acct", "provider": "chatgpt", "title": "Account", "created_at": stamp,
+                                       "updated_at": stamp}] if said["messages"] else []}
+                elif path == "/conversations/acct":
+                    body = {"id": "acct", "provider": "chatgpt", "title": "Account", "created_at": stamp,
+                            "updated_at": stamp, "orphan_media": [], "messages": said["messages"]}
+                elif path == "/chat" and request.method == "POST":
+                    said["messages"] = [{"id": "acct-1", "role": "user", "created_at": stamp, "media": [],
+                                         "content": json.loads(request.post_data)["message"]}]
+                    body = {"job_id": "acct-job", "conversation_id": "acct"}
+                elif path == "/jobs/acct-job":
+                    body = {"id": "acct-job", "status": "failed", "phase": None, "error": admin_text,
+                            "error_kind": "provider_misconfigured", "provider": "chatgpt"}
+                else:
+                    route.continue_()
+                    return
+                route.fulfill(status=200, headers=json_headers, body=json.dumps(body))
+
+            refused = browser.new_context(viewport={"width": 1280, "height": 900})
+            refused.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', {!r});"
+                                    .format(token, lang))
+            try:
+                view = refused.new_page()
+                for pattern in ("**/providers", "**/conversations", "**/conversations/acct", "**/chat",
+                                "**/jobs/acct-job"):
+                    view.route(pattern, answer)
+                view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+                view.wait_for_selector("[data-testid=provider-select]", timeout=20000)
+                view.wait_for_timeout(800)
+                view.fill("form input", "a turn the account refuses")
+                view.click("form button[type=submit]")
+                view.wait_for_timeout(3000)
+                notice = view.locator("[data-testid=provider-unserved]")
+                seen = {"notice": notice.first.inner_text().strip() if notice.count() else None,
+                        "header errors": [t.strip() for t in view.locator("header .text-red-600").all_inner_texts()],
+                        "admin text shown": "login_provider" in view.locator("body").inner_text()}
+                shot(view, "19-refused-by-account-{}".format(lang))
+                return seen
+            finally:
+                refused.close()
+
+        try:
+            english, vietnamese = refused_by_account("en"), refused_by_account("vi")
+            record("a turn its provider's account refuses shows the unavailable notice, not the admin's instruction",
+                   bool(english["notice"]) and "chatgpt" in english["notice"] and "unavailable" in english["notice"]
+                   and bool(vietnamese["notice"]) and "tạm ngưng" in vietnamese["notice"]
+                   and not english["header errors"] and not vietnamese["header errors"]
+                   and not english["admin text shown"] and not vietnamese["admin text shown"],
+                   "en {}; vi {}".format(english, vietnamese))
+        except Exception as exc:
+            record("a turn its provider's account refuses shows the unavailable notice, not the admin's instruction",
+                   False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
         # How a reply and a file look, answered in the browser. The bubble's pre-wrap turned the
         # breaks between a reply's blocks into blank lines (three bullets 166px), and they were the
         # only gap between paragraphs; a fixed 256px file card ran out of a 147px gallery tile.
