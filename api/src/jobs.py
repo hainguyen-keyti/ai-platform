@@ -112,6 +112,12 @@ def create_job(user, provider, feature, payload, conversation_id=None,
             # After every check that already refuses (404, 409, a missing picture), before
             # anything is written or charged: a turn nobody would pick up is refused now instead
             # of failing as no_worker minutes later.
+            if _held(conn, provider):
+                raise HTTPException(
+                    status_code=503,
+                    detail="{} is unavailable right now: its account needs its admin; try again later".format(
+                        provider),
+                )
             if not _served(conn, provider):
                 raise HTTPException(
                     status_code=503,
@@ -191,13 +197,45 @@ def _note_worker(conn, providers):
         )
 
 
-def _served(conn, provider):
-    """Whether a worker has asked for this provider within the window the sweep below uses."""
+def _held(conn, provider):
+    """Whether this provider is held out because its account needs its admin."""
     return one(
+        conn, "SELECT 1 FROM provider_holds WHERE provider = ? AND until > datetime('now')", (provider,)
+    ) is not None
+
+
+def _hold(conn, provider, reason):
+    """Inside the caller's transaction: hold a provider out whose account needs its admin.
+
+    Every turn would fail the same way until the account is fixed, so the jobs already waiting for it
+    are failed now, each refunded once, instead of one after another.
+    """
+    conn.execute(
+        "INSERT INTO provider_holds (provider, until, reason) VALUES (?, datetime('now', ?), ?)"
+        " ON CONFLICT(provider) DO UPDATE SET until = excluded.until, reason = excluded.reason",
+        (provider, "+{} seconds".format(settings.provider_hold_seconds), reason),
+    )
+    waiting = many(conn, "SELECT id, user_id FROM jobs WHERE provider = ? AND status = 'pending'", (provider,))
+    for job in waiting:
+        changed = conn.execute(
+            "UPDATE jobs SET status = 'failed', error = ?, error_kind = 'provider_misconfigured',"
+            " lease_expires_at = NULL, phase = NULL, finished_at = datetime('now')"
+            " WHERE id = ? AND status = 'pending'",
+            (reason, job["id"]),
+        ).rowcount
+        if changed == 1:
+            _refund(conn, job["user_id"])
+
+
+def _served(conn, provider):
+    """Whether a worker has asked for this provider within the window the sweep below uses, and its
+    account is not held out for its admin."""
+    pinged = one(
         conn,
         "SELECT 1 FROM worker_pings WHERE provider = ? AND last_seen >= datetime('now', ?)",
         (provider, "-{} seconds".format(settings.no_worker_seconds)),
     ) is not None
+    return pinged and not _held(conn, provider)
 
 
 def provider_status():
@@ -420,6 +458,8 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
             # A job that produced nothing must not cost the user a credit.
             if status == "failed":
                 _refund(conn, job["user_id"])
+            if status == "failed" and error_kind == "provider_misconfigured":
+                _hold(conn, job["provider"], error)
             conn.execute("COMMIT")
         except Exception:
             _rollback(conn)

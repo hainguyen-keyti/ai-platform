@@ -37,6 +37,9 @@ class Settings:
         # long turn is failed as unserved.
         floor = int(self.job_lease_seconds / 3.0) * 2 + 30
         self.no_worker_seconds = max(self.no_worker_seconds, floor)
+        # A turn refused because the provider's account needs its admin holds that provider out this
+        # long; then the next turn finds out whether it has been fixed.
+        self.provider_hold_seconds = int(os.environ.get("PROVIDER_HOLD_SECONDS", "600"))
 
 
 settings = Settings()

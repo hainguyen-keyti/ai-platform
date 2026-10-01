@@ -85,7 +85,11 @@ export async function waitForJob(jobId, onTick) {
   for (;;) {
     const job = await api.job(jobId)
     if (job.status === 'done' || job.status === 'cancelled') return job
-    if (job.status === 'failed') throw new Error(job.error || 'job failed')
+    if (job.status === 'failed') {
+      const failure = new Error(job.error || 'job failed')
+      failure.kind = job.error_kind
+      throw failure
+    }
     if (onTick) onTick(job.status, job.phase)
     await new Promise((resolve) => setTimeout(resolve, 1500))
   }

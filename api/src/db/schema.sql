@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS worker_pings (
     last_seen TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- A provider whose account needs its admin (signed out, memory on) is held out until `until`: not
+-- offered and no turn taken, since every turn would fail the same way until then.
+CREATE TABLE IF NOT EXISTS provider_holds (
+    provider TEXT PRIMARY KEY,
+    until    TEXT NOT NULL,
+    reason   TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_tombstones_open      ON thread_tombstones(deleted_at, claimed_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_token       ON sessions(token);
 CREATE INDEX IF NOT EXISTS idx_conversations_user   ON conversations(user_id, updated_at DESC);

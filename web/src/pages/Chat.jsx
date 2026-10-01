@@ -309,8 +309,8 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
     } catch (err) {
       // Refused before any job existed: nothing was sent, so the words go back in the box.
       if (!jobRef.current && draft) setInput(draft)
-      // The api's word that nobody serves this provider beats the list asked a minute ago.
-      if (err.status === 503) setServed((s) => ({ ...s, [provider]: false }))
+      // Nobody serving it, or an account its admin must fix: unavailable, and the admin's words are not for this person.
+      if (err.status === 503 || err.kind === 'provider_misconfigured') setServed((s) => ({ ...s, [provider]: false }))
       else setError(err.message)
     } finally {
       setStatus(null)
