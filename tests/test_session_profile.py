@@ -10,7 +10,7 @@ wrote it back, and a Gemini login was signed out by Google after four such launc
 With one profile directory and one seed a second launch reads the same device, keeps its cookies,
 and a second browser on the same profile is refused by Chromium itself.
 The sessions folder here is as this machine has it: the old state file still lies beside the profile.
-Prints N/8 PASSED.
+Prints N/9 PASSED.
 """
 
 import http.server
@@ -240,6 +240,22 @@ def main():
     end(child, sessions)
     record("stop leaves the session free for the next opener", error is None and ready,
            "after stop another process had the session {}{}".format(ready, ", " + error if error else ""))
+
+    opened, refused = False, None
+    p = chatgpt.ChatGPTProvider(media(), bare)
+    try:
+        p._ensure_page()
+        opened = True
+    except Exception as exc:
+        refused = exc
+    finally:
+        p.stop()
+    record("a driver does not make a profile that is not there",
+           not opened and isinstance(refused, ProviderError)
+           and "scripts/login_provider.py chatgpt" in str(refused) and not (bare / "chatgpt").exists(),
+           "{}; the folder holds {}".format(
+               "it opened a browser" if opened else "{}: {}".format(type(refused).__name__, str(refused)[-48:]),
+               sorted(f.name for f in bare.iterdir())))
 
     server.shutdown()
     passed = sum(1 for ok in results if ok)
