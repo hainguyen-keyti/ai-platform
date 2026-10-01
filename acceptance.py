@@ -132,10 +132,17 @@ THREAD_MARKER = re.compile(r"\[thread=([^\]]+)\]")
 def thread_accounted(removed, stop, moment, waiting):
     """What became, at the provider, of a turn taken away from a running job at `moment`.
 
-    "removed": the worker removed a thread tombstoned after that moment. None: nothing accounts
-    for the turn yet.
+    "removed": the worker removed a thread tombstoned after that moment. "unsent": the driver's own
+    stop record, made after that moment (its time is rounded to a tenth), says the turn never went
+    out, and no tombstone waits, so there is no thread to remove. None: nothing accounts for the
+    turn yet. A record that says the turn was sent accounts for nothing: only its thread's removal
+    does.
     """
-    return "removed" if removed else None
+    if removed:
+        return "removed"
+    if stop and stop.get("at", 0) >= moment - 0.1 and stop.get("sent") is False and not waiting:
+        return "unsent"
+    return None
 
 
 # The rule above, row by row, for a turn taken away at 1000 on the clock the gate shares with its
@@ -849,7 +856,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         stop = stop_record()
         accounted = thread_accounted(worker_removed(known, deleted_before), stop, taken_at,
                                      waiting_stones(known))
-    answers = ("removed",)
+    # The mock's slow picture always makes a thread; only a real driver can leave its turn unsent.
+    answers = ("removed", "unsent") if real else ("removed",)
     if (seen.get("status") == "running" and dstatus == 204 and final.get("status") == "cancelled"
             and not ((final.get("result") or {}).get("media")) and quota_now() == q0
             and files_after == files_before and accounted in answers):
