@@ -12,7 +12,7 @@ Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Se
 ChatGPT; the driver typed a turn its job had already lost and left a running reply unstopped.
 Measured 2026-10-02: a real picture is on the page 22 seconds after the send, and the server never
 closes that turn with an assistant node, so the driver waited out its whole ceiling for every one.
-Prints N/30 PASSED.
+Prints N/32 PASSED.
 """
 
 import re
@@ -261,9 +261,13 @@ class DrawingPage(Page):
     WORDS = "Here it is."
 
     def __init__(self, clock, tool_after=None, tool_kind="multimodal_text", writes=None,
-                 words_after=None, threaded=True):
+                 words_after=None, threaded=True, finished_after=None, second_after=None):
         self.tool_after, self.tool_kind, self.writes = tool_after, tool_kind, writes
         self.words_after, self.threaded, self.sent_at = words_after, threaded, None
+        # finished_after: the tool's node is in progress until then, and its picture shows then
+        # (at tool_after unless said); second_after: a second picture's node lands then.
+        self.finished_after = tool_after if finished_after is None else finished_after
+        self.second_after = second_after
         super().__init__(clock, has={PROSEMIRROR})
 
     def since(self):
@@ -301,7 +305,10 @@ class DrawingPage(Page):
 
     def evaluate(self, script, *args):
         if script == chatgpt.COLLECT_CANDIDATE_IMAGES:
-            return [self.PICTURE] if self.reached(self.tool_after) and self.tool_kind == "multimodal_text" else []
+            if self.tool_kind != "multimodal_text":
+                return []
+            return ([self.PICTURE] if self.reached(self.finished_after) else []) + (
+                [self.PICTURE + "-2"] if self.reached(self.second_after) else [])
         if script == chatgpt.FETCH_AS_DATA_URL:
             return "data:image/png;base64,iVBORw0KGgo="
         if script == chatgpt.FETCH_THREAD:
@@ -311,8 +318,12 @@ class DrawingPage(Page):
             if self.reached(self.tool_after):
                 nodes += [{"id": "a1", "role": "assistant", "status": done, "end_turn": False,
                            "create_time": 2, "content_type": "code", "text": "{}"},
-                          {"id": "t1", "role": "tool", "status": done, "end_turn": None,
-                           "create_time": 3, "content_type": self.tool_kind, "text": ""}]
+                          {"id": "t1", "role": "tool", "end_turn": None, "create_time": 3,
+                           "status": done if self.reached(self.finished_after) else "in_progress",
+                           "content_type": self.tool_kind, "text": ""}]
+            if self.reached(self.second_after):
+                nodes.append({"id": "t2", "role": "tool", "status": done, "end_turn": None,
+                              "create_time": 3.5, "content_type": self.tool_kind, "text": ""})
             if self.reached(self.words_after):
                 nodes.append({"id": "a2", "role": "assistant", "status": done, "end_turn": True,
                               "create_time": 4, "content_type": "text", "text": self.WORDS})
@@ -559,6 +570,16 @@ def main():
     record("a finished tool node that is not a picture ends nothing",
            said == "success" and pictures == 0 and text == DrawingPage.WORDS and took >= 60,
            "{} with {} picture(s), words {!r}, after {:.0f}s".format(said, pictures, text, took))
+
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, writes=(26, 40), second_after=45))
+    record("work that resumes restarts the quiet time: a second picture landing after it is collected too",
+           said == "success" and pictures == 2 and took >= 55,
+           "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
+
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, finished_after=50))
+    record("a tool node still in progress is not a finished picture",
+           said == "success" and pictures == 1 and took >= 60,
+           "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
 
     said, pictures, text, took = draw_on(DrawingPage(clock))
     record("a turn that never ends gives up at the ceiling, as a timeout",
