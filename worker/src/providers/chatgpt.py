@@ -48,6 +48,11 @@ OPEN_RETRY_SECONDS = 15
 # over. Two seconds was thin: a reply that runs several tools puts the stop
 # button away between them, and a pause there reads as an ending.
 SETTLE_SECONDS = 6
+# A picture turn gets no closing assistant node: measured 2026-10-02, its newest
+# node stays the image tool's result for good. It is over once that result has
+# been the turn's newest node this long with the stop button gone.
+PICTURE_NODE = "multimodal_text"
+PICTURE_QUIET_SECONDS = 10
 # After a cancel, how long to wait for a freshly sent turn's thread address so
 # the thread can be reported; the address normally shows within seconds.
 CANCEL_THREAD_WAIT = 15
@@ -544,6 +549,7 @@ class ChatGPTProvider(BaseProvider):
         unreadable = 0
         next_fetch = 0.0
         backoff = SERVER_POLL_SECONDS
+        drawn = None
         while time.time() < deadline:
             page.wait_for_timeout(1000)
             self._check_stop()
@@ -555,7 +561,10 @@ class ChatGPTProvider(BaseProvider):
                 continue
             # While the page shows the model still working, the server has
             # nothing new to say; ask it only when the page looks finished.
-            if page.locator(STOP_BUTTON).count() or time.time() < started + START_FLOOR:
+            if page.locator(STOP_BUTTON).count():
+                drawn = None
+                continue
+            if time.time() < started + START_FLOOR:
                 continue
             if time.time() < next_fetch:
                 continue
@@ -589,7 +598,13 @@ class ChatGPTProvider(BaseProvider):
                 self._phase("reply started")
                 announced = True
             last = answers[-1]
-            if last["status"] == "finished_successfully" and last.get("end_turn"):
+            newest = fresh[-1]
+            picture = (newest["role"] == "tool" and newest["content_type"] == PICTURE_NODE
+                       and newest["status"] == "finished_successfully")
+            if not picture or not drawn or drawn[0] != newest["id"]:
+                drawn = (newest["id"], time.time()) if picture else None
+            closed = last["status"] == "finished_successfully" and last.get("end_turn")
+            if closed or (drawn and time.time() - drawn[1] >= PICTURE_QUIET_SECONDS):
                 self._phase("reply finished")
                 text = "\n\n".join(
                     n["text"] for n in answers if n["content_type"] == "text" and n["text"]
