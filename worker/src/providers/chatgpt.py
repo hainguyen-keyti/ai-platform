@@ -18,8 +18,9 @@ HOME = "https://chatgpt.com/"
 # and mounts the real composer about ten seconds later: that placeholder is not ready.
 COMPOSER = 'div.ProseMirror[contenteditable="true"], #prompt-textarea'
 SEND_BUTTON = 'button[data-testid="send-button"], button[aria-label="Send"]'
-# Only an economy: while it shows, the server is not asked. Without it the
-# server is simply asked every poll, so a relabelled button costs reads, not truth.
+# While it shows, the server is not asked, and a picture turn is not called over.
+# A relabelled button costs reads, and leaves a picture's end to the server's
+# record and its quiet time alone.
 STOP_BUTTON = '[data-testid="stop-button"], button[aria-label="Stop"]'
 ASSISTANT_TURN = '[data-message-author-role="assistant"], [data-chatgpt-selection-message-id]'
 UPLOAD_INPUT = '#upload-files, input[type="file"][accept="image/*"]'
@@ -53,6 +54,11 @@ SETTLE_SECONDS = 6
 # been the turn's newest node this long with the stop button gone.
 PICTURE_NODE = "multimodal_text"
 PICTURE_QUIET_SECONDS = 10
+# The node must be this turn's own by the server's clock too: the read of the
+# thread before the send can fail, and then an earlier turn's picture looks new.
+PICTURE_CLOCK_SLACK = 5
+# The node can be there before the page has painted the picture.
+PICTURE_PAINT_SECONDS = 30
 # After a cancel, how long to wait for a freshly sent turn's thread address so
 # the thread can be reported; the address normally shows within seconds.
 CANCEL_THREAD_WAIT = 15
@@ -534,6 +540,12 @@ class ChatGPTProvider(BaseProvider):
             return set()
         return {n["id"] for n in data["nodes"]}
 
+    @staticmethod
+    def _drew(node) -> bool:
+        """Whether a server node is the image tool's finished result."""
+        return (node["role"] == "tool" and node["content_type"] == PICTURE_NODE
+                and node["status"] == "finished_successfully")
+
     def _settle_via_server(self, page, baseline_ids: set, deadline: float, banner_before=None):
         """Wait until the server marks the new assistant turn finished.
 
@@ -599,8 +611,7 @@ class ChatGPTProvider(BaseProvider):
                 announced = True
             last = answers[-1]
             newest = fresh[-1]
-            picture = (newest["role"] == "tool" and newest["content_type"] == PICTURE_NODE
-                       and newest["status"] == "finished_successfully")
+            picture = self._drew(newest) and newest["create_time"] >= started - PICTURE_CLOCK_SLACK
             if not picture or not drawn or drawn[0] != newest["id"]:
                 drawn = (newest["id"], time.time()) if picture else None
             closed = last["status"] == "finished_successfully" and last.get("end_turn")
@@ -833,6 +844,12 @@ class ChatGPTProvider(BaseProvider):
                 # from the server. The button click stays only as a fallback.
                 page.wait_for_timeout(1500)
                 sources = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
+                waited = 0
+                while not sources and fresh and self._drew(fresh[-1]) and waited < PICTURE_PAINT_SECONDS:
+                    page.wait_for_timeout(1000)
+                    self._check_stop()
+                    waited += 1
+                    sources = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
                 media = self._download(page, sources, prompt)
                 files = self._fetch_sandbox_files(
                     page, self._thread_id(page) or "", fresh, prompt, {upload} if upload else set())

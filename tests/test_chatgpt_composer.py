@@ -12,7 +12,7 @@ Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Se
 ChatGPT; the driver typed a turn its job had already lost and left a running reply unstopped.
 Measured 2026-10-02: a real picture is on the page 22 seconds after the send, and the server never
 closes that turn with an assistant node, so the driver waited out its whole ceiling for every one.
-Prints N/32 PASSED.
+Prints N/36 PASSED.
 """
 
 import re
@@ -261,13 +261,21 @@ class DrawingPage(Page):
     WORDS = "Here it is."
 
     def __init__(self, clock, tool_after=None, tool_kind="multimodal_text", writes=None,
-                 words_after=None, threaded=True, finished_after=None, second_after=None):
+                 words_after=None, threaded=True, **more):
         self.tool_after, self.tool_kind, self.writes = tool_after, tool_kind, writes
         self.words_after, self.threaded, self.sent_at = words_after, threaded, None
-        # finished_after: the tool's node is in progress until then, and its picture shows then
-        # (at tool_after unless said); second_after: a second picture's node lands then.
-        self.finished_after = tool_after if finished_after is None else finished_after
-        self.second_after = second_after
+        # finished_after: the tool's node is in progress until then (at tool_after unless said);
+        # paints_after: the page shows the picture then (when its node is finished unless said);
+        # second_after: a second picture's node lands then; words_from: the closing words' node is
+        # there from then, in progress and half written, until words_after; idle_until: the stop
+        # button does not show before then; earlier: the thread already holds a turn that drew, and
+        # the address is the thread's from the start; first_read: what the first read of the
+        # thread answers.
+        self.finished_after = more.get("finished_after", tool_after)
+        self.paints_after = more.get("paints_after", self.finished_after)
+        self.second_after, self.words_from = more.get("second_after"), more.get("words_from")
+        self.idle_until, self.earlier = more.get("idle_until", 0), more.get("earlier", False)
+        self.first_read, self.reads, self.made_at = more.get("first_read", 200), 0, clock.now
         super().__init__(clock, has={PROSEMIRROR})
 
     def since(self):
@@ -278,7 +286,7 @@ class DrawingPage(Page):
 
     @property
     def writing(self):
-        if self.sent_at is None:
+        if self.sent_at is None or self.since() < self.idle_until:
             return False
         first = self.tool_after if self.tool_after is not None else self.words_after
         if first is None or self.since() < first:
@@ -292,7 +300,7 @@ class DrawingPage(Page):
 
     @property
     def url(self):
-        return self.THREAD if self.threaded and self.sent_at is not None else self._url
+        return self.THREAD if (self.threaded and self.sent_at is not None) or self.earlier else self._url
 
     @url.setter
     def url(self, value):
@@ -303,31 +311,48 @@ class DrawingPage(Page):
             return Words(self.WORDS if self.reached(self.words_after) else "")
         return super().locator(selector)
 
+    def nodes(self):
+        done = "finished_successfully"
+
+        def node(ident, role, kind, at, status=done, end_turn=None, text=""):
+            return {"id": ident, "role": role, "status": status, "end_turn": end_turn,
+                    "create_time": at, "content_type": kind, "text": text}
+
+        nodes = []
+        if self.earlier:
+            nodes += [node("u0", "user", "text", self.made_at - 100, text="an earlier prompt"),
+                      node("a0", "assistant", "code", self.made_at - 99, end_turn=False, text="{}"),
+                      node("t0", "tool", "multimodal_text", self.made_at - 98)]
+        if self.sent_at is None:
+            return nodes
+        nodes.append(node("u1", "user", "text", self.sent_at, text="a prompt"))
+        if self.reached(self.tool_after):
+            nodes += [node("a1", "assistant", "code", self.sent_at + self.tool_after - 1, end_turn=False, text="{}"),
+                      node("t1", "tool", self.tool_kind, self.sent_at + self.tool_after,
+                           status=done if self.reached(self.finished_after) else "in_progress")]
+        if self.reached(self.second_after):
+            nodes.append(node("t2", "tool", self.tool_kind, self.sent_at + self.second_after))
+        if self.reached(self.words_after):
+            nodes.append(node("a2", "assistant", "text", self.sent_at + (self.words_from or self.words_after),
+                              end_turn=True, text=self.WORDS))
+        elif self.reached(self.words_from):
+            nodes.append(node("a2", "assistant", "text", self.sent_at + self.words_from,
+                              status="in_progress", text=self.WORDS[:4]))
+        return nodes
+
     def evaluate(self, script, *args):
         if script == chatgpt.COLLECT_CANDIDATE_IMAGES:
             if self.tool_kind != "multimodal_text":
                 return []
-            return ([self.PICTURE] if self.reached(self.finished_after) else []) + (
+            return ([self.PICTURE] if self.reached(self.paints_after) else []) + (
                 [self.PICTURE + "-2"] if self.reached(self.second_after) else [])
         if script == chatgpt.FETCH_AS_DATA_URL:
             return "data:image/png;base64,iVBORw0KGgo="
         if script == chatgpt.FETCH_THREAD:
-            done = "finished_successfully"
-            nodes = [{"id": "u1", "role": "user", "status": done, "end_turn": None, "create_time": 1,
-                      "content_type": "text", "text": "a prompt"}]
-            if self.reached(self.tool_after):
-                nodes += [{"id": "a1", "role": "assistant", "status": done, "end_turn": False,
-                           "create_time": 2, "content_type": "code", "text": "{}"},
-                          {"id": "t1", "role": "tool", "end_turn": None, "create_time": 3,
-                           "status": done if self.reached(self.finished_after) else "in_progress",
-                           "content_type": self.tool_kind, "text": ""}]
-            if self.reached(self.second_after):
-                nodes.append({"id": "t2", "role": "tool", "status": done, "end_turn": None,
-                              "create_time": 3.5, "content_type": self.tool_kind, "text": ""})
-            if self.reached(self.words_after):
-                nodes.append({"id": "a2", "role": "assistant", "status": done, "end_turn": True,
-                              "create_time": 4, "content_type": "text", "text": self.WORDS})
-            return {"status": 200, "nodes": nodes}
+            self.reads += 1
+            if self.reads == 1 and self.first_read != 200:
+                return {"status": self.first_read, "nodes": []}
+            return {"status": 200, "nodes": self.nodes()}
         return super().evaluate(script, *args)
 
 
@@ -539,12 +564,12 @@ def main():
     # The real gate of 2026-10-02 lost a picture to the clock ("returned nothing after 302s"), and
     # every real picture took the ceiling and a little. Measured the same day: the picture is on the
     # page 22 seconds after the send and the server never closes the turn with an assistant node.
-    def draw_on(page):
+    def draw_on(page, thread_url=None):
         driver = provider_on(page)
         driver.media_path.mkdir(parents=True, exist_ok=True)
         started = clock.now
         try:
-            got = driver._run("vẽ cho tôi một hình vuông màu xanh")
+            got = driver._run("vẽ cho tôi một hình vuông màu xanh", thread_url=thread_url)
             said = "success" if got.success else "failed as {}".format(got.error_kind)
             return said, len(got.media), got.text, clock.now - started
         except Exception as exc:
@@ -580,6 +605,27 @@ def main():
     record("a tool node still in progress is not a finished picture",
            said == "success" and pictures == 1 and took >= 60,
            "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
+
+    # The tier 2 review, 2026-10-02. The picture's node can be there before the page has painted it.
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, paints_after=45))
+    record("a picture whose node is there before the page paints it is waited for",
+           said == "success" and pictures == 1 and took >= 45,
+           "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
+
+    # The newest node is what counts: words that start after the picture, with no stop button shown.
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, words_from=30, words_after=50))
+    record("words that start after the picture, with no stop button, are not cut",
+           said == "success" and pictures == 1 and text == DrawingPage.WORDS and took >= 50,
+           "{} with {} picture(s), words {!r}, after {:.0f}s".format(said, pictures, text, took))
+
+    # A picture from an earlier turn of the thread never ends this one, whether or not the read
+    # of the thread before the send went through.
+    for label, first_read in (("", 200), (" even when the thread could not be read before the send", 429)):
+        page = DrawingPage(clock, words_after=40, earlier=True, idle_until=25, first_read=first_read)
+        said, pictures, text, took = draw_on(page, thread_url=DrawingPage.THREAD)
+        record("an earlier turn's picture does not end this turn" + label,
+               said == "success" and text.endswith(DrawingPage.WORDS) and took >= 40,
+               "{} with words {!r} after {:.0f}s".format(said, text[-30:], took))
 
     said, pictures, text, took = draw_on(DrawingPage(clock))
     record("a turn that never ends gives up at the ceiling, as a timeout",
