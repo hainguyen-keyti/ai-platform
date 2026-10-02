@@ -12,7 +12,7 @@ Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Se
 ChatGPT; the driver typed a turn its job had already lost and left a running reply unstopped.
 Measured 2026-10-02: a real picture is on the page 22 seconds after the send, and the server never
 closes that turn with an assistant node, so the driver waited out its whole ceiling for every one.
-Prints N/36 PASSED.
+Prints N/37 PASSED.
 """
 
 import re
@@ -319,7 +319,11 @@ class DrawingPage(Page):
                     "create_time": at, "content_type": kind, "text": text}
 
         nodes = []
-        if self.earlier:
+        if self.earlier == "words":
+            nodes += [node("u0", "user", "text", self.made_at - 100, text="an earlier prompt"),
+                      node("a0", "assistant", "text", self.made_at - 99, end_turn=True,
+                           text="An earlier answer.")]
+        elif self.earlier:
             nodes += [node("u0", "user", "text", self.made_at - 100, text="an earlier prompt"),
                       node("a0", "assistant", "code", self.made_at - 99, end_turn=False, text="{}"),
                       node("t0", "tool", "multimodal_text", self.made_at - 98)]
@@ -626,6 +630,12 @@ def main():
         record("an earlier turn's picture does not end this turn" + label,
                said == "success" and text.endswith(DrawingPage.WORDS) and took >= 40,
                "{} with words {!r} after {:.0f}s".format(said, text[-30:], took))
+
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25)
+    said, pictures, text, took = draw_on(page, thread_url=DrawingPage.THREAD)
+    record("an earlier turn's answer is not this turn's",
+           said == "success" and text == DrawingPage.WORDS and took >= 40,
+           "{} with words {!r} after {:.0f}s".format(said, text, took))
 
     said, pictures, text, took = draw_on(DrawingPage(clock))
     record("a turn that never ends gives up at the ceiling, as a timeout",
