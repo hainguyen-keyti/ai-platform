@@ -12,9 +12,10 @@ Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Se
 ChatGPT; the driver typed a turn its job had already lost and left a running reply unstopped.
 Measured 2026-10-02 in the real gate: a picture turn "returned nothing after 302s" and was drawn
 all the same; pictures take 290 to 345 seconds on this account.
-Prints N/27 PASSED.
+Prints N/28 PASSED.
 """
 
+import re
 import sys
 from pathlib import Path
 
@@ -514,6 +515,14 @@ def main():
     record("a short turn still returns as soon as it settles",
            said == "success" and pictures == 1 and took < 30,
            "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
+
+    # Whoever waits for a real turn must outwait the driver, or reports a timeout of its own making.
+    gate = int(re.search(r"job_timeout = (\d+) if real", (ROOT / "acceptance.py").read_text()).group(1))
+    journey = int(re.search(r"^TURN_TIMEOUT_MS = (\d+)", (ROOT / "tests" / "ui_journey.py").read_text(),
+                            re.M).group(1)) / 1000
+    record("the gate and the journey wait longer than the driver's ceiling and a browser's first open",
+           min(gate, journey) >= chatgpt.REPLY_TIMEOUT + 90,
+           "the driver {}s, the gate {}s, the journey {:.0f}s".format(chatgpt.REPLY_TIMEOUT, gate, journey))
 
     for url, expected in (("https://chatgpt.com/c/local-chatgpt%3A79ca01df-bb1f", None),
                           ("https://chatgpt.com/c/WEB:79ca01df-bb1f", None),
