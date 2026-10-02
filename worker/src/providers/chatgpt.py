@@ -26,8 +26,9 @@ UPLOAD_INPUT = '#upload-files, input[type="file"][accept="image/*"]'
 
 # One ceiling for every request. A short answer still returns as soon as it
 # settles, so the generous bound only costs anything when a picture is actually
-# being drawn.
-REPLY_TIMEOUT = 300
+# being drawn. Measured 2026-09-29 to 2026-10-02: a picture takes 290 to 345
+# seconds on this account, and at 300 one was lost to the clock.
+REPLY_TIMEOUT = 480
 # An assistant turn that is still empty a second after sending is not a finished
 # reply, it is one that has not started.
 START_FLOOR = 6

@@ -25,9 +25,9 @@ WORKER_URL = os.environ.get("WORKER_URL", "http://localhost:8000")
 INVITE_CODE = os.environ.get("INVITE_CODE", "")
 SHOT_DIR = Path(os.environ.get("SHOT_DIR", "/tmp/ui_journey"))
 COMPOSER = "input[placeholder^='Type a message']"
-# Above the provider's own ceiling (REPLY_TIMEOUT 300s) plus pacing and the
-# first-use browser launch, or the journey fails a wait it caused itself.
-TURN_TIMEOUT_MS = 480000
+# Above the provider's own ceiling (ChatGPT's REPLY_TIMEOUT 480s) plus pacing and
+# the first-use browser launch, or the journey fails a wait it caused itself.
+TURN_TIMEOUT_MS = 660000
 
 steps = []
 

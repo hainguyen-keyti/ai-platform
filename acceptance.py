@@ -369,10 +369,10 @@ def tail(path, lines=15):
 
 def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, worker_ctl,
                python, restart_api, provider="chatgpt", *, db_path):
-    # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
-    # first-use browser launch, otherwise the gate reports a timeout that only
+    # Must exceed the provider's own ceiling (ChatGPT's REPLY_TIMEOUT is 480s) plus
+    # the first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
-    job_timeout = 420 if real else 30
+    job_timeout = 600 if real else 30
     checks = [Check(n) for n in CHECKS]
     c = dict(zip([x.name for x in checks], checks))
     restart_worker = worker_ctl["restart"]
