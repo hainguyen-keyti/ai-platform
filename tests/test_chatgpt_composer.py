@@ -10,9 +10,9 @@ turn leaves /c/local-chatgpt:<uuid> in the address. The driver used to call a
 signed-in session "probably logged out" whenever the composer did not appear.
 Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Send ran on at
 ChatGPT; the driver typed a turn its job had already lost and left a running reply unstopped.
-Measured 2026-10-02 in the real gate: a picture turn "returned nothing after 302s" and was drawn
-all the same; pictures take 290 to 345 seconds on this account.
-Prints N/28 PASSED.
+Measured 2026-10-02: a real picture is on the page 22 seconds after the send, and the server never
+closes that turn with an assistant node, so the driver waited out its whole ceiling for every one.
+Prints N/30 PASSED.
 """
 
 import re
@@ -227,26 +227,59 @@ class Page:
         return lambda *args, **kwargs: None
 
 
+class Words:
+    """The page's assistant turns: one once the reply's words are painted, none before."""
+
+    def __init__(self, text):
+        self.text = text
+
+    def count(self):
+        return 1 if self.text else 0
+
+    @property
+    def last(self):
+        return self
+
+    def inner_text(self, *args, **kwargs):
+        return self.text
+
+
 class DrawingPage(Page):
-    """A page whose turn ends `done_after` seconds after its send, with a picture (None: it never
-    ends). The stop button shows until then. With `threaded` the address is the thread's once the
-    turn is sent and the server names the finished turn; without, the address never changes and
-    only the page can be watched. Measured 2026-10-02: a real picture took 290 to 345 seconds."""
+    """A whole turn as the real page and server showed one on 2026-10-02
+    (/tmp/picture_settle_probe.py): a picture is on the page and the stop button gone 22 seconds
+    after the send, and the server's nodes for the turn are an assistant code node without end_turn
+    and a finished tool node of multimodal_text, for good: no assistant node with end_turn comes.
+
+    `tool_after`: seconds after the send when the tool's node lands and the stop button goes (None:
+    the turn never gets there); `tool_kind`: what that node holds, a picture only when it is
+    multimodal_text; `writes`: (from, to) when the stop button shows again; `words_after`: when
+    an assistant text node with end_turn lands (None: never). With `threaded` the address is the
+    thread's once the turn is sent; without, it never changes and only the page can be watched."""
 
     THREAD = "https://chatgpt.com/c/6abf0000-1111-83ec-9df4-aa8e1fc863a8"
     PICTURE = "blob:https://chatgpt.com/picture-1"
+    WORDS = "Here it is."
 
-    def __init__(self, clock, done_after, threaded=True):
-        self.done_after, self.threaded, self.sent_at = done_after, threaded, None
+    def __init__(self, clock, tool_after=None, tool_kind="multimodal_text", writes=None,
+                 words_after=None, threaded=True):
+        self.tool_after, self.tool_kind, self.writes = tool_after, tool_kind, writes
+        self.words_after, self.threaded, self.sent_at = words_after, threaded, None
         super().__init__(clock, has={PROSEMIRROR})
 
-    def done(self):
-        return (self.done_after is not None and self.sent_at is not None
-                and self.clock.now - self.sent_at >= self.done_after)
+    def since(self):
+        return None if self.sent_at is None else self.clock.now - self.sent_at
+
+    def reached(self, moment):
+        return moment is not None and self.sent_at is not None and self.since() >= moment
 
     @property
     def writing(self):
-        return self.sent_at is not None and not self.done()
+        if self.sent_at is None:
+            return False
+        first = self.tool_after if self.tool_after is not None else self.words_after
+        if first is None or self.since() < first:
+            return True
+        return bool(self.writes) and self.writes[0] <= self.since() < self.writes[1]
 
     @writing.setter
     def writing(self, value):
@@ -261,18 +294,28 @@ class DrawingPage(Page):
     def url(self, value):
         self._url = value
 
+    def locator(self, selector):
+        if selector == chatgpt.ASSISTANT_TURN:
+            return Words(self.WORDS if self.reached(self.words_after) else "")
+        return super().locator(selector)
+
     def evaluate(self, script, *args):
         if script == chatgpt.COLLECT_CANDIDATE_IMAGES:
-            return [self.PICTURE] if self.done() else []
+            return [self.PICTURE] if self.reached(self.tool_after) and self.tool_kind == "multimodal_text" else []
         if script == chatgpt.FETCH_AS_DATA_URL:
             return "data:image/png;base64,iVBORw0KGgo="
         if script == chatgpt.FETCH_THREAD:
-            nodes = [{"id": "u1", "role": "user", "status": "finished_successfully", "end_turn": None,
-                      "create_time": 1, "content_type": "text", "text": "a prompt"}]
-            if self.done():
-                nodes.append({"id": "a1", "role": "assistant", "status": "finished_successfully",
-                              "end_turn": True, "create_time": 2, "content_type": "text",
-                              "text": "Here is your picture."})
+            done = "finished_successfully"
+            nodes = [{"id": "u1", "role": "user", "status": done, "end_turn": None, "create_time": 1,
+                      "content_type": "text", "text": "a prompt"}]
+            if self.reached(self.tool_after):
+                nodes += [{"id": "a1", "role": "assistant", "status": done, "end_turn": False,
+                           "create_time": 2, "content_type": "code", "text": "{}"},
+                          {"id": "t1", "role": "tool", "status": done, "end_turn": None,
+                           "create_time": 3, "content_type": self.tool_kind, "text": ""}]
+            if self.reached(self.words_after):
+                nodes.append({"id": "a2", "role": "assistant", "status": done, "end_turn": True,
+                              "create_time": 4, "content_type": "text", "text": self.WORDS})
             return {"status": 200, "nodes": nodes}
         return super().evaluate(script, *args)
 
@@ -482,8 +525,9 @@ def main():
            "{}, sent {}, stop pressed {} times, still writing {}, last_stop {}".format(
                outcome, len(page.sent), page.stop_presses, page.writing, stopped))
 
-    # The real gate of 2026-10-02: a picture asked for in a chat turn "returned nothing after 302s"
-    # and was made all the same; pictures take 290 to 345 seconds on this account.
+    # The real gate of 2026-10-02 lost a picture to the clock ("returned nothing after 302s"), and
+    # every real picture took the ceiling and a little. Measured the same day: the picture is on the
+    # page 22 seconds after the send and the server never closes the turn with an assistant node.
     def draw_on(page):
         driver = provider_on(page)
         driver.media_path.mkdir(parents=True, exist_ok=True)
@@ -491,30 +535,45 @@ def main():
         try:
             got = driver._run("vẽ cho tôi một hình vuông màu xanh")
             said = "success" if got.success else "failed as {}".format(got.error_kind)
-            return said, len(got.media), clock.now - started
+            return said, len(got.media), got.text, clock.now - started
         except Exception as exc:
-            return "{}: {}".format(type(exc).__name__, str(exc)[:60]), 0, clock.now - started
+            return "{}: {}".format(type(exc).__name__, str(exc)[:60]), 0, "", clock.now - started
 
-    for label, threaded in (("by the server's word", True), ("by watching the page", False)):
-        said, pictures, took = draw_on(DrawingPage(clock, 345, threaded=threaded))
-        record("a picture that arrives 345 seconds after its send is collected, {}".format(label),
-               said == "success" and pictures == 1,
-               "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
-
-    said, pictures, took = draw_on(DrawingPage(clock, None))
-    record("a turn that never ends gives up at the ceiling, as a timeout",
-           said == "failed as provider_timeout" and pictures == 0 and 480 <= took <= 500,
-           "{} after {:.0f}s".format(said, took))
-
-    said, pictures, took = draw_on(DrawingPage(clock, None, threaded=False))
-    record("so does one that can only be watched on the page",
-           said == "failed as provider_timeout" and pictures == 0 and 510 <= took <= 530,
-           "{} after {:.0f}s".format(said, took))
-
-    said, pictures, took = draw_on(DrawingPage(clock, 8))
-    record("a short turn still returns as soon as it settles",
-           said == "success" and pictures == 1 and took < 30,
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22))
+    record("a picture turn the server never closes is collected soon after the picture shows",
+           said == "success" and pictures == 1 and took < 60,
            "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
+
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, threaded=False))
+    record("so is one that can only be watched on the page",
+           said == "success" and pictures == 1 and took < 90,
+           "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
+
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, writes=(26, 40), words_after=40))
+    record("a turn that draws and then writes is not cut at its picture",
+           said == "success" and pictures == 1 and text == DrawingPage.WORDS and took >= 40,
+           "{} with {} picture(s), words {!r}, after {:.0f}s".format(said, pictures, text, took))
+
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, tool_kind="execution_output",
+                                                     words_after=60))
+    record("a finished tool node that is not a picture ends nothing",
+           said == "success" and pictures == 0 and text == DrawingPage.WORDS and took >= 60,
+           "{} with {} picture(s), words {!r}, after {:.0f}s".format(said, pictures, text, took))
+
+    said, pictures, text, took = draw_on(DrawingPage(clock))
+    record("a turn that never ends gives up at the ceiling, as a timeout",
+           said == "failed as provider_timeout" and pictures == 0 and 300 <= took <= 320,
+           "{} after {:.0f}s".format(said, took))
+
+    said, pictures, text, took = draw_on(DrawingPage(clock, threaded=False))
+    record("so does one that can only be watched on the page",
+           said == "failed as provider_timeout" and pictures == 0 and 330 <= took <= 350,
+           "{} after {:.0f}s".format(said, took))
+
+    said, pictures, text, took = draw_on(DrawingPage(clock, words_after=8))
+    record("a short answer still returns as soon as it settles",
+           said == "success" and text == DrawingPage.WORDS and took < 30,
+           "{} with words {!r} after {:.0f}s".format(said, text, took))
 
     # Whoever waits for a real turn must outwait the driver, or reports a timeout of its own making.
     gate = int(re.search(r"job_timeout = (\d+) if real", (ROOT / "acceptance.py").read_text()).group(1))
