@@ -32,12 +32,13 @@ SAVED_INFO_PATH = "/saved-info"
 BLOCK_HOST = "www.google.com"
 BLOCK_PATH = "/sorry/"
 SWITCH = 'button[role="switch"]'
-# The upload control carries no data-test-id and its label keeps changing ("Add files" and "Upload &
-# tools" on 2026-10-06); its place has held, so the place comes first and the labels seen after it.
+# The upload control carries no data-test-id. While the page gets ready it shows a placeholder, "Add
+# files", that opens nothing; the real button replaces it 0.5 to 2.5s after the composer, inside
+# simplified-input-menu (measured 2026-10-06). Its place comes first, then labels it has carried.
 UPLOAD_CONTROL = ("simplified-input-menu button[aria-haspopup='menu']",
-                  "button[aria-label*='Upload' i]", "button[aria-label*='Add files' i]",
-                  "button[aria-label*='Nội dung tải lên']")
+                  "button[aria-label*='Upload' i]", "button[aria-label*='Nội dung tải lên']")
 UPLOAD_INPUT = 'input[type="file"][accept="image/*"]'
+UPLOAD_CONTROL_WAIT = 15
 UPLOAD_OPEN_WAIT = 5
 # A video is made after the stream ends (measured 2026-10-06: the stream done at 6.7s, the video at
 # 73.5s) and is served from this host; an mp4 carries "ftyp" at byte 4.
@@ -67,19 +68,29 @@ ANSWER_AFTER_QUERY = """
     if (!words.every((w) => shown.includes(w))) return {query: false, text: ''};
     const after = Array.from(document.querySelectorAll('model-response'))
         .filter((r) => mine.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING);
-    if (!after.length) return {query: true, text: '', note: '', video: ''};
+    if (!after.length) return {query: true, text: '', note: '', video: '', player: false};
     const answer = after[after.length - 1];
+    // The text of `root` without the elements `hide` picks, each put back as it was.
+    const readWithout = (root, hide) => {
+        const hidden = Array.from(root.querySelectorAll(hide));
+        const display = hidden.map((n) => n.style.display);
+        hidden.forEach((n) => { n.style.display = 'none'; });
+        const read = root.innerText || '';
+        hidden.forEach((n, i) => { n.style.display = display[i]; });
+        return read;
+    };
     const content = answer.querySelector('message-content');
-    // While its video is made, an answer shows a note and holds no message-content (2026-10-06).
-    if (!content) return {query: true, text: '', note: (answer.innerText || '').trim(), video: ''};
+    // While its video is made, an answer shows a note and holds no message-content (2026-10-06); its
+    // screen-reader label ("Gemini said") is no note.
+    if (!content) {
+        return {query: true, text: '', note: readWithout(answer, '.cdk-visually-hidden').trim(), video: '',
+                player: false};
+    }
     // A generated video's player shows its own time ("0:00 / 0:10"), which is no part of the words.
-    const players = Array.from(content.querySelectorAll('generated-video'));
-    const display = players.map((p) => p.style.display);
-    players.forEach((p) => { p.style.display = 'none'; });
-    const text = content.innerText || '';
-    players.forEach((p, i) => { p.style.display = display[i]; });
     const clip = content.querySelector('generated-video video');
-    return {query: true, text: text, note: '', video: clip ? (clip.currentSrc || clip.src || '') : ''};
+    return {query: true, text: readWithout(content, 'generated-video'), note: '',
+            video: clip ? (clip.currentSrc || clip.src || '') : '',
+            player: !!content.querySelector('generated-video')};
 }
 """
 
@@ -339,13 +350,17 @@ class GeminiProvider(BaseProvider):
         if not path.exists():
             raise ProviderError("reference image {} not found".format(filename), kind="worker_error")
         if not page.locator(UPLOAD_INPUT).count():
-            for sel in UPLOAD_CONTROL:
-                if page.locator(sel).count():
-                    page.locator(sel).first.click(timeout=10000)
+            control, deadline = None, time.time() + UPLOAD_CONTROL_WAIT
+            while True:
+                control = next((sel for sel in UPLOAD_CONTROL if page.locator(sel).count()), None)
+                if control or time.time() >= deadline:
                     break
-            deadline = time.time() + UPLOAD_OPEN_WAIT
-            while not page.locator(UPLOAD_INPUT).count() and time.time() < deadline:
                 page.wait_for_timeout(250)
+            if control:
+                page.locator(control).first.click(timeout=10000)
+                deadline = time.time() + UPLOAD_OPEN_WAIT
+                while not page.locator(UPLOAD_INPUT).count() and time.time() < deadline:
+                    page.wait_for_timeout(250)
         if not page.locator(UPLOAD_INPUT).count():
             raise ProviderError("gemini's upload control did not open")
         # Without its picture the turn would still go out, and "please attach an image" would be
@@ -539,29 +554,45 @@ class GeminiProvider(BaseProvider):
                                                  "size": len(body)}))
         if media:
             self._phase("picture appeared")
-        if not text and not media and not clip and (found.get("note") or "").strip():
-            text, clip = self._await_video(page, words, before, landed)
-            if not clip:
-                return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
-                                        error="gemini was still making the video after {}s".format(VIDEO_WAIT))
-        if clip:
-            media.append(self._keep_video(clip, prompt))
+        # The turn went out and its thread exists: a failure from here on hands the thread back.
+        try:
+            if not text and not media and not clip and (found.get("note") or "").strip():
+                text, clip = self._await_video(page, words, before, landed)
+                landed = self._landed(page) or landed
+                if not text and not clip:
+                    return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
+                                            error="gemini was still making the video after {}s".format(
+                                                VIDEO_WAIT))
+            if clip:
+                media.append(self._keep_video(clip, prompt))
+        except ProviderError as exc:
+            return GenerationResult(success=False, thread_url=self._landed(page) or landed,
+                                    error_kind=exc.kind, error=str(exc))
         if not text and not media:
             return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
                                     error="gemini's turn carried neither words nor a picture")
         return GenerationResult(success=True, text=text, media=media, thread_url=landed)
 
+    def _landed(self, page) -> Optional[str]:
+        try:
+            thread = self._thread_id(page)
+        except Exception:
+            return None
+        return "{}/{}".format(HOME, thread) if thread else None
+
     def _await_video(self, page, words, before, landed):
         """(the words, the video's address) once the answer that said it was making a video holds
-        one; ("", "") when VIDEO_WAIT runs out. A stop hands the turn's thread back for removal."""
+        one; (the words, "") once it settles on words with no player instead; ("", "") when
+        VIDEO_WAIT runs out. A stop hands the turn's thread back for removal."""
         self._phase("making a video")
         deadline = time.time() + VIDEO_WAIT
+        last, steady = None, 0
         while time.time() < deadline:
             page.wait_for_timeout(2000)
             try:
                 self._check_stop()
             except JobCancelled:
-                self.last_cancelled_thread = landed or self.last_cancelled_thread
+                self.last_cancelled_thread = self._landed(page) or landed or self.last_cancelled_thread
                 raise
             try:
                 found = page.evaluate(ANSWER_AFTER_QUERY, [words, before]) or {}
@@ -571,18 +602,26 @@ class GeminiProvider(BaseProvider):
             except Exception as exc:
                 raise ProviderError("gemini's page went away while its video was made: {}".format(
                     type(exc).__name__))
+            text = (found.get("text") or "").strip()
             if found.get("video"):
-                return (found.get("text") or "").strip(), found["video"]
+                return text, found["video"]
+            # Words and no player, unchanged over three reads: the answer is words after all.
+            steady = steady + 1 if (text and text == last and not found.get("player")) else 0
+            if steady >= 2:
+                return text, ""
+            last = text
         return "", ""
 
     def _keep_video(self, url: str, prompt: str) -> MediaArtifact:
         """The video fetched inside this session (its address works nowhere else) and kept."""
         try:
-            host = urlparse(url).hostname
+            parsed = urlparse(url)
+            scheme, host = parsed.scheme, parsed.hostname
         except ValueError:
-            host = None
-        if host != VIDEO_HOST:
-            raise ProviderError("gemini's video is not on {} but on {}".format(VIDEO_HOST, host))
+            scheme = host = None
+        if scheme != "https" or host != VIDEO_HOST:
+            raise ProviderError("gemini's video is not on https://{} but on {}://{}".format(
+                VIDEO_HOST, scheme, host))
         try:
             fetched = self._context.request.get(url, timeout=60000)
             status, body = fetched.status, (fetched.body() if fetched.ok else b"")
