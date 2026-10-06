@@ -46,6 +46,19 @@ def record(name, ok, detail=""):
     return ok
 
 
+# The last screenshot taken: a console error is kept with it, so a run says where the error came.
+STEP = ["start"]
+
+
+def heard(errors):
+    """A console listener that keeps each error with the address it came from and the step."""
+    def listen(message):
+        if message.type == "error":
+            errors.append("{} @ {} after {}".format(
+                message.text, (message.location or {}).get("url", "")[:100], STEP[0]))
+    return listen
+
+
 def quota_number(page):
     text = page.locator("text=/\\d+ left/").first.inner_text()
     return int("".join(c for c in text.split("·")[-1] if c.isdigit()))
@@ -108,6 +121,7 @@ def playable(found):
 
 
 def shot(page, name):
+    STEP[0] = name
     SHOT_DIR.mkdir(parents=True, exist_ok=True)
     path = SHOT_DIR / "{}.png".format(name)
     page.screenshot(path=str(path), full_page=False)
@@ -205,7 +219,7 @@ def main():
     errors = []
     # Indices of console errors a check provokes on purpose (the refused send's 503).
     provoked = set()
-    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    page.on("console", heard(errors))
     # Texts under their contrast floor and the texts measured, by screen; the select's names by state.
     faint, texts_on, select_names = [], {}, {}
 
@@ -768,7 +782,7 @@ def main():
             start = len(errors)
             page.click("button:has-text('Send')")
             page.wait_for_timeout(1500)
-            provoked.update(i for i in range(start, len(errors)) if "503" in errors[i])
+            provoked.update(i for i in range(start, len(errors)) if "503" in errors[i].split(" @ ")[0])
             kept = page.input_value(COMPOSER)
             notice = page.locator("[data-testid=provider-unserved]")
             shown = notice.count() > 0 and notice.first.is_visible()
@@ -795,7 +809,7 @@ def main():
         phone.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', 'en');".format(
             page.evaluate("() => localStorage.getItem('token')")))
         small = phone.new_page()
-        small.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+        small.on("console", heard(errors))
         fits = """() => {
             const box = (n) => { if (!n) return null; const r = n.getBoundingClientRect();
                 return {left: Math.round(r.left), right: Math.round(r.right)}; };
@@ -901,7 +915,7 @@ def main():
             start = len(errors)
             small.press("[data-testid=rename-input]", "Enter")
             small.wait_for_timeout(800)
-            provoked.update(i for i in range(start, len(errors)) if "500" in errors[i])
+            provoked.update(i for i in range(start, len(errors)) if "500" in errors[i].split(" @ ")[0])
             in_list = small.locator("aside").get_by_text("rename refused by the smoke test")
             shown = in_list.count() > 0 and in_list.first.is_visible()
             shot(small, "13-phone-list-error")
@@ -1319,7 +1333,7 @@ def main():
                 wide.add_init_script(SLOW_SMOOTH)
             try:
                 view = wide.new_page()
-                view.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+                view.on("console", heard(errors))
                 for pattern in ("**/conversations", "**/conversations/tail", "**/providers", "**/chat",
                                 "**/jobs/tail-job", "**/media/tail-picture/file"):
                     view.route(pattern, answer)
@@ -1410,7 +1424,7 @@ def main():
             slow.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', 'en');".format(token))
             try:
                 view = slow.new_page()
-                view.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+                view.on("console", heard(errors))
                 view.clock.install()
                 for pattern in ("**/conversations", "**/conversations/hint", "**/chat", "**/jobs/hint-job"):
                     view.route(pattern, answer)
@@ -1557,7 +1571,7 @@ def main():
             context.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', {!r});"
                                     .format(token, lang))
             view = context.new_page()
-            view.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+            view.on("console", heard(errors))
             for pattern in ("**/conversations", "**/conversations/look", "**/media", "**/media/look-pic/file"):
                 view.route(pattern, answer_look)
             view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
@@ -1679,7 +1693,7 @@ def main():
                     shot(view, "18b-gallery-videos-{}".format(width))
                 finally:
                     # The gone file's 404 is this check's own doing.
-                    provoked.update(i for i in range(start, len(errors)) if "404" in errors[i])
+                    provoked.update(i for i in range(start, len(errors)) if "404" in errors[i].split(" @ ")[0])
                     context.close()
             said = {"en": "Could not load this video.", "vi": "Không tải được video."}
             record(videos_check,
