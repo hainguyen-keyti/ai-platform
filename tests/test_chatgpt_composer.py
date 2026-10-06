@@ -269,13 +269,14 @@ class DrawingPage(Page):
         # second_after: a second picture's node lands then; words_from: the closing words' node is
         # there from then, in progress and half written, until words_after; idle_until: the stop
         # button does not show before then; earlier: the thread already holds a turn that drew, and
-        # the address is the thread's from the start; first_read: what the first read of the
-        # thread answers.
+        # the address is the thread's from the start; first_read: what the first `unreadable` reads
+        # of the thread answer (one unless said); `early_reads` counts the reads before the send.
         self.finished_after = more.get("finished_after", tool_after)
         self.paints_after = more.get("paints_after", self.finished_after)
         self.second_after, self.words_from = more.get("second_after"), more.get("words_from")
         self.idle_until, self.earlier = more.get("idle_until", 0), more.get("earlier", False)
         self.first_read, self.reads, self.made_at = more.get("first_read", 200), 0, clock.now
+        self.unreadable, self.early_reads = more.get("unreadable", 1), 0
         super().__init__(clock, has={PROSEMIRROR})
 
     def since(self):
@@ -354,7 +355,9 @@ class DrawingPage(Page):
             return "data:image/png;base64,iVBORw0KGgo="
         if script == chatgpt.FETCH_THREAD:
             self.reads += 1
-            if self.reads == 1 and self.first_read != 200:
+            if self.sent_at is None:
+                self.early_reads += 1
+            if self.reads <= self.unreadable and self.first_read != 200:
                 return {"status": self.first_read, "nodes": []}
             return {"status": 200, "nodes": self.nodes()}
         return super().evaluate(script, *args)
@@ -568,12 +571,14 @@ def main():
     # The real gate of 2026-10-02 lost a picture to the clock ("returned nothing after 302s"), and
     # every real picture took the ceiling and a little. Measured the same day: the picture is on the
     # page 22 seconds after the send and the server never closes the turn with an assistant node.
-    def draw_on(page, thread_url=None):
+    def draw_on(page, thread_url=None, upload=None):
         driver = provider_on(page)
         driver.media_path.mkdir(parents=True, exist_ok=True)
+        if upload:
+            (driver.media_path / upload).write_bytes(b"\x89PNG not really")
         started = clock.now
         try:
-            got = driver._run("vẽ cho tôi một hình vuông màu xanh", thread_url=thread_url)
+            got = driver._run("vẽ cho tôi một hình vuông màu xanh", thread_url=thread_url, upload=upload)
             said = "success" if got.success else "failed as {}".format(got.error_kind)
             return said, len(got.media), got.text, clock.now - started
         except Exception as exc:
@@ -636,6 +641,29 @@ def main():
     record("an earlier turn's answer is not this turn's",
            said == "success" and text == DrawingPage.WORDS and took >= 40,
            "{} with words {!r} after {:.0f}s".format(said, text, took))
+
+    # The picture plan's review, 2026-10-02, reproduced 2026-10-06: when the read of the thread before
+    # the send failed, every earlier node counted as this turn's, and an earlier answer, finished with
+    # end_turn, came back at once as this turn's (after 9s, charged).
+    for status in (429, 500):
+        page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=status)
+        said, pictures, text, took = draw_on(page, thread_url=DrawingPage.THREAD)
+        record("an earlier answer is never this turn's when the read before the send first answers {}".format(
+                   status),
+               said == "success" and text == DrawingPage.WORDS and took >= 40,
+               "{} with words {!r} after {:.0f}s".format(said, text, took))
+
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=500, unreadable=100)
+    said, pictures, text, took = draw_on(page, thread_url=DrawingPage.THREAD, upload="unread-reference.png")
+    record("a thread that stays unreadable before the send fails the turn soon, nothing typed or attached",
+           said.startswith("ProviderError") and page.sent == [] and page.attached == [] and took < 30,
+           "{} after {:.0f}s, sent {} attached {}".format(said, took, len(page.sent), page.attached))
+
+    page = DrawingPage(clock, words_after=8)
+    said, pictures, text, took = draw_on(page)
+    record("a first turn, which has no thread yet, is sent without reading one",
+           said == "success" and text == DrawingPage.WORDS and page.early_reads == 0,
+           "{} with words {!r}, reads before the send {}".format(said, text, page.early_reads))
 
     said, pictures, text, took = draw_on(DrawingPage(clock))
     record("a turn that never ends gives up at the ceiling, as a timeout",
