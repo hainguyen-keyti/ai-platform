@@ -47,6 +47,7 @@ CHECKS = (
     "a conversation can be renamed and found by search",
     "non image deliverable is kept",
     "non image deliverable is kept when asked in vietnamese",
+    "a video the provider makes is kept and served as a video",
     "a follow-up turn packages what the first one made",
     "a conversation's media downloads as one zip",
     "deleting a conversation removes its media files and the provider thread",
@@ -84,9 +85,15 @@ CHECKS = (
 # so the provider-agnostic reliability checks are left to mock mode rather than
 # spending the day's budget proving the queue twice.
 REAL_SKIPS = {
+    "chatgpt": {
+        "a video the provider makes is kept and served as a video":
+            "chatgpt makes no video in a chat turn",
+    },
     "grok": {
         "video script job returns text":
             "grok's first driver serves chat and image only",
+        "a video the provider makes is kept and served as a video":
+            "grok's driver collects no video",
         "non image deliverable is kept":
             "asks the provider to build a file; unmeasured on grok",
         "non image deliverable is kept when asked in vietnamese":
@@ -109,6 +116,8 @@ REAL_SKIPS = {
     # Gemini's account has room (its usage page read 0% on 2026-09-27), so unlike grok it runs
     # the provider-agnostic checks too; only what was never measured on it is skipped.
     "gemini": {
+        "a video the provider makes is kept and served as a video":
+            "spends one of the shared account's few videos a day; proven by a real turn through the web",
         "non image deliverable is kept":
             "asks the provider to build a file; unmeasured on gemini",
         "non image deliverable is kept when asked in vietnamese":
@@ -656,6 +665,29 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     if wanted("non image deliverable is kept when asked in vietnamese"):
         check_zip("non image deliverable is kept when asked in vietnamese",
                   "Tạo cho tôi một file zip chứa hai file text tên a.txt và b.txt")
+
+    # Gemini makes a video when asked for one (2026-10-06). Whoever made it, the platform keeps it as
+    # a video and serves it as one, or a browser has nothing it knows how to play.
+    if wanted("a video the provider makes is kept and served as a video"):
+        done, err, _ = chat_once("make a short video of a cat asleep in the sun")
+        found = []
+        for media_id in ((done or {}).get("result") or {}).get("media") or []:
+            mstatus, meta = http("GET", "{}/media/{}".format(api, media_id), token=token)
+            req = urllib.request.Request("{}/media/{}/file".format(api, media_id), method="GET")
+            req.add_header("Authorization", "Bearer " + token)
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    ctype, blob = resp.headers.get("Content-Type") or "", resp.read()
+            except Exception as exc:
+                ctype, blob = "{}: {}".format(type(exc).__name__, exc), b""
+            found.append(((meta or {}).get("type"), ctype.split(";")[0].strip(), blob[4:8], len(blob)))
+        played = [f for f in found if f[0] == "video" and f[1] == "video/mp4" and f[2] == b"ftyp"]
+        if played:
+            c["a video the provider makes is kept and served as a video"].passed(
+                "type video, served as video/mp4, {} bytes starting with ftyp".format(played[0][3]))
+        else:
+            c["a video the provider makes is kept and served as a video"].failed(
+                err or "media (type, served as, bytes 4-8, size): {}".format(found or "none came back"))
 
     # The journey a real user took, which passed every check above while being
     # broken: make something, then in the same conversation ask for it packaged.

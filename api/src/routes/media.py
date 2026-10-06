@@ -15,6 +15,7 @@ CONTENT_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".mp4": "video/mp4",
     ".zip": "application/zip",
     ".pdf": "application/pdf",
     ".txt": "text/plain",

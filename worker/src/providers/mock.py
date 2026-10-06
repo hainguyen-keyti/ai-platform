@@ -1,3 +1,4 @@
+import base64
 import io
 import struct
 import time
@@ -20,8 +21,34 @@ MEMORY_PHRASE = "pretend memory is on"
 UNSENT_PHRASE = "wait before you speak"
 SILENT_PHRASE = "and say nothing of it"
 LYING_PHRASE = "and call it unsent"
+# Gemini makes a video when asked for one (2026-10-06); the mock answers this phrase with a clip.
+VIDEO_PHRASE = "make a short video"
 SLOW_SECONDS = 6.0
 LIE_SECONDS = 2.5
+
+# One second of 64x64 H.264 that a browser plays: ffmpeg -f lavfi -i color=c=0x2a9d8f:s=64x64:d=1:r=10
+# -c:v libx264 -pix_fmt yuv420p -bsf:v filter_units=remove_types=6 -map_metadata -1 -fflags +bitexact
+# -flags:v +bitexact -movflags +faststart
+TINY_MP4 = base64.b64decode(
+    "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAONbW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAA"
+    "A+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAgAAAtx0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAA"
+    "AAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAEAAAABAAAAAAAAkZWR0cwAAABxlbHN0"
+    "AAAAAAAAAAEAAAPoAAAIAAABAAAAAAJUbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAKABVxAAAAAAALWhk"
+    "bHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAAB/21pbmYAAAAUdm1oZAAAAAEAAAAAAAAA"
+    "AAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAb9zdGJsAAAAv3N0c2QAAAAAAAAAAQAAAK9h"
+    "dmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAEAAQABIAAAASAAAAAAAAAABDExhdmMgbGlieDI2NAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAGP//AAAANWF2Y0MBZAAK/+EAGGdkAAqs2UQmwEQAAAMABAAAAwBQPEiWWAEABmjr48siwP34"
+    "+AAAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAAAAAFUAAAAAAAAAAYc3R0cwAAAAAAAAABAAAACgAABAAAAAAU"
+    "c3RzcwAAAAAAAAABAAAAAQAAAGBjdHRzAAAAAAAAAAoAAAABAAAIAAAAAAEAABQAAAAAAQAACAAAAAABAAAAAAAA"
+    "AAEAAAQAAAAAAQAAFAAAAAABAAAIAAAAAAEAAAAAAAAAAQAABAAAAAABAAAIAAAAABxzdHNjAAAAAAAAAAEAAAAB"
+    "AAAACgAAAAEAAAA8c3RzegAAAAAAAAAAAAAACgAAACoAAAAOAAAADAAAAAwAAAAMAAAAFAAAAA4AAAAMAAAADAAA"
+    "ABQAAAAUc3RjbwAAAAAAAAABAAADvQAAAD11ZHRhAAAANW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBs"
+    "AAAAAAAAAAAAAAAACGlsc3QAAAAIZnJlZQAAALJtZGF0AAAAJmWIhAAR//7n4/wKTmHw/nZAJz9bXcqLo1x7Yoza"
+    "kvH3bhD2xGfxAAAACkGaJGxBD/6qV94AAAAIQZ5CeId/Bb0AAAAIAZ5hdEN/B3wAAAAIAZ5jakN/B30AAAAQQZpo"
+    "SahBaJlMCHf//qmdNQAAAApBnoZFESw7/wW9AAAACAGepXRDfwd9AAAACAGep2pDfwd8AAAAEEGaqUmoQWyZTAhv"
+    "//6nj4g="
+)
 
 
 def solid_png(width: int, height: int, rgb: tuple) -> bytes:
@@ -159,6 +186,13 @@ class MockProvider(BaseProvider):
                 text=("Đã gói xong. [**Tải file a_b.zip**](sandbox:/mnt/data/a_b.zip) "
                       "mock archive for: {} [thread={}]").format(message.strip()[:120], thread),
                 media=[self._store(two_file_zip(), ".zip", "file", message)],
+            )
+        if VIDEO_PHRASE in lowered:
+            self._phase("video appeared")
+            return GenerationResult(
+                success=True, thread_url=thread,
+                text="mock video for: {} [thread={}]".format(message.strip()[:120], thread),
+                media=[self._store(TINY_MP4, ".mp4", "video", message)],
             )
         if any(word in lowered for word in IMAGE_WORDS):
             self._phase("picture appeared")
