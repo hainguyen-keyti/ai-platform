@@ -9,7 +9,10 @@ a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-g
 it); the personal context switch is read on /personalization-settings, and a signed-out session is
 sent to /saved-info, which also shows switches that are not this one. Measured 2026-10-01: for an
 account /saved-info stays put and shows one switch, saved info, the account's other memory switch.
-Prints N/111 PASSED.
+Measured 2026-10-06: the upload button's label changes ("Add files", "Upload & tools") while its
+place holds, and a video turn's stream ends long before its video: the answer shows a note and no
+message-content until the video is there (tests/fixtures/gemini_video_thread.html is that turn).
+Prints N/N PASSED.
 """
 
 import json
@@ -186,7 +189,13 @@ class Bubbles:
     def all_inner_texts(self):
         out = []
         for kind, text in self.page.items():
-            if kind == "answer":
+            if kind == "video" and not self.page.video_ready(text):
+                # Measured 2026-10-06: while its video is made, an answer holds no message-content.
+                out.append(text["note"])
+                continue
+            if kind == "video":
+                text = text["words"]
+            if kind in ("answer", "video"):
                 out += ["Gemini đã nói " + text, text]
         return out
 
@@ -232,6 +241,12 @@ class Page:
     often the tab was closed; a closed tab loads nothing until the context opens it again, and
     `close_fails` makes closing it raise. `chain_on` is the load a redirect chain plays on.
     `uploads` counts the pictures handed to the page.
+
+    Measured 2026-10-06: the upload button carries `upload_label`, sits in its usual place when
+    `upload_place`, and the image input exists only `upload_opens_after` seconds after a press
+    (`upload_label` None keeps the older model, where `file_input` alone decides). A turn sent with
+    `video` set (`note`, `words`, `url`, `after`: seconds after the send when the video is there,
+    None for never) shows the note and no message-content until then, then its words and video.
     """
 
     def __init__(self, clock, composer=True, landed=None, checked=None, saved="false", saved_shown=1,
@@ -273,6 +288,14 @@ class Page:
         # Seconds after the send before the address becomes the thread's; 0 is at once.
         self.thread_after = 0
         self.sent_at = None
+        self.upload_label, self.upload_place, self.upload_opens_after, self.pressed_at = None, True, 0, None
+        self.video = None
+
+    def video_ready(self, video):
+        return video["after"] is not None and self.clock.now - video["sent"] >= video["after"]
+
+    def upload_open(self):
+        return self.pressed_at is not None and self.clock.now - self.pressed_at >= self.upload_opens_after
 
     def items(self):
         earlier = []
@@ -313,6 +336,8 @@ class Page:
             self.dom.append(("query", "Bạn đã nói " + self.display(self.sent[-1])))
         if self.answer is not None:
             self.dom.append(("answer", self.answer))
+        if self.video is not None:
+            self.dom.append(("video", dict(self.video, sent=self.clock.now)))
         for response in self.replies:
             self.emit("response", response)
             if response.request.method == "POST" and "StreamGenerate" in response.url:
@@ -376,7 +401,11 @@ class Page:
         if "message-content" in selector:
             return Bubbles(self)
         if 'input[type="file"]' in selector:
-            return Box(self, self.file_input)
+            return Box(self, self.file_input or self.upload_open())
+        if self.upload_label is not None and ("aria-label" in selector or "simplified-input-menu" in selector):
+            return Control(self, selector)
+        if "video" in selector:
+            return Videos(self)
         # Measured 2026-10-01: a settings page's switch is a button carrying role="switch".
         if selector == 'button[role="switch"]':
             return Switches(self, *self.switches())
@@ -408,8 +437,16 @@ class Page:
             shown = unicodedata.normalize("NFC", items[queries[-1]][1]).lower()
             if not all(word in shown for word in words):
                 return {"query": False, "text": ""}
-            answers = [text for kind, text in items[queries[-1] + 1:] if kind == "answer"]
-            return {"query": True, "text": answers[-1].strip() if answers else ""}
+            answers = [(kind, value) for kind, value in items[queries[-1] + 1:]
+                       if kind in ("answer", "video")]
+            if not answers:
+                return {"query": True, "text": "", "note": "", "video": ""}
+            kind, value = answers[-1]
+            if kind == "answer":
+                return {"query": True, "text": value.strip(), "note": "", "video": ""}
+            if self.video_ready(value):
+                return {"query": True, "text": value["words"], "note": "", "video": value["url"]}
+            return {"query": True, "text": "", "note": value["note"], "video": ""}
         return None
 
     def close(self, *args, **kwargs):
@@ -430,6 +467,79 @@ class Fetched:
 
     def body(self):
         return self._body
+
+
+class Control:
+    """The upload button as measured on 2026-10-06: a selector finds it by its place (inside
+    `simplified-input-menu`, while it sits there) or by a piece of the label it carries now, matched
+    the way CSS does (` i]` folds case). Pressing it opens the image input."""
+
+    LABEL = re.compile(r"aria-label\*=['\"]([^'\"]+)['\"](\s+i)?\s*\]")
+
+    def __init__(self, page, selector):
+        self.page = page
+        self.selector = selector
+
+    def matches(self):
+        for part in self.selector.split(","):
+            if "simplified-input-menu" in part and self.page.upload_place:
+                return True
+            found = self.LABEL.search(part)
+            if found:
+                piece, label = found.group(1), self.page.upload_label
+                if (piece.lower() in label.lower()) if found.group(2) else (piece in label):
+                    return True
+        return False
+
+    def count(self):
+        return 1 if self.matches() else 0
+
+    @property
+    def first(self):
+        return self
+
+    def click(self, *args, **kwargs):
+        if not self.matches():
+            self.page.clock.now += 10
+            raise RuntimeError("Timeout 10000ms exceeded")
+        self.page.pressed_at = self.page.clock.now
+
+    def get_attribute(self, name):
+        return self.page.upload_label if name == "aria-label" else None
+
+
+class Videos:
+    """Every generated video the page shows, whichever turn it belongs to, oldest first: what a
+    look at the whole page finds, as against the answer after this turn's own question."""
+
+    def __init__(self, page):
+        self.urls = [value["url"] for kind, value in page.items()
+                     if kind == "video" and page.video_ready(value)]
+
+    def count(self):
+        return len(self.urls)
+
+    def nth(self, i):
+        return VideoNode(self.urls[i] if -len(self.urls) <= i < len(self.urls) else None)
+
+    @property
+    def first(self):
+        return self.nth(0)
+
+    @property
+    def last(self):
+        return self.nth(-1)
+
+
+class VideoNode:
+    def __init__(self, url):
+        self.url = url
+
+    def get_attribute(self, name):
+        return self.url if name == "src" else None
+
+    def evaluate(self, *args, **kwargs):
+        return self.url
 
 
 class Node:
@@ -725,8 +835,77 @@ def markup_cases(gemini):
         got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(second), before])
         record("the real markup: rebuilt questions do not hide this turn's own",
                got.get("query") is True, repr(got))
+
+        page.evaluate("(html) => { document.body.innerHTML = html; }", html)
+        got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(second), 1])
+        record("the real markup: a text answer carries no note and no video",
+               (got.get("text") or "").strip() == "teal-99016" and not got.get("note")
+               and not got.get("video"), repr(got))
+
+        video_cases(gemini, page, mark, words_of)
     finally:
         browser.close()
+
+
+VIDEO_NOTE = ("Tôi đang tạo video. Quá trình này có thể mất vài phút, vì vậy, hãy kiểm tra lại để biết "
+              "video đã sẵn sàng hay chưa.")
+VIDEO_READY = "Video của bạn đã sẵn sàng!"
+VIDEO_PROMPT = "Tạo video 10 giây về một chú mèo con đang ngủ dưới nắng bên cửa sổ."
+
+
+def video_cases(gemini, page, mark, words_of):
+    """ANSWER_AFTER_QUERY on the video turn captured on 2026-10-06 (thread 5cbf5c7ea13d3b12; scripts,
+    urls, Angular's own attributes and comments stripped, one tag a line, the video's address a
+    placeholder): its message-content holds the words and the player, whose own text ("0:00 / 0:00")
+    is no part of the answer."""
+    # The fixture's video would be fetched from Google; nothing leaves this page.
+    page.route("**/*", lambda route: route.abort())
+    html = (ROOT / "tests" / "fixtures" / "gemini_video_thread.html").read_text()
+    placeholder = "https://contribution.usercontent.google.com/download?c=fixture&filename=fixture.mp4"
+    show_note = """(note) => {
+        const answers = document.querySelectorAll('model-response');
+        const content = answers[answers.length - 1].querySelector('message-content');
+        const shown = document.createElement('div');
+        shown.textContent = note;
+        content.replaceWith(shown);
+    }"""
+    add_turn = """([query, note]) => {
+        const main = document.querySelector('main');
+        const q = document.createElement('user-query');
+        q.textContent = query;
+        const r = document.createElement('model-response');
+        const shown = document.createElement('div');
+        shown.textContent = note;
+        r.appendChild(shown);
+        main.appendChild(q);
+        main.appendChild(r);
+    }"""
+
+    page.evaluate("(html) => { document.body.innerHTML = html; }", html)
+    got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(VIDEO_PROMPT), 0])
+    record("the real markup: a video answer's words leave the player's time out",
+           got.get("query") is True and (got.get("text") or "").strip() == VIDEO_READY, repr(got))
+    record("the real markup: a video answer gives its video's address",
+           got.get("video") == placeholder, repr(got))
+
+    # While the video is made (measured at 4.3s after the send; that state's markup was not
+    # captured): the answer shows the note and holds no message-content.
+    page.evaluate(show_note, VIDEO_NOTE)
+    got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(VIDEO_PROMPT), 0])
+    record("the real markup: an answer still making its video reads as a note, no words, no video",
+           got.get("query") is True and got.get("text") == "" and not got.get("video")
+           and (got.get("note") or "").strip() == VIDEO_NOTE, repr(got))
+
+    # A reopened thread: the captured turn and its video come before this turn, whose own answer is
+    # still making its video. The earlier video is never this turn's.
+    next_prompt = "Tạo video về một chú chó con chạy trên bãi cỏ."
+    page.evaluate("(html) => { document.body.innerHTML = html; }", html)
+    before = page.evaluate(mark)
+    page.evaluate(add_turn, ["Bạn đã nói " + next_prompt, VIDEO_NOTE])
+    got = page.evaluate(gemini.ANSWER_AFTER_QUERY, [words_of(next_prompt), before])
+    record("the real markup: an earlier turn's video is never this turn's",
+           got.get("query") is True and not got.get("video")
+           and (got.get("note") or "").strip() == VIDEO_NOTE, repr(got))
 
 
 def main():
@@ -1439,6 +1618,117 @@ def main():
     record("only a generated picture is ever fetched again, never a user's",
            result.success and result.media == [] and upload_url not in p._context.request.asked,
            "media {} asked {}".format(len(result.media), p._context.request.asked))
+
+    # Measured 2026-10-06: the upload button was "Add files" on one load and "Upload & tools" on
+    # four others, always the one menu button inside simplified-input-menu; once pressed, the image
+    # input is there. The owner's video script failed on "Add files".
+    for label, place, opens_after, name in (
+            ("Tải lên và công cụ", True, 0, "the upload button is found by its place, whatever its label"),
+            ("Add files", False, 0, "the upload button is found by the label 'Add files' away from its place"),
+            ("Upload & tools", True, 3, "an image input that opens a moment after the press is waited for")):
+        page = Page(clock)
+        page.upload_label, page.upload_place, page.upload_opens_after = label, place, opens_after
+        page.answer, page.replies = "a script", [stream_ok]
+        what, result = run_on(page, off(), prompt="describe it", upload=reference.name)
+        record(name, what == "returned" and result.success and page.uploads == 1 and len(page.sent) == 1,
+               "{} uploads {} sent {}".format(what, page.uploads, len(page.sent)))
+
+    page = Page(clock)
+    page.upload_label, page.upload_place = "Something else entirely", False
+    page.answer, page.replies = "a script", [stream_ok]
+    what, result = run_on(page, off(), prompt="describe it", upload=reference.name)
+    record("an upload button found nowhere stops the turn, nothing sent",
+           what.startswith("refused") and page.uploads == 0 and page.sent == [],
+           "{} uploads {} sent {}".format(what, page.uploads, len(page.sent)))
+
+    # Measured 2026-10-06 (one real video turn, thread 5cbf5c7ea13d3b12): the stream ended 6.7s after
+    # the send; the answer showed a note and no message-content until 73.5s, then its words and a
+    # video on contribution.usercontent.google.com, an mp4 (ftyp at byte 4) once fetched inside the
+    # session. The owner's own video turn failed as "neither words nor a picture" after 54s.
+    video_url = "https://contribution.usercontent.google.com/download?c=this-turn&filename=video.mp4"
+    mp4 = b"\x00\x00\x00\x18ftypmp42" + b"V" * 4000
+    video_wait = getattr(gemini, "VIDEO_WAIT", 300)
+
+    def video_turn(after=74, served=mp4, stop_after=None, **kwargs):
+        """(what happened, result, provider, page, seconds) of one video turn on the fake page."""
+        page = Page(clock)
+        page.answer, page.replies = None, [stream_ok]
+        page.video = {"note": VIDEO_NOTE, "words": VIDEO_READY, "url": video_url, "after": after}
+        p = provider_on(page, off())
+        if served is not None:
+            p._context.request.served[video_url] = served
+        if stop_after is not None:
+            p.bind(stop_hook=lambda: page.sent_at is not None and clock.now - page.sent_at >= stop_after)
+        started = clock.now
+        try:
+            what, result = "returned", p._run(VIDEO_PROMPT, **kwargs)
+        except gemini.JobCancelled:
+            what, result = "cancelled", None
+        except ProviderError as exc:
+            what, result = "refused: {} {}".format(exc.kind, str(exc)[:60]), None
+        except Exception as exc:
+            what, result = "crashed: {}: {}".format(type(exc).__name__, str(exc)[:60]), None
+        return what, result, p, page, clock.now - started
+
+    def kept(result):
+        return [(m.type, m.metadata.get("size"), m.filename.rsplit(".", 1)[-1],
+                 (Path("/tmp/gemini-driver-test") / m.filename).read_bytes() == mp4)
+                for m in (result.media if result else [])]
+
+    what, result, p, page, took = video_turn()
+    record("a video turn comes back with its words and its video, kept as an mp4",
+           what == "returned" and result.success and result.text == VIDEO_READY
+           and kept(result) == [("video", len(mp4), "mp4", True)]
+           and (result.thread_url or "").endswith("/app/0123456789abcdef"),
+           "{} after {:.0f}s: success {} text {!r} media {} thread {}".format(
+               what, took, result and result.success, result and result.text, kept(result),
+               result and result.thread_url))
+
+    what, result, p, page, took = video_turn(after=None)
+    record("a video that never comes fails within a bounded wait, saying so",
+           what == "returned" and not result.success and result.error_kind == "provider_timeout"
+           and "video" in (result.error or "") and took <= video_wait + 60,
+           "{} after {:.0f}s: {} {!r}".format(what, took, result and result.error_kind,
+                                              result and result.error))
+
+    for served, label in ((b"<html>denied</html>", "bytes that are not an mp4"), (None, "a fetch refused")):
+        what, result, p, page, took = video_turn(served=served)
+        record("a video turn whose video comes back as {} keeps nothing".format(label),
+               not (what == "returned" and result.success) and not kept(result),
+               "{} after {:.0f}s: {}".format(what, took, result and (result.error or result.media)))
+
+    page = Page(clock)
+    page.answer, page.replies = None, [stream_ok]
+    p = provider_on(page, off())
+    started = clock.now
+    result = p._run("hello")
+    record("an answer that shows nothing at all still fails at once, without the video wait",
+           not result.success and clock.now - started < 60,
+           "success {} after {:.0f}s: {!r}".format(result.success, clock.now - started, result.error))
+
+    old_url = "https://contribution.usercontent.google.com/download?c=earlier-turn&filename=video.mp4"
+    page = Page(clock)
+    page.late = [(clock.now, [("query", "Bạn đã nói " + VIDEO_PROMPT),
+                              ("video", {"note": VIDEO_NOTE, "words": VIDEO_READY, "url": old_url,
+                                         "after": 0, "sent": clock.now - 600})])]
+    page.answer, page.replies = None, [stream_ok]
+    page.video = {"note": VIDEO_NOTE, "words": VIDEO_READY, "url": video_url, "after": 74}
+    p = provider_on(page, off())
+    p._context.request.served[old_url] = b"\x00\x00\x00\x18ftypmp42" + b"O" * 3000
+    p._context.request.served[video_url] = mp4
+    try:
+        what, result = "returned", p._run(VIDEO_PROMPT, thread_url=thread)
+    except Exception as exc:
+        what, result = "raised: {}: {}".format(type(exc).__name__, str(exc)[:60]), None
+    record("a reopened thread's earlier video is never taken for this turn's",
+           what == "returned" and result.success and kept(result) == [("video", len(mp4), "mp4", True)]
+           and old_url not in p._context.request.asked,
+           "{} media {} asked {}".format(what, kept(result), p._context.request.asked))
+
+    what, result, p, page, took = video_turn(after=None, stop_after=30)
+    record("a stop while the video is made cancels the turn and names its thread",
+           what == "cancelled" and p.last_cancelled_thread == page.thread and took < 60,
+           "{} after {:.0f}s named {}".format(what, took, p.last_cancelled_thread))
 
     # The real gemini gate, 2026-09-27: no thread was ever deleted. Measured without deleting: the
     # conversation list paints its rows after the composer, and a row's menu button shows only
