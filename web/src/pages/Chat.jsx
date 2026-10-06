@@ -3,6 +3,7 @@ import Markdown, { defaultUrlTransform } from 'react-markdown'
 import { api, conversationZipUrl, waitForJob } from '../lib/api.js'
 import { useStrings } from '../lib/strings.jsx'
 import MediaImage from '../components/MediaImage.jsx'
+import MediaVideo from '../components/MediaVideo.jsx'
 import TypingBubble from '../components/TypingBubble.jsx'
 import Lightbox from '../components/Lightbox.jsx'
 import FileCard from '../components/FileCard.jsx'
@@ -39,6 +40,7 @@ function ReplyText({ text }) {
 function MediaCard({ item, busy, onOpen, onScript, label }) {
   // Whatever came back is shown as what it is. Only a picture can be previewed
   // or turned into a video script.
+  if (item.type === 'video') return <MediaVideo item={item} className="w-full max-w-sm rounded border bg-white p-2" />
   if (item.type !== 'image') return <FileCard item={item} />
 
   return (

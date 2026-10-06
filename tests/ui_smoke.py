@@ -80,6 +80,30 @@ def png(width, height):
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
+# The first video on screen, once it knows its length (or has given up): what a person can play.
+PLAYABLE = """() => new Promise((resolve) => {
+  const v = document.querySelector('[data-testid=media-video]');
+  if (!v) return resolve({found: false});
+  let told = false;
+  const done = () => {
+    if (told) return;
+    told = true;
+    resolve({found: true, state: v.readyState, duration: v.duration, width: v.videoWidth,
+             blob: (v.currentSrc || v.src || '').startsWith('blob:'),
+             download: !!document.querySelector('[data-testid=video-download][download]')});
+  };
+  if (v.readyState >= 1) return done();
+  v.addEventListener('loadedmetadata', done, {once: true});
+  v.addEventListener('error', done, {once: true});
+  setTimeout(done, 10000);
+})"""
+
+
+def playable(found):
+    return bool(found.get("found") and found.get("state", 0) >= 1 and (found.get("duration") or 0) > 0
+                and found.get("width", 0) > 0 and found.get("blob") and found.get("download"))
+
+
 def shot(page, name):
     SHOT_DIR.mkdir(parents=True, exist_ok=True)
     path = SHOT_DIR / "{}.png".format(name)
@@ -565,6 +589,20 @@ def main():
                badged.startswith("(1)") and cleared == base_title,
                "title {!r} while hidden, {!r} after returning".format(badged, cleared))
 
+        # Gemini makes a video when asked for one (2026-10-06); the mock answers this phrase with a
+        # one second clip. It plays where it was made, and can be saved.
+        try:
+            page.fill(COMPOSER, "make a short video of a cat asleep in the sun")
+            page.click("button:has-text('Send')")
+            page.wait_for_selector("text=mock video for", timeout=60000)
+            page.wait_for_timeout(1500)
+            in_chat = page.evaluate(PLAYABLE)
+            shot(page, "07h-video")
+            record("a video plays in the chat, and can be saved", playable(in_chat), repr(in_chat))
+        except Exception as exc:
+            record("a video plays in the chat, and can be saved", False,
+                   "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
         page.click("nav button:has-text('gallery')")
         page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
         page.wait_for_timeout(1500)
@@ -576,6 +614,8 @@ def main():
         )
         record("gallery lists the generated media", gallery_images >= 1,
                "{}, {} thumbnail(s)".format(heading, gallery_images))
+        in_gallery = page.evaluate(PLAYABLE)
+        record("the gallery plays a video, and it can be saved", playable(in_gallery), repr(in_gallery))
 
         # Back in the chat: the conversation can be renamed, found, and deleted
         # from the sidebar, and deleting it takes its media out of the gallery.

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api } from '../lib/api.js'
 import { useStrings } from '../lib/strings.jsx'
 import MediaImage from '../components/MediaImage.jsx'
+import MediaVideo from '../components/MediaVideo.jsx'
 import Lightbox from '../components/Lightbox.jsx'
 import FileCard from '../components/FileCard.jsx'
 
@@ -45,6 +46,8 @@ export default function Gallery() {
             {item.type === 'image' ? (
               <MediaImage id={item.id} className="w-full"
                 onOpen={(url) => setViewing({ url, filename: item.filename })} />
+            ) : item.type === 'video' ? (
+              <MediaVideo item={item} />
             ) : (
               <FileCard item={item} />
             )}
