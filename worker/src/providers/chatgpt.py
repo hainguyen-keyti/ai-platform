@@ -62,6 +62,11 @@ PICTURE_PAINT_SECONDS = 30
 # After a cancel, how long to wait for a freshly sent turn's thread address so
 # the thread can be reported; the address normally shows within seconds.
 CANCEL_THREAD_WAIT = 15
+# A follow-up turn reads its thread before the send: every node there then is an
+# earlier turn's. A failed read is tried again after a pause that doubles; a thread
+# that stays unreadable is not written to (2026-10-06: an earlier answer came back).
+BASELINE_TRIES = 3
+BASELINE_PAUSE_SECONDS = 2
 
 FETCH_AS_DATA_URL = """
 async (url) => {
@@ -532,13 +537,26 @@ class ChatGPTProvider(BaseProvider):
         return data
 
     def _baseline_ids(self, page) -> set:
+        """The ids of every node the thread holds before the send; none for a new chat.
+
+        A follow-up turn that cannot know them would take the earlier answers for its own, so
+        the read is tried again and, still failing, the turn is refused before it is sent.
+        """
         thread_id = self._thread_id(page)
         if not thread_id:
             return set()
-        data = self._thread_nodes(page, thread_id)
-        if not data or data.get("status") != 200:
-            return set()
-        return {n["id"] for n in data["nodes"]}
+        pause, status = BASELINE_PAUSE_SECONDS, None
+        for attempt in range(BASELINE_TRIES):
+            if attempt:
+                page.wait_for_timeout(pause * 1000)
+                pause *= 2
+                self._stop_unsent()
+            data = self._thread_nodes(page, thread_id)
+            status = data.get("status") if data else "no session token"
+            if data and status == 200:
+                return {n["id"] for n in data["nodes"]}
+        raise ProviderError("chatgpt's thread could not be read before sending ({}), so nothing "
+                            "was sent".format(status))
 
     @staticmethod
     def _drew(node) -> bool:
@@ -808,6 +826,8 @@ class ChatGPTProvider(BaseProvider):
         if self._read_memory(page) == "on":
             raise ProviderError(MEMORY_ON_ERROR, kind="provider_misconfigured")
         baseline = page.locator(ASSISTANT_TURN).count()
+        # Before anything is attached: a turn refused here must leave the shared composer empty.
+        baseline_ids = self._baseline_ids(page)
 
         if upload:
             path = self.media_path / upload
@@ -822,7 +842,6 @@ class ChatGPTProvider(BaseProvider):
         seen_downloads = set(page.evaluate(SNAPSHOT_DOWNLOADS))
         # A banner left over from an earlier turn is not this turn's failure.
         banner_before = self._banner(page)
-        baseline_ids = self._baseline_ids(page)
         # The last moment a job taken away can stay unsent: once typed, the turn is the site's.
         self._stop_unsent()
         started = time.time()
