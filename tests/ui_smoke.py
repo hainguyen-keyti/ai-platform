@@ -22,6 +22,7 @@ import re
 import struct
 import sys
 import time
+import urllib.request
 import zipfile
 import zlib
 from pathlib import Path
@@ -30,6 +31,7 @@ from urllib.parse import urlparse
 import cloakbrowser
 
 WEB_URL = os.environ.get("WEB_URL", "http://localhost:5173")
+API_URL = os.environ.get("API_URL", "http://localhost:3000")
 INVITE_CODE = os.environ.get("INVITE_CODE", "")
 SHOT_DIR = Path(os.environ.get("SHOT_DIR", "/tmp/ui_shots"))
 # Prefix match so a reworded placeholder does not break every step at once.
@@ -89,7 +91,7 @@ PLAYABLE = """() => new Promise((resolve) => {
     if (told) return;
     told = true;
     resolve({found: true, state: v.readyState, duration: v.duration, width: v.videoWidth,
-             blob: (v.currentSrc || v.src || '').startsWith('blob:'),
+             blob: (v.currentSrc || v.src || '').startsWith('blob:'), named: !!v.getAttribute('aria-label'),
              download: !!document.querySelector('[data-testid=video-download][download]')});
   };
   if (v.readyState >= 1) return done();
@@ -101,7 +103,8 @@ PLAYABLE = """() => new Promise((resolve) => {
 
 def playable(found):
     return bool(found.get("found") and found.get("state", 0) >= 1 and (found.get("duration") or 0) > 0
-                and found.get("width", 0) > 0 and found.get("blob") and found.get("download"))
+                and found.get("width", 0) > 0 and found.get("blob") and found.get("download")
+                and found.get("named"))
 
 
 def shot(page, name):
@@ -1623,6 +1626,68 @@ def main():
         except Exception as exc:
             record("a file card stays inside its gallery tile on a phone and keeps its size in the chat", False,
                    "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        # The design review of 2026-10-06: in a gallery tile on a phone the player was 145px wide at
+        # 390 and 110px at 320, where Chrome keeps only its menu button; a video that could not load
+        # said "could not load image", in English whatever the language. The gallery is answered with
+        # the video the mock made above (its file from the api) and one whose file is gone.
+        videos_check = "on a phone a video in the gallery is wide enough to play, and one that cannot load says so"
+        try:
+            listed = urllib.request.Request(API_URL + "/media", headers={"Authorization": "Bearer " + token})
+            with urllib.request.urlopen(listed, timeout=20) as resp:
+                clip_id = next((m["id"] for m in json.load(resp)["items"] if m["type"] == "video"), None)
+            videos = [{"id": clip_id, "type": "video", "filename": "cat.mp4", "provider": "gemini",
+                       "prompt": "a cat asleep in the sun", "created_at": stamp},
+                      {"id": "look-vid-gone", "type": "video", "filename": "gone.mp4", "provider": "gemini",
+                       "prompt": "a video whose file is gone", "created_at": stamp}]
+            plain = {"access-control-allow-origin": "*", "content-type": "application/json"}
+
+            def answer_videos(route):
+                path = urlparse(route.request.url).path
+                if route.request.method == "OPTIONS":
+                    route.continue_()
+                elif path == "/media":
+                    route.fulfill(status=200, headers=plain,
+                                  body=json.dumps({"items": shelf + videos, "total": len(shelf) + len(videos)}))
+                elif path == "/media/look-vid-gone/file":
+                    route.fulfill(status=404, headers=plain, body=json.dumps({"detail": "file missing on disk"}))
+                else:
+                    route.continue_()
+
+            sizes = {}
+            for width, lang, gallery in ((390, "en", "gallery"), (320, "vi", "thư viện")):
+                context, view = look(width, lang)
+                start = len(errors)
+                try:
+                    view.route("**/media", answer_videos)
+                    view.route("**/media/look-vid-gone/file", answer_videos)
+                    view.click("nav button:has-text('{}')".format(gallery), timeout=10000)
+                    view.wait_for_selector("[data-testid=media-video]", timeout=15000)
+                    view.wait_for_selector("[data-testid=video-failed]", timeout=15000)
+                    view.wait_for_timeout(600)
+                    faint_texts(view, "the gallery with videos at {}px in {}".format(width, lang), faint, texts_on)
+                    sizes[(width, lang)] = view.evaluate(
+                        """() => {
+                            const v = document.querySelector('[data-testid=media-video]').getBoundingClientRect();
+                            const f = document.querySelector('[data-testid=video-failed]');
+                            const b = f.getBoundingClientRect();
+                            return {video: Math.round(v.width), screen: window.innerWidth, failed: f.textContent.trim(),
+                                    shape: Math.round(b.width / b.height * 100) / 100,
+                                    page: document.scrollingElement.scrollWidth};
+                        }"""
+                    )
+                    shot(view, "18b-gallery-videos-{}".format(width))
+                finally:
+                    # The gone file's 404 is this check's own doing.
+                    provoked.update(i for i in range(start, len(errors)) if "404" in errors[i])
+                    context.close()
+            said = {"en": "Could not load this video.", "vi": "Không tải được video."}
+            record(videos_check,
+                   len(sizes) == 2 and all(s["video"] >= 0.7 * s["screen"] and s["failed"] == said[lang]
+                                           and 1.7 <= s["shape"] <= 1.85 and s["page"] <= s["screen"]
+                                           for (width, lang), s in sizes.items()), repr(sizes))
+        except Exception as exc:
+            record(videos_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
         # Each faint text once, with the number of screens it was seen on.
         kinds = {}

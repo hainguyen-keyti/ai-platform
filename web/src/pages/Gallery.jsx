@@ -42,7 +42,8 @@ export default function Gallery() {
 
       <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
         {items.map((item) => (
-          <div key={item.id} className="bg-white border rounded p-2 space-y-2">
+          <div key={item.id}
+            className={`bg-white border rounded p-2 space-y-2 ${item.type === 'video' ? 'col-span-2 md:col-span-1' : ''}`}>
             {item.type === 'image' ? (
               <MediaImage id={item.id} className="w-full"
                 onOpen={(url) => setViewing({ url, filename: item.filename })} />
