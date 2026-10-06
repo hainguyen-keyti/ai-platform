@@ -659,6 +659,23 @@ def main():
            said.startswith("ProviderError") and page.sent == [] and page.attached == [] and took < 30,
            "{} after {:.0f}s, sent {} attached {}".format(said, took, len(page.sent), page.attached))
 
+    # A job taken away while its thread is read again before the send stops there: nothing goes out,
+    # and the driver's stop record says the turn was never sent (what the gate accounts it by).
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=500, unreadable=100)
+    driver = provider_on(page)
+    driver.bind(None, lambda: page.reads >= 1)
+    try:
+        driver._run("hỏi tiếp một câu", thread_url=DrawingPage.THREAD)
+        outcome = "returned"
+    except JobCancelled:
+        outcome = "cancelled"
+    except Exception as exc:
+        outcome = "{}: {}".format(type(exc).__name__, str(exc)[:60])
+    stopped = getattr(driver, "last_stop", None)
+    record("a job taken away while its thread is read again before the send stops unsent, and says so",
+           outcome == "cancelled" and page.sent == [] and (stopped or {}).get("sent") is False,
+           "{}, sent {}, last_stop {}".format(outcome, len(page.sent), stopped))
+
     page = DrawingPage(clock, words_after=8)
     said, pictures, text, took = draw_on(page)
     record("a first turn, which has no thread yet, is sent without reading one",
