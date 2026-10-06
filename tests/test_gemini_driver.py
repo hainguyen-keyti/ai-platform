@@ -862,12 +862,12 @@ def video_cases(gemini, page, mark, words_of):
     page.route("**/*", lambda route: route.abort())
     html = (ROOT / "tests" / "fixtures" / "gemini_video_thread.html").read_text()
     placeholder = "https://contribution.usercontent.google.com/download?c=fixture&filename=fixture.mp4"
+    # What was measured at 4.3s: the answer's whole text is the note, and no message-content.
     show_note = """(note) => {
         const answers = document.querySelectorAll('model-response');
-        const content = answers[answers.length - 1].querySelector('message-content');
         const shown = document.createElement('div');
         shown.textContent = note;
-        content.replaceWith(shown);
+        answers[answers.length - 1].replaceChildren(shown);
     }"""
     add_turn = """([query, note]) => {
         const main = document.querySelector('main');

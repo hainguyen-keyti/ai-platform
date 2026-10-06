@@ -32,9 +32,17 @@ SAVED_INFO_PATH = "/saved-info"
 BLOCK_HOST = "www.google.com"
 BLOCK_PATH = "/sorry/"
 SWITCH = 'button[role="switch"]'
-# The upload control carries no data-test-id, only a localised label: the weakest selector here.
-UPLOAD_CONTROL = ("button[aria-label*='Nội dung tải lên']", "button[aria-label*='Upload']")
+# The upload control carries no data-test-id and its label keeps changing ("Add files" and "Upload &
+# tools" on 2026-10-06); its place has held, so the place comes first and the labels seen after it.
+UPLOAD_CONTROL = ("simplified-input-menu button[aria-haspopup='menu']",
+                  "button[aria-label*='Upload' i]", "button[aria-label*='Add files' i]",
+                  "button[aria-label*='Nội dung tải lên']")
 UPLOAD_INPUT = 'input[type="file"][accept="image/*"]'
+UPLOAD_OPEN_WAIT = 5
+# A video is made after the stream ends (measured 2026-10-06: the stream done at 6.7s, the video at
+# 73.5s) and is served from this host; an mp4 carries "ftyp" at byte 4.
+VIDEO_HOST = "contribution.usercontent.google.com"
+VIDEO_WAIT = 300
 THREAD = re.compile(r"/app/([0-9a-f]{8,})(?:[/?#]|$)")
 
 # Measured 2026-09-27: each turn is a user-query, then a model-response holding a message-content,
@@ -59,9 +67,19 @@ ANSWER_AFTER_QUERY = """
     if (!words.every((w) => shown.includes(w))) return {query: false, text: ''};
     const after = Array.from(document.querySelectorAll('model-response'))
         .filter((r) => mine.compareDocumentPosition(r) & Node.DOCUMENT_POSITION_FOLLOWING);
-    if (!after.length) return {query: true, text: ''};
-    const content = after[after.length - 1].querySelector('message-content');
-    return {query: true, text: content ? (content.innerText || '') : ''};
+    if (!after.length) return {query: true, text: '', note: '', video: ''};
+    const answer = after[after.length - 1];
+    const content = answer.querySelector('message-content');
+    // While its video is made, an answer shows a note and holds no message-content (2026-10-06).
+    if (!content) return {query: true, text: '', note: (answer.innerText || '').trim(), video: ''};
+    // A generated video's player shows its own time ("0:00 / 0:10"), which is no part of the words.
+    const players = Array.from(content.querySelectorAll('generated-video'));
+    const display = players.map((p) => p.style.display);
+    players.forEach((p) => { p.style.display = 'none'; });
+    const text = content.innerText || '';
+    players.forEach((p, i) => { p.style.display = display[i]; });
+    const clip = content.querySelector('generated-video video');
+    return {query: true, text: text, note: '', video: clip ? (clip.currentSrc || clip.src || '') : ''};
 }
 """
 
@@ -325,7 +343,9 @@ class GeminiProvider(BaseProvider):
                 if page.locator(sel).count():
                     page.locator(sel).first.click(timeout=10000)
                     break
-            page.wait_for_timeout(1500)
+            deadline = time.time() + UPLOAD_OPEN_WAIT
+            while not page.locator(UPLOAD_INPUT).count() and time.time() < deadline:
+                page.wait_for_timeout(250)
         if not page.locator(UPLOAD_INPUT).count():
             raise ProviderError("gemini's upload control did not open")
         # Without its picture the turn would still go out, and "please attach an image" would be
@@ -478,7 +498,7 @@ class GeminiProvider(BaseProvider):
         # turn's own question, once they hold still for a second. Earlier turns sit above that
         # question however late they paint, so none of them can pass for this turn's answer.
         words = query_words(prompt)
-        text, last = "", None
+        text, last, found = "", None, {}
         for _ in range(10):
             try:
                 found = page.evaluate(ANSWER_AFTER_QUERY, [words, before]) or {}
@@ -490,6 +510,7 @@ class GeminiProvider(BaseProvider):
                 break
             last = text
             page.wait_for_timeout(1000)
+        clip = found.get("video") or ""
 
         pictures = []
         self.last_pictures = [(urlparse(e["url"]).path[:11], e["type"][:12], e["note"] or len(e["body"]))
@@ -518,10 +539,63 @@ class GeminiProvider(BaseProvider):
                                                  "size": len(body)}))
         if media:
             self._phase("picture appeared")
+        if not text and not media and not clip and (found.get("note") or "").strip():
+            text, clip = self._await_video(page, words, before, landed)
+            if not clip:
+                return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
+                                        error="gemini was still making the video after {}s".format(VIDEO_WAIT))
+        if clip:
+            media.append(self._keep_video(clip, prompt))
         if not text and not media:
             return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
                                     error="gemini's turn carried neither words nor a picture")
         return GenerationResult(success=True, text=text, media=media, thread_url=landed)
+
+    def _await_video(self, page, words, before, landed):
+        """(the words, the video's address) once the answer that said it was making a video holds
+        one; ("", "") when VIDEO_WAIT runs out. A stop hands the turn's thread back for removal."""
+        self._phase("making a video")
+        deadline = time.time() + VIDEO_WAIT
+        while time.time() < deadline:
+            page.wait_for_timeout(2000)
+            try:
+                self._check_stop()
+            except JobCancelled:
+                self.last_cancelled_thread = landed or self.last_cancelled_thread
+                raise
+            try:
+                found = page.evaluate(ANSWER_AFTER_QUERY, [words, before]) or {}
+                if found.get("video"):
+                    page.wait_for_timeout(1000)
+                    found = page.evaluate(ANSWER_AFTER_QUERY, [words, before]) or found
+            except Exception as exc:
+                raise ProviderError("gemini's page went away while its video was made: {}".format(
+                    type(exc).__name__))
+            if found.get("video"):
+                return (found.get("text") or "").strip(), found["video"]
+        return "", ""
+
+    def _keep_video(self, url: str, prompt: str) -> MediaArtifact:
+        """The video fetched inside this session (its address works nowhere else) and kept."""
+        try:
+            host = urlparse(url).hostname
+        except ValueError:
+            host = None
+        if host != VIDEO_HOST:
+            raise ProviderError("gemini's video is not on {} but on {}".format(VIDEO_HOST, host))
+        try:
+            fetched = self._context.request.get(url, timeout=60000)
+            status, body = fetched.status, (fetched.body() if fetched.ok else b"")
+        except Exception as exc:
+            raise ProviderError("gemini's video could not be fetched: {}".format(type(exc).__name__))
+        if body[4:8] != b"ftyp":
+            raise ProviderError("gemini's video came back as no video: status {}, {} bytes".format(
+                status, len(body)))
+        filename = "gemini-{}.mp4".format(uuid.uuid4().hex)
+        (self.media_path / filename).write_bytes(body)
+        self._phase("video appeared")
+        return MediaArtifact(filename=filename, type="video",
+                             metadata={"prompt": prompt[:500], "source": "gemini", "size": len(body)})
 
     # --- threads ---------------------------------------------------------------------
 
