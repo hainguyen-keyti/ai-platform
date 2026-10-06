@@ -54,8 +54,8 @@ SETTLE_SECONDS = 6
 # been the turn's newest node this long with the stop button gone.
 PICTURE_NODE = "multimodal_text"
 PICTURE_QUIET_SECONDS = 10
-# The node must be this turn's own by the server's clock too: the read of the
-# thread before the send can fail, and then an earlier turn's picture looks new.
+# The node must be this turn's own by the server's clock too: an earlier turn's
+# picture can land after the read of the thread before the send, and look new.
 PICTURE_CLOCK_SLACK = 5
 # The node can be there before the page has painted the picture.
 PICTURE_PAINT_SECONDS = 30
@@ -63,10 +63,11 @@ PICTURE_PAINT_SECONDS = 30
 # the thread can be reported; the address normally shows within seconds.
 CANCEL_THREAD_WAIT = 15
 # A follow-up turn reads its thread before the send: every node there then is an
-# earlier turn's. A failed read is tried again after a pause that doubles; a thread
-# that stays unreadable is not written to (2026-10-06: an earlier answer came back).
+# earlier turn's. A failed read is tried again after a pause that doubles, from the
+# 6s the polling after the send waits on a 429; a thread that stays unreadable is
+# not written to (2026-10-06: an earlier answer came back).
 BASELINE_TRIES = 3
-BASELINE_PAUSE_SECONDS = 2
+BASELINE_PAUSE_SECONDS = 6
 
 FETCH_AS_DATA_URL = """
 async (url) => {
@@ -553,8 +554,12 @@ class ChatGPTProvider(BaseProvider):
                 self._stop_unsent()
             data = self._thread_nodes(page, thread_id)
             status = data.get("status") if data else "no session token"
-            if data and status == 200:
+            # A follow-up's thread always holds its earlier turn: a read with no node is no read.
+            if data and status == 200 and data.get("nodes"):
                 return {n["id"] for n in data["nodes"]}
+            if data and status == 200:
+                status = "no node"
+        self._stop_unsent()
         raise ProviderError("chatgpt's thread could not be read before sending ({}), so nothing "
                             "was sent".format(status))
 
@@ -821,18 +826,19 @@ class ChatGPTProvider(BaseProvider):
         # Never let a cancel report the previous turn's thread as this one's.
         self.last_cancelled_thread = None
         page = self._open(thread_url)
+        on_thread = self._thread_id(page)
         # Look before speaking: with memory on, this turn would be written into
         # a store that every other user's turn can read (measured 2026-09-23).
         if self._read_memory(page) == "on":
             raise ProviderError(MEMORY_ON_ERROR, kind="provider_misconfigured")
         baseline = page.locator(ASSISTANT_TURN).count()
+        if upload and not (self.media_path / upload).exists():
+            return GenerationResult.failure("reference image {} not found".format(upload))
         # Before anything is attached: a turn refused here must leave the shared composer empty.
         baseline_ids = self._baseline_ids(page)
 
         if upload:
             path = self.media_path / upload
-            if not path.exists():
-                return GenerationResult.failure("reference image {} not found".format(upload))
             # A picture attached for a job already gone would wait in the shared composer for the next turn.
             self._stop_unsent()
             page.locator(UPLOAD_INPUT).first.set_input_files(str(path))
@@ -842,6 +848,10 @@ class ChatGPTProvider(BaseProvider):
         seen_downloads = set(page.evaluate(SNAPSHOT_DOWNLOADS))
         # A banner left over from an earlier turn is not this turn's failure.
         banner_before = self._banner(page)
+        # The page must still be on the thread it opened and read: a bounce to a new chat would
+        # send the turn where its conversation is not (DECISIONS 2026-09-24).
+        if self._thread_id(page) != on_thread:
+            raise ProviderError("chatgpt left the conversation's thread before sending, so nothing was sent")
         # The last moment a job taken away can stay unsent: once typed, the turn is the site's.
         self._stop_unsent()
         started = time.time()

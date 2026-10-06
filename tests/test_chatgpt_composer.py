@@ -268,15 +268,21 @@ class DrawingPage(Page):
         # paints_after: the page shows the picture then (when its node is finished unless said);
         # second_after: a second picture's node lands then; words_from: the closing words' node is
         # there from then, in progress and half written, until words_after; idle_until: the stop
-        # button does not show before then; earlier: the thread already holds a turn that drew, and
-        # the address is the thread's from the start; first_read: what the first `unreadable` reads
-        # of the thread answer (one unless said); `early_reads` counts the reads before the send.
+        # button does not show before then; earlier: the thread already holds a turn that drew (or
+        # "words" that answered, or "late picture": one whose picture lands only after the first
+        # read), and the address is the thread's from the start; first_read: what the first
+        # `unreadable` reads of the thread answer (one unless said; "empty" is a 200 with no node);
+        # `early_reads` counts the reads before the send and `read_at` keeps when each read came;
+        # token_gone: once the thread has been read, the session gives no token; bounced: once the
+        # thread has been read, the page is sent back to a new chat.
         self.finished_after = more.get("finished_after", tool_after)
         self.paints_after = more.get("paints_after", self.finished_after)
         self.second_after, self.words_from = more.get("second_after"), more.get("words_from")
         self.idle_until, self.earlier = more.get("idle_until", 0), more.get("earlier", False)
         self.first_read, self.reads, self.made_at = more.get("first_read", 200), 0, clock.now
-        self.unreadable, self.early_reads = more.get("unreadable", 1), 0
+        self.unreadable, self.early_reads, self.read_at = more.get("unreadable", 1), 0, []
+        self.token_gone, self.bounced = more.get("token_gone", False), more.get("bounced", False)
+        self.memory_at = None
         super().__init__(clock, has={PROSEMIRROR})
 
     def since(self):
@@ -301,6 +307,8 @@ class DrawingPage(Page):
 
     @property
     def url(self):
+        if self.bounced and self.reads >= 1:
+            return "https://chatgpt.com/"
         return self.THREAD if (self.threaded and self.sent_at is not None) or self.earlier else self._url
 
     @url.setter
@@ -324,6 +332,11 @@ class DrawingPage(Page):
             nodes += [node("u0", "user", "text", self.made_at - 100, text="an earlier prompt"),
                       node("a0", "assistant", "text", self.made_at - 99, end_turn=True,
                            text="An earlier answer.")]
+        elif self.earlier == "late picture":
+            nodes.append(node("u0", "user", "text", self.made_at - 100, text="an earlier prompt"))
+            if self.reads >= 2:
+                nodes += [node("a0", "assistant", "code", self.made_at - 99, end_turn=False, text="{}"),
+                          node("t0", "tool", "multimodal_text", self.made_at - 98)]
         elif self.earlier:
             nodes += [node("u0", "user", "text", self.made_at - 100, text="an earlier prompt"),
                       node("a0", "assistant", "code", self.made_at - 99, end_turn=False, text="{}"),
@@ -355,11 +368,18 @@ class DrawingPage(Page):
             return "data:image/png;base64,iVBORw0KGgo="
         if script == chatgpt.FETCH_THREAD:
             self.reads += 1
+            self.read_at.append(self.clock.now)
             if self.sent_at is None:
                 self.early_reads += 1
+            if self.reads <= self.unreadable and self.first_read == "empty":
+                return {"status": 200, "nodes": []}
             if self.reads <= self.unreadable and self.first_read != 200:
                 return {"status": self.first_read, "nodes": []}
             return {"status": 200, "nodes": self.nodes()}
+        if script == chatgpt.SESSION_TOKEN and self.token_gone and self.reads >= 1:
+            return None
+        if script == chatgpt.FETCH_USER_SETTINGS:
+            self.memory_at = self.clock.now
         return super().evaluate(script, *args)
 
 
@@ -664,6 +684,7 @@ def main():
     page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=500, unreadable=100)
     driver = provider_on(page)
     driver.bind(None, lambda: page.reads >= 1)
+    started = clock.now
     try:
         driver._run("hỏi tiếp một câu", thread_url=DrawingPage.THREAD)
         outcome = "returned"
@@ -671,10 +692,74 @@ def main():
         outcome = "cancelled"
     except Exception as exc:
         outcome = "{}: {}".format(type(exc).__name__, str(exc)[:60])
+    took, stopped = clock.now - started, getattr(driver, "last_stop", None)
+    record("a job taken away while its thread is read again before the send stops after one pause, unsent, and says so",
+           outcome == "cancelled" and page.sent == [] and (stopped or {}).get("sent") is False and took < 10,
+           "{} after {:.0f}s, sent {}, last_stop {}".format(outcome, took, len(page.sent), stopped))
+
+    # The tier 2 review of the read before the send, 2026-10-07: its mutants of the pauses, of a read
+    # with no token, of a 200 with no node, of the clock guard and of a page that left its thread
+    # went through every check above.
+    def follow_up(page, stop=None, upload=None):
+        """(outcome, result, driver, seconds) of a follow-up turn in the fake thread."""
+        driver = provider_on(page)
+        driver.media_path.mkdir(parents=True, exist_ok=True)
+        driver.bind(None, stop)
+        started = clock.now
+        try:
+            got = driver._run("hỏi tiếp một câu", thread_url=DrawingPage.THREAD, upload=upload)
+            return "returned", got, driver, clock.now - started
+        except JobCancelled:
+            return "cancelled", None, driver, clock.now - started
+        except Exception as exc:
+            return "{}: {}".format(type(exc).__name__, str(exc)[:70]), None, driver, clock.now - started
+
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=500, unreadable=2)
+    outcome, result, driver, took = follow_up(page)
+    gaps = [round(b - a, 1) for a, b in zip(page.read_at[:2], page.read_at[1:3])]
+    first_wait = None if page.memory_at is None or not page.read_at else round(page.read_at[0] - page.memory_at, 1)
+    record("the read before the send is tried at once, then again after 6s and after 12s",
+           outcome == "returned" and result.success and result.text == DrawingPage.WORDS
+           and first_wait is not None and first_wait < 1 and gaps[:1] and gaps[0] >= 6
+           and len(gaps) == 2 and gaps[1] >= 12,
+           "{} first read {}s after the memory read, then gaps {}".format(outcome, first_wait, gaps))
+
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=401, token_gone=True)
+    outcome, result, driver, took = follow_up(page)
+    record("a follow-up whose session token is lost before the send is refused, nothing sent",
+           outcome.startswith("ProviderError") and page.sent == [],
+           "{} after {:.0f}s, sent {}".format(outcome, took, len(page.sent)))
+
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read="empty")
+    outcome, result, driver, took = follow_up(page)
+    record("a read before the send that answers 200 with no node is tried again",
+           outcome == "returned" and result.success and result.text == DrawingPage.WORDS,
+           "{} with words {!r}".format(outcome, result and result.text))
+
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=500, unreadable=100)
+    outcome, result, driver, took = follow_up(page, stop=lambda: page.reads >= 3)
     stopped = getattr(driver, "last_stop", None)
-    record("a job taken away while its thread is read again before the send stops unsent, and says so",
+    record("a job taken away during the last read before the send stops unsent, and says so",
            outcome == "cancelled" and page.sent == [] and (stopped or {}).get("sent") is False,
            "{}, sent {}, last_stop {}".format(outcome, len(page.sent), stopped))
+
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=500, unreadable=100)
+    outcome, result, driver, took = follow_up(page, upload="never-written.png")
+    record("a missing reference picture is said as such, before the thread is read",
+           outcome == "returned" and not result.success and "not found" in (result.error or "")
+           and page.reads == 0, "{} {!r}, reads {}".format(outcome, result and result.error, page.reads))
+
+    page = DrawingPage(clock, words_after=40, earlier="late picture", idle_until=25)
+    said, pictures, text, took = draw_on(page, thread_url=DrawingPage.THREAD)
+    record("an earlier turn's picture that lands after the read before the send does not end this turn",
+           said == "success" and text == DrawingPage.WORDS and took >= 40,
+           "{} with words {!r} after {:.0f}s".format(said, text, took))
+
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, bounced=True)
+    outcome, result, driver, took = follow_up(page)
+    record("a follow-up whose page leaves its thread before the send is refused, nothing sent",
+           outcome.startswith("ProviderError") and page.sent == [],
+           "{}, sent {}".format(outcome, len(page.sent)))
 
     page = DrawingPage(clock, words_after=8)
     said, pictures, text, took = draw_on(page)
