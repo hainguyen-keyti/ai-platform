@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { mediaBlobUrl } from '../lib/api.js'
 import { useStrings } from '../lib/strings.jsx'
 
@@ -6,6 +6,8 @@ export default function MediaVideo({ item, className = '' }) {
   const { t } = useStrings()
   const [url, setUrl] = useState(null)
   const [failed, setFailed] = useState(false)
+  // The last player shown, kept after it leaves the page: it may still be about to read its file.
+  const player = useRef(null)
 
   useEffect(() => {
     let revoked = null
@@ -22,6 +24,12 @@ export default function MediaVideo({ item, className = '' }) {
       .catch(() => !cancelled && setFailed(true))
     return () => {
       cancelled = true
+      // Stop the player's load before its file goes, or it reads a revoked blob (ERR_FILE_NOT_FOUND).
+      const shown = player.current
+      if (shown) {
+        shown.removeAttribute('src')
+        shown.load()
+      }
       if (revoked) URL.revokeObjectURL(revoked)
     }
   }, [item.id])
@@ -41,7 +49,8 @@ export default function MediaVideo({ item, className = '' }) {
   return (
     <div className={className}>
       {url ? (
-        <video src={url} controls playsInline preload="metadata" data-testid="media-video"
+        <video ref={(shown) => { if (shown) player.current = shown }} src={url} controls playsInline
+          preload="metadata" data-testid="media-video"
           aria-label={t.videoLabel} className="max-h-[60vh] w-full rounded bg-black object-contain" />
       ) : (
         <div className="aspect-video w-full animate-pulse rounded bg-slate-200" />

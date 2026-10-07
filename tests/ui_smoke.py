@@ -634,6 +634,35 @@ def main():
         in_gallery = page.evaluate(PLAYABLE)
         record("the gallery plays a video, and it can be saved", playable(in_gallery), repr(in_gallery))
 
+        # The full gate's intermittent console error (2026-10-06 and 07), named by its step: a gallery
+        # opened and left at once. A video player given its file and taken off the page in the same
+        # moment logged net::ERR_FILE_NOT_FOUND for its revoked blob (reproduced 3 of 3). Here the
+        # chat is opened the moment the gallery's player shows, inside that same moment.
+        leave_check = "a video left the moment it shows lets go of its file without an error"
+        try:
+            page.click("nav button:has-text('chat')")
+            page.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
+            start = len(errors)
+            page.evaluate("""() => {
+                window.__leftVideo = false;
+                const chat = [...document.querySelectorAll('nav button')].find((b) => b.textContent.trim() === 'chat');
+                const seen = new MutationObserver(() => {
+                    if (!window.__leftVideo && document.querySelector('[data-testid=media-video]')) {
+                        window.__leftVideo = true;
+                        seen.disconnect();
+                        chat.click();
+                    }
+                });
+                seen.observe(document.body, {childList: true, subtree: true});
+            }""")
+            page.click("nav button:has-text('gallery')")
+            page.wait_for_function("() => window.__leftVideo === true", timeout=20000)
+            page.wait_for_timeout(1500)
+            left = [e for e in errors[start:] if "ERR_FILE_NOT_FOUND" in e]
+            record(leave_check, not left, "console errors after leaving: {}".format(left))
+        except Exception as exc:
+            record(leave_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
         # Back in the chat: the conversation can be renamed, found, and deleted
         # from the sidebar, and deleting it takes its media out of the gallery.
         page.click("nav button:has-text('chat')")
