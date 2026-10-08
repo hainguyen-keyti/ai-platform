@@ -4,9 +4,10 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Response
 
 from src.config import settings
-from src.db.client import db, one
-from src.models import LoginRequest, RegisterRequest
-from src.security import current_user, hash_password, issue_token, revoke_token, verify_password
+from src.db.client import db, many, one
+from src.models import ApiKeyCreate, LoginRequest, RegisterRequest
+from src.security import (current_user, hash_api_key, hash_password, issue_token, new_api_key,
+                          revoke_token, verify_password)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -71,3 +72,50 @@ def logout(user: dict = Depends(current_user)):
 @router.get("/me")
 def me(user: dict = Depends(current_user)):
     return _public(user)
+
+
+MAX_LIVE_KEYS = 10
+KEY_FIELDS = "id, name, prefix, created_at, last_used_at"
+
+
+# Keys are managed with a login only: a key never reaches these routes, so it cannot mint another.
+@router.post("/api-keys", status_code=201)
+def create_api_key(body: ApiKeyCreate, user: dict = Depends(current_user)):
+    key, key_id = new_api_key(), uuid.uuid4().hex
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            live = one(conn, "SELECT COUNT(*) AS n FROM api_keys WHERE user_id = ? AND revoked_at IS NULL",
+                       (user["id"],))["n"]
+            if live >= MAX_LIVE_KEYS:
+                raise HTTPException(status_code=409,
+                                    detail="at most {} live api keys; revoke one first".format(MAX_LIVE_KEYS))
+            conn.execute(
+                "INSERT INTO api_keys (id, user_id, name, prefix, key_hash) VALUES (?, ?, ?, ?, ?)",
+                (key_id, user["id"], body.name.strip(), key[:12], hash_api_key(key)),
+            )
+            made = one(conn, "SELECT {} FROM api_keys WHERE id = ?".format(KEY_FIELDS), (key_id,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return dict(made, key=key)
+
+
+@router.get("/api-keys")
+def list_api_keys(user: dict = Depends(current_user)):
+    with db() as conn:
+        items = many(conn, "SELECT {} FROM api_keys WHERE user_id = ? AND revoked_at IS NULL"
+                           " ORDER BY created_at DESC, rowid DESC".format(KEY_FIELDS), (user["id"],))
+    return {"items": items}
+
+
+@router.delete("/api-keys/{key_id}", status_code=204)
+def revoke_api_key(key_id: str, user: dict = Depends(current_user)):
+    with db() as conn:
+        revoked = conn.execute(
+            "UPDATE api_keys SET revoked_at = datetime('now')"
+            " WHERE id = ? AND user_id = ? AND revoked_at IS NULL", (key_id, user["id"])).rowcount
+    if not revoked:
+        raise HTTPException(status_code=404, detail="api key not found")
+    return Response(status_code=204)

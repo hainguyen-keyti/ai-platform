@@ -1,4 +1,6 @@
+import hashlib
 import hmac
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -66,6 +68,37 @@ def current_user(authorization: str = Header(default="")) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="unknown user")
     user["token"] = token
+    return user
+
+
+API_KEY_PREFIX = "aip_"
+
+
+def hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def new_api_key() -> str:
+    return API_KEY_PREFIX + secrets.token_urlsafe(32)
+
+
+def api_key_user(authorization: str = Header(default="")) -> dict:
+    """The owner of a live API key. Only /v1 depends on this; every other route takes a login JWT,
+    which an API key never decodes as."""
+    key = _bearer(authorization)
+    if not key.startswith(API_KEY_PREFIX):
+        raise HTTPException(status_code=401, detail="an api key is required")
+    with db() as conn:
+        found = one(conn, "SELECT id, user_id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL",
+                    (hash_api_key(key),))
+        if not found:
+            raise HTTPException(status_code=401, detail="unknown or revoked api key")
+        conn.execute("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?", (found["id"],))
+        user = one(conn, "SELECT * FROM users WHERE id = ?", (found["user_id"],))
+        if user:
+            user = refill_if_due(conn, user)
+    if not user:
+        raise HTTPException(status_code=401, detail="unknown user")
     return user
 
 
