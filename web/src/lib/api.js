@@ -1,4 +1,5 @@
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
+export const apiBase = BASE
 
 let token = localStorage.getItem('token') || null
 
@@ -56,6 +57,9 @@ export const api = {
   providers: () => request('GET', '/providers'),
   media: () => request('GET', '/media'),
   deleteMedia: (id) => request('DELETE', `/media/${id}`),
+  apiKeys: () => request('GET', '/auth/api-keys'),
+  createApiKey: (name) => request('POST', '/auth/api-keys', { name }),
+  revokeApiKey: (id) => request('DELETE', `/auth/api-keys/${id}`),
 }
 
 export async function mediaBlobUrl(id) {

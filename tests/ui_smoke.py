@@ -22,6 +22,7 @@ import re
 import struct
 import sys
 import time
+import urllib.error
 import urllib.request
 import zipfile
 import zlib
@@ -1733,6 +1734,82 @@ def main():
                                            for (width, lang), s in sizes.items()), repr(sizes))
         except Exception as exc:
             record(videos_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        # The API page (2026-10-09): a key is made, shown once, listed by its prefix only, works on /v1,
+        # survives a revoke that is dismissed, and stops working once a revoke is confirmed.
+        def on_v1(key):
+            asked = urllib.request.Request(API_URL + "/v1/images/not-a-request",
+                                           headers={"Authorization": "Bearer " + key})
+            try:
+                with urllib.request.urlopen(asked, timeout=20) as resp:
+                    return resp.status
+            except urllib.error.HTTPError as exc:
+                return exc.code
+
+        api_page_check = "the API page makes a key, shows it once, lists it by its prefix, and revokes it on confirm"
+        phone_key_check = "on a phone the API page fits, the new key wrapped inside it"
+        try:
+            page.click("nav button:has-text('API')", timeout=5000)
+            page.wait_for_selector("[data-testid=key-name]", timeout=10000)
+            faint_texts(page, "the API page, no key yet", faint, texts_on)
+            page.fill("[data-testid=key-name]", "smoke key")
+            page.click("[data-testid=key-create]")
+            page.wait_for_selector("[data-testid=new-key]", timeout=10000)
+            key = page.locator("[data-testid=new-key]").inner_text().strip()
+            row = page.locator("[data-testid=key-row]", has_text="smoke key")
+            row_text = row.inner_text() if row.count() == 1 else ""
+            shot(page, "17-api-key-made")
+            faint_texts(page, "the API page, a key just made", faint, texts_on)
+            works = on_v1(key) if key.startswith("aip_") else None
+
+            pocket = browser.new_context(viewport={"width": 390, "height": 844})
+            pocket.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', 'en');".format(token))
+            try:
+                handset = pocket.new_page()
+                handset.on("console", heard(errors))
+                handset.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+                handset.click("nav button:has-text('API')", timeout=20000)
+                handset.wait_for_selector("[data-testid=key-name]", timeout=10000)
+                handset.fill("[data-testid=key-name]", "phone key")
+                handset.click("[data-testid=key-create]")
+                handset.wait_for_selector("[data-testid=new-key]", timeout=10000)
+                fit = handset.evaluate("""() => {
+                    const shown = document.querySelector('[data-testid=new-key]').getBoundingClientRect();
+                    return {screen: window.innerWidth, page: document.scrollingElement.scrollWidth,
+                            left: Math.round(shown.left), right: Math.round(shown.right)};
+                }""")
+                shot(handset, "17b-api-key-phone")
+            finally:
+                pocket.close()
+            record(phone_key_check, fit["page"] <= fit["screen"] and fit["left"] >= 0 and fit["right"] <= fit["screen"],
+                   "{}".format(fit))
+
+            page.click("nav button:has-text('chat')")
+            page.click("nav button:has-text('API')")
+            page.wait_for_selector("[data-testid=key-row]", timeout=10000)
+            shown_later = key in page.locator("main").inner_text()
+            page.once("dialog", lambda d: d.dismiss())
+            page.locator("[data-testid=key-row]", has_text="smoke key").locator("[data-testid=key-revoke]").click()
+            page.wait_for_timeout(800)
+            kept = page.locator("[data-testid=key-row]", has_text="smoke key").count() == 1 and on_v1(key) == 404
+            page.once("dialog", lambda d: d.accept())
+            page.locator("[data-testid=key-row]", has_text="smoke key").locator("[data-testid=key-revoke]").click()
+            page.wait_for_selector("[data-testid=key-row]:has-text('smoke key')", state="detached", timeout=10000)
+            after = on_v1(key)
+            record(api_page_check,
+                   key.startswith("aip_") and len(key) >= 40 and key[:12] in row_text and key not in row_text
+                   and works == 404 and not shown_later and kept and after == 401,
+                   "key {}..., row {!r}, on /v1 {}, shown again {}, kept on dismiss {}, after revoke {}".format(
+                       key[:6], row_text[:60], works, shown_later, kept, after))
+        except Exception as exc:
+            shot(page, "17-api-failure")
+            for check in (api_page_check, phone_key_check):
+                if not any(name == check for name, _, _ in steps):
+                    record(check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            # The steps after this one work in the chat.
+            page.click("nav button:has-text('chat')", timeout=5000)
+            page.wait_for_selector("[data-testid=provider-select]", timeout=10000)
 
         # Each faint text once, with the number of screens it was seen on.
         kinds = {}

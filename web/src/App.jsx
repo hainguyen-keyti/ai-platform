@@ -4,6 +4,7 @@ import { LanguageProvider, useStrings } from './lib/strings.jsx'
 import Login from './pages/Login.jsx'
 import Chat from './pages/Chat.jsx'
 import Gallery from './pages/Gallery.jsx'
+import ApiKeys from './pages/ApiKeys.jsx'
 
 function Shell() {
   const { t, lang, setLang } = useStrings()
@@ -28,15 +29,15 @@ function Shell() {
 
   return (
     <div className="flex flex-col h-full">
-      <nav className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b bg-white px-4 py-2 text-sm sm:gap-x-4">
+      <nav className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-white px-2 py-2 text-sm sm:gap-x-4 sm:px-4">
         <span className="hidden font-semibold sm:inline">{t.appName}</span>
-        {['chat', 'gallery'].map((v) => (
+        {['chat', 'gallery', 'api'].map((v) => (
           <button key={v} onClick={() => { setView(v); if (v === 'chat') setChatTaps((n) => n + 1) }}
             className={view === v ? 'font-medium underline' : 'text-slate-500'}>
             {t[v]}
           </button>
         ))}
-        <div className="ml-auto flex items-center gap-x-3 sm:gap-x-4">
+        <div className="ml-auto flex items-center gap-x-2 sm:gap-x-4">
           <span className="text-slate-500">
             <span className="hidden sm:inline">{user.email} · </span>{t.left(user.quota_remaining)}
           </span>
@@ -51,7 +52,7 @@ function Shell() {
       <main className="flex-1 min-h-0">
         {view === 'chat'
           ? <Chat chatTaps={chatTaps} onQuotaSpent={() => api.me().then(setUser).catch(() => {})} />
-          : <Gallery />}
+          : view === 'gallery' ? <Gallery /> : <ApiKeys />}
       </main>
     </div>
   )
