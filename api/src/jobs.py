@@ -68,7 +68,7 @@ def _history(conn, conversation_id):
 
 
 def create_job(user, provider, feature, payload, conversation_id=None,
-               user_message=None, title=None, reference_media_id=None, media_id=None):
+               user_message=None, title=None, reference_media_id=None, media_id=None, upload=None):
     """Insert a job and everything that must land with it, in one transaction.
 
     The single credit is taken here. Every later transition out of a live state
@@ -131,10 +131,22 @@ def create_job(user, provider, feature, payload, conversation_id=None,
                     (conversation_id, user["id"], provider, (title or "New chat")[:80]),
                 )
 
+            message_id = None
             if user_message:
+                message_id = uuid.uuid4().hex
                 conn.execute(
                     "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'user', ?)",
-                    (uuid.uuid4().hex, conversation_id, user_message),
+                    (message_id, conversation_id, user_message),
+                )
+
+            # A picture the person sent: kept as their media on their own message, read by the worker.
+            if upload:
+                payload["reference_filename"] = upload["filename"]
+                conn.execute(
+                    "INSERT INTO media (id, user_id, conversation_id, message_id, provider, type, prompt,"
+                    " filename, metadata) VALUES (?, ?, ?, ?, ?, 'image', ?, ?, ?)",
+                    (uuid.uuid4().hex, user["id"], conversation_id, message_id, provider,
+                     payload.get("prompt"), upload["filename"], json.dumps(upload["metadata"])),
                 )
 
             if feature == "chat":

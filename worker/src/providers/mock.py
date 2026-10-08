@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import io
 import struct
 import time
@@ -213,10 +214,20 @@ class MockProvider(BaseProvider):
         thread = self._thread(thread_url)
         self.last_cancelled_thread = thread
         self._pace()
+        if BROKEN_PHRASE in prompt.lower():
+            return GenerationResult.failure("mock provider showed its error banner", kind="provider_error")
+        # Says what reached it, so the gate can tell the exact picture a person sent was handed over.
+        seen = ""
+        if reference_filename:
+            reference = self.media_path / reference_filename
+            if not reference.is_file():
+                return GenerationResult.failure("the reference picture is missing", kind="provider_error")
+            blob = reference.read_bytes()
+            seen = " with reference {} bytes sha256 {}".format(len(blob), hashlib.sha256(blob).hexdigest()[:16])
         self._phase("picture appeared")
         return GenerationResult(
             success=True, thread_url=thread,
-            text="mock image for: {}".format(prompt.strip()[:200]),
+            text="mock image for: {}{}".format(prompt.strip()[:200], seen),
             media=[self._store(solid_png(64, 64, (220, 60, 60)), ".png", "image", prompt)],
         )
 

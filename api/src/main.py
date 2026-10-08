@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.db.client import init_db
-from src.routes import admin, auth, chat, conversations, image, internal, media, video
+from src.routes import admin, auth, chat, conversations, image, internal, media, v1, video
 
 
 @asynccontextmanager
@@ -25,7 +25,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for module in (auth, conversations, chat, image, video, media, admin, internal):
+for module in (auth, conversations, chat, image, video, media, admin, internal, v1):
     app.include_router(module.router)
 
 
