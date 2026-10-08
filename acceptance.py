@@ -353,6 +353,15 @@ def jpeg_head(width, height):
             + b"\xff\xc0\x00\x11\x08" + struct.pack(">HH", height, width) + b"\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01")
 
 
+def jpeg_hiding(width, height):
+    """The re-review's JPEG (2026-10-09): FF 00 and two bytes a decoder skips as stray, then an APP1 the
+    decoder skips whole but which holds an 8x8 frame, then the real frame of this size."""
+    tail = b"\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+    fake = b"\xff\xc0\x00\x11\x08" + struct.pack(">HH", 8, 8) + tail
+    return (b"\xff\xd8\xff\x00" + struct.pack(">H", 6) + b"\xff\xe1" + struct.pack(">H", 2 + len(fake)) + fake
+            + b"\xff\xc0\x00\x11\x08" + struct.pack(">HH", height, width) + tail + b"\x11" * 64 + b"\xff\xd9")
+
+
 def webp_lossless(width, height):
     """A WEBP whose VP8L header gives this size."""
     bits = (width - 1) | ((height - 1) << 14)
@@ -585,6 +594,9 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
         "a wave file": ({"prompt": "draw it"},
                         ("sound.webp", "image/webp", b"RIFF" + struct.pack("<I", 36) + b"WAVEfmt " + b"\x00" * 28), 415),
         "a png with no header": ({"prompt": "draw it"}, ("cut.png", "image/png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 20), 415),
+        "a jpeg hiding 9000x9000 behind FF 00": ({"prompt": "draw it"},
+                                                 ("hidden.jpg", "image/jpeg", jpeg_hiding(9000, 9000)), 415),
+        "a jpeg of fill bytes": ({"prompt": "draw it"}, ("fill.jpg", "image/jpeg", b"\xff\xd8" + b"\xff" * 200000), 415),
     }
     answered = {name: http_form(api + "/v1/images", fields, {"image": picture}, token=akey)[0]
                 for name, (fields, picture, _) in sent.items()}

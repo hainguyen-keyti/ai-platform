@@ -18,34 +18,44 @@ router = APIRouter(prefix="/v1", tags=["v1"])
 MAX_PICTURE_BYTES = 10 * 1024 * 1024
 # The whole request: the picture, the prompt and the form's own framing.
 MAX_REQUEST_BYTES = MAX_PICTURE_BYTES + 256 * 1024
-# Past the limit the rest is read and dropped so the caller gets its 413; past this it is cut off.
-MAX_DRAIN_BYTES = 64 * 1024 * 1024
+# A body a little over the limit is read to its end and dropped, so its sender can read the 413
+# (answered unread, uvicorn closes on a sender still writing); one declared far over it is refused unread.
+MAX_DRAIN_BYTES = 16 * 1024 * 1024
 # A small file can claim a huge picture, which the shared browser would then try to decode.
 MAX_SIDE, MAX_PIXELS = 16384, 50_000_000
 STATUSES = {"pending": "queued"}
 JPEG_FRAMES = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+# Segments a decoder reads past before its frame: DHT, DAC, DQT, DRI, COM and APPn. Anything else
+# (FF 00 above all, which a decoder skips as stray bytes) could make this walk and a decoder disagree.
+JPEG_SEGMENTS = {0xC4, 0xCC, 0xDB, 0xDD, 0xFE} | set(range(0xE0, 0xF0))
+JPEG_STEPS = 4096
 
 
 class RequestLimit:
-    """Caps a request to /v1/images before anything keeps it, with or without a key: over the limit,
-    the rest is dropped as it arrives and the answer is 413."""
+    """Caps a request to /v1/images before anything keeps it, with or without a key: whether its length
+    is declared or not, a body over the limit is refused with 413 and none of it is kept."""
 
     def __init__(self, app):
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["path"] != "/v1/images":
+        path, root = scope.get("path", ""), scope.get("root_path", "")
+        if root and path.startswith(root):
+            path = path[len(root):]
+        if scope["type"] != "http" or path != "/v1/images":
             return await self.app(scope, receive, send)
         declared = dict(scope.get("headers") or []).get(b"content-length", b"")
-        too_long = declared.isdigit() and int(declared) > MAX_REQUEST_BYTES
+        length = int(declared) if declared.isdigit() else None
         seen = 0
 
         async def limited():
             nonlocal seen
+            if length is not None and length > MAX_DRAIN_BYTES:
+                raise HTTPException(status_code=413, detail="the request is over 10 MB")
             message = await receive()
             if message["type"] == "http.request":
                 seen += len(message.get("body", b""))
-                if too_long or seen > MAX_REQUEST_BYTES:
+                if seen > MAX_REQUEST_BYTES or (length or 0) > MAX_REQUEST_BYTES:
                     more = message.get("more_body", False)
                     while more and seen <= MAX_DRAIN_BYTES:
                         message = await receive()
@@ -66,23 +76,23 @@ def _picture_size(picture: bytes):
         return None
     if picture.startswith(b"\xff\xd8\xff"):
         at = 2
-        while at + 4 <= len(picture):
-            if picture[at] != 0xFF:
+        for _ in range(JPEG_STEPS):
+            if at + 4 > len(picture) or picture[at] != 0xFF:
                 return None
             marker = picture[at + 1]
             if marker == 0xFF:
                 at += 1
-            elif marker == 0x01 or 0xD0 <= marker <= 0xD8:
+            elif marker == 0x01 or 0xD0 <= marker <= 0xD7:
                 at += 2
-            elif marker in (0xD9, 0xDA):
-                return None
             elif marker in JPEG_FRAMES:
                 if at + 9 > len(picture):
                     return None
                 height, width = struct.unpack(">HH", picture[at + 5:at + 9])
                 return ".jpg", width, height
-            else:
+            elif marker in JPEG_SEGMENTS:
                 at += 2 + struct.unpack(">H", picture[at + 2:at + 4])[0]
+            else:
+                return None
         return None
     if picture[:4] == b"RIFF" and picture[8:12] == b"WEBP" and len(picture) >= 30:
         chunk = picture[12:16]

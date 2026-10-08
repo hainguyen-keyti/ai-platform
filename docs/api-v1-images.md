@@ -98,17 +98,18 @@ curl -H "Authorization: Bearer $AIP_API_KEY" -o fox-night.png \
 
 ## Errors
 
-Every error answers JSON with a `detail`: a sentence, or for a missing or malformed field (`422`) a
-list naming the field. A refused request costs nothing and keeps nothing.
+Every error answers JSON with a `detail`: a sentence, or, when a field is missing or of the wrong
+kind, a list naming the field. A refused request costs nothing and keeps nothing.
 
 | Status | When |
 |---|---|
+| `400` | The form itself cannot be read |
 | `401` | No key, an unknown or revoked key, or a web login token |
 | `402` | No credit left today |
 | `404` | No such request or picture, it is someone else's, or it was not made through `/v1` |
-| `413` | The request is over 10 MB (checked before the key), or the picture is over 10 MB, 16384 pixels a side or 50 megapixels |
+| `413` | The whole request is over 10 MB and 256 KB (checked before the key, as it arrives), or the picture is over 10 MB, 16384 pixels a side or 50 megapixels |
 | `415` | The file is not a PNG, JPEG or WEBP picture whose size can be read (an empty file too) |
-| `422` | No prompt, a prompt that is empty or too long, or `image` sent as text instead of a file |
+| `422` | No prompt or a prompt too long (a list), a prompt of only spaces (a sentence), or `image` sent as text instead of a file (a list) |
 | `503` | ChatGPT is not available right now; try again later |
 
 ## A ready example
