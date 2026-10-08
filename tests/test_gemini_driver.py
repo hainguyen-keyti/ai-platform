@@ -1129,6 +1129,32 @@ def main():
            and (result.thread_url or "").endswith("/app/0123456789abcdef"),
            "success {} text {!r} thread {}".format(result.success, result.text, result.thread_url))
 
+    # Job b55dcf5d, 2026-10-01: a video script turn came back as this sentence, stored and charged.
+    # Measured 2026-10-08 in its thread: its markup and Gemini's stored record are an ordinary
+    # answer's; the sentence is the only sign.
+    failure_sentence = "I encountered an error doing what you asked. Could you try again?"
+    for answer, name in ((failure_sentence, "its whole answer"),
+                         ("\n  I encountered an error doing what you asked.\n Could you try again?  \n",
+                          "its whole answer with spaces and line breaks around it")):
+        page = Page(clock)
+        page.answer, page.replies = answer, [stream_ok]
+        result = provider_on(page, off())._run("hello")
+        record("a turn whose answer is Gemini's own failure sentence ({}) fails as a provider error "
+               "and hands back its thread".format(name),
+               not result.success and result.error_kind == "provider_error" and not result.text
+               and (result.thread_url or "").endswith("/app/0123456789abcdef"),
+               "success {} kind {} text {!r} thread {} error {!r}".format(
+                   result.success, result.error_kind, result.text, result.thread_url, result.error))
+
+    quoted = 'Gemini sometimes says "{}" when a tool fails; asking again usually works.'.format(
+        failure_sentence)
+    page = Page(clock)
+    page.answer, page.replies = quoted, [stream_ok]
+    result = provider_on(page, off())._run("What does Gemini's error sentence mean?")
+    record("an answer that quotes the failure sentence among other words is returned as words",
+           result.success and result.text == quoted,
+           "success {} text {!r} error {!r}".format(result.success, result.text, result.error))
+
     def run_on(page, settings, prompt="hello", **kwargs):
         """(what happened, result): 'blocked forever', 'refused: kind', 'crashed: ...', or 'returned'."""
         try:
@@ -1797,6 +1823,15 @@ def main():
            and took < 120,
            "{} after {:.0f}s text {!r} media {}".format(what, took, result and result.text,
                                                        result and result.media))
+
+    what, result, p, page, took = video_turn(after=40, url="", words=failure_sentence)
+    record("a video turn whose words after the note are Gemini's failure sentence fails as a "
+           "provider error and hands back its thread",
+           what == "returned" and not result.success and result.error_kind == "provider_error"
+           and not result.text and (result.thread_url or "").endswith("/app/0123456789abcdef"),
+           "{} after {:.0f}s: success {} kind {} text {!r} thread {}".format(
+               what, took, result and result.success, result and result.error_kind,
+               result and result.text, result and result.thread_url))
 
     page = Page(clock)
     page.answer, page.replies = None, [stream_ok]
