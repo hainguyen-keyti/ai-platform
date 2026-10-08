@@ -15,6 +15,7 @@ launched with the cloakbrowser venv.
 """
 
 import argparse
+import hashlib
 import io
 import json
 import os
@@ -22,6 +23,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -29,6 +31,7 @@ import time
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -78,7 +81,26 @@ CHECKS = (
     "health shows code version and pacing",
     "the provider's error banner is recognised by shape",
     "grok settles on words or a picture, never on an empty turn",
+    "an api key is shown once, listed without its secret, stored as a hash, and revoked",
+    "an api key works only on /v1/images, and a login token not there",
+    "a person keeps at most ten live api keys",
+    "a /v1 request with a prompt ends with a picture to download",
+    "a /v1 request with a prompt and a picture hands the worker exactly that picture",
+    "a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused "
+    "uncharged, nothing kept",
+    "a /v1 request refused for quota keeps no picture",
+    "a /v1 request and its pictures reach only their owner",
+    "a failed /v1 request gives its credit back once",
 )
+
+# The /v1 checks that run jobs; the real requests through /v1 with a key prove them on the site.
+V1_JOB_CHECKS = (
+    "a /v1 request with a prompt ends with a picture to download",
+    "a /v1 request with a prompt and a picture hands the worker exactly that picture",
+    "a /v1 request and its pictures reach only their owner",
+    "a failed /v1 request gives its credit back once",
+)
+V1_REAL_SKIP = "spends real chatgpt turns; proven by the plan's real requests through /v1 with a key"
 
 # Checks a real provider cannot be asked to do, by name, with the reason the
 # gate prints. Grok's account is on the free tier and allows seven turns a day,
@@ -283,6 +305,51 @@ def http_bytes(url, token, timeout=30):
         return 0, "{}: {}".format(type(exc).__name__, exc).encode()
 
 
+def http_form(url, fields, files=None, token=None, timeout=60):
+    """POST multipart/form-data: fields {name: text}, files {name: (filename, content type, bytes)}."""
+    boundary = "acceptance-" + os.urandom(12).hex()
+    parts = []
+    for name, value in fields.items():
+        parts.append('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n'.format(
+            boundary, name).encode() + value.encode() + b"\r\n")
+    for name, (filename, ctype, blob) in (files or {}).items():
+        parts.append('--{}\r\nContent-Disposition: form-data; name="{}"; filename="{}"\r\n'
+                     'Content-Type: {}\r\n\r\n'.format(boundary, name, filename, ctype).encode()
+                     + blob + b"\r\n")
+    req = urllib.request.Request(url, data=b"".join(parts) + "--{}--\r\n".format(boundary).encode(),
+                                 method="POST")
+    req.add_header("Content-Type", "multipart/form-data; boundary=" + boundary)
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode()
+            return resp.status, (json.loads(raw) if raw.strip() else None)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode()
+        try:
+            return exc.code, (json.loads(raw) if raw.strip() else None)
+        except ValueError:
+            return exc.code, raw
+    except Exception as exc:
+        return 0, "{}: {}".format(type(exc).__name__, exc)
+
+
+def tiny_png(rgb):
+    """A real 8x8 PNG of one colour, standard library only."""
+    raw = b"".join(b"\x00" + bytes(rgb) * 8 for _ in range(8))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+# Signed as their kind, which is all the api reads of them.
+TINY_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"\x11" * 64 + b"\xff\xd9"
+TINY_WEBP = b"RIFF" + struct.pack("<I", 4 + 8 + 10) + b"WEBP" + b"VP8L" + struct.pack("<I", 10) + b"\x2f" * 10
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -376,6 +443,238 @@ def tail(path, lines=15):
     return "\n".join("      | " + line for line in content[-lines:]) or "      | (empty)"
 
 
+def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
+    """API keys and /v1/images. token: the first account's login (its admin); btoken: another person's."""
+    def files_now():
+        return set(os.listdir(media_dir))
+
+    def quota_of(login):
+        return (http("GET", api + "/auth/me", token=login)[1] or {}).get("quota_remaining")
+
+    def new_key(login, name):
+        status, body = http("POST", api + "/auth/api-keys", {"name": name}, token=login)
+        return status, (body if isinstance(body, dict) else {})
+
+    def keys_of(login):
+        status, body = http("GET", api + "/auth/api-keys", token=login)
+        return (body or {}).get("items") or [] if status == 200 and isinstance(body, dict) else []
+
+    def poll_v1(request_id, key):
+        deadline, body = time.time() + job_timeout, {}
+        while time.time() < deadline:
+            status, body = http("GET", "{}/v1/images/{}".format(api, request_id), token=key)
+            if status != 200 or not isinstance(body, dict):
+                return {"status": "unreadable {} {}".format(status, body)}
+            if body.get("status") in ("done", "failed", "cancelled"):
+                return body
+            time.sleep(0.4)
+        return body if isinstance(body, dict) else {}
+
+    nowhere = api + "/v1/images/not-a-request"
+
+    # A key's life: shown once, listed without it, stored as its SHA-256 only, used, revoked.
+    status, made = new_key(token, "gate key")
+    key, key_id = made.get("key") or "", made.get("id")
+    listed = keys_of(token)
+    mine = [i for i in listed if i.get("id") == key_id]
+    try:
+        with sqlite3.connect("file:{}?mode=ro".format(db_path), uri=True) as conn:
+            stored = [tuple(r) for r in conn.execute("SELECT * FROM api_keys")]
+    except sqlite3.Error as exc:
+        stored = [("unreadable", str(exc))]
+    in_plain = bool(key) and any(key in str(v) for row in stored for v in row)
+    as_hash = bool(key) and any(v == hashlib.sha256(key.encode()).hexdigest() for row in stored for v in row)
+    used = http("GET", nowhere, token=key)[0] if key else None
+    last_used = [i.get("last_used_at") for i in keys_of(token) if i.get("id") == key_id]
+    stranger = http("DELETE", "{}/auth/api-keys/{}".format(api, key_id), token=btoken)[0] if key_id else None
+    revoked = http("DELETE", "{}/auth/api-keys/{}".format(api, key_id), token=token)[0] if key_id else None
+    gone = key_id is not None and not [i for i in keys_of(token) if i.get("id") == key_id]
+    refused = http("GET", nowhere, token=key)[0] if key else None
+    again = http("DELETE", "{}/auth/api-keys/{}".format(api, key_id), token=token)[0] if key_id else None
+    if (status == 201 and key.startswith("aip_") and len(key) >= 40 and len(mine) == 1
+            and "key" not in mine[0] and key not in json.dumps(listed) and stored and not in_plain
+            and as_hash and used == 404 and last_used and last_used[0] and stranger == 404
+            and revoked == 204 and gone and refused == 401 and again == 404):
+        c["an api key is shown once, listed without its secret, stored as a hash, and revoked"].passed(
+            "made {}, listed once without it, stored as its sha256, used (404 on no request), another "
+            "person's revoke 404, revoked 204, then 401, revoked again 404".format(status))
+    else:
+        c["an api key is shown once, listed without its secret, stored as a hash, and revoked"].failed(
+            "made {} {}..., listed {}, in plain {}, as hash {}, used {}, last used {}, stranger {}, "
+            "revoked {}, gone {}, then {}, again {}".format(
+                status, key[:6], len(mine), in_plain, as_hash, used, last_used, stranger, revoked, gone,
+                refused, again))
+
+    # A key opens /v1/images and nothing else; a login token does not open /v1.
+    skey = new_key(token, "scope key")[1].get("key") or ""
+    elsewhere = {path: http("GET", api + path, token=skey)[0] if skey else None
+                 for path in ("/auth/me", "/conversations", "/auth/api-keys", "/media", "/providers",
+                              "/admin/usage")}
+    elsewhere["POST /auth/api-keys"] = http("POST", api + "/auth/api-keys", {"name": "minted by a key"},
+                                             token=skey)[0] if skey else None
+    on_v1 = {"a key": http("GET", nowhere, token=skey)[0] if skey else None,
+             "a login token": http("GET", nowhere, token=token)[0],
+             "nothing": http("GET", nowhere)[0],
+             "a forged key": http("GET", nowhere, token="aip_" + "A" * 43)[0],
+             "a login token sending": http_form(api + "/v1/images", {"prompt": "no place for a jwt"},
+                                                token=token)[0]}
+    if (skey and all(v == 401 for v in elsewhere.values()) and on_v1["a key"] == 404
+            and all(v == 401 for k, v in on_v1.items() if k != "a key")):
+        c["an api key works only on /v1/images, and a login token not there"].passed(
+            "a key: /v1 404 on no request, 401 on {} web routes; a login token, none, a forged key: 401 "
+            "on /v1".format(len(elsewhere)))
+    else:
+        c["an api key works only on /v1/images, and a login token not there"].failed(
+            "key made {}, elsewhere {}, on /v1 {}".format(bool(skey), elsewhere, on_v1))
+
+    # At most ten live keys a person; a revoked one frees its place.
+    made_b = [new_key(btoken, "b key {}".format(n)) for n in range(max(0, 10 - len(keys_of(btoken))))]
+    eleventh = new_key(btoken, "one too many")[0]
+    freed = http("DELETE", "{}/auth/api-keys/{}".format(api, made_b[0][1].get("id")), token=btoken)[0] \
+        if made_b and made_b[0][1].get("id") else None
+    refilled, bkey_made = new_key(btoken, "b key again")
+    bkey = bkey_made.get("key") or ""
+    if (made_b and all(s == 201 for s, _ in made_b) and eleventh == 409 and freed == 204
+            and refilled == 201 and len(keys_of(btoken)) == 10):
+        c["a person keeps at most ten live api keys"].passed(
+            "ten made, the eleventh 409, one revoked, then one more 201")
+    else:
+        c["a person keeps at most ten live api keys"].failed(
+            "made {}, eleventh {}, revoked {}, then {}, live {}".format(
+                [s for s, _ in made_b], eleventh, freed, refilled, len(keys_of(btoken))))
+
+    # Refused before anything is charged or kept.
+    akey = new_key(token, "job key")[1].get("key") or ""
+    png = tiny_png((200, 40, 90))
+    files_before, quota_before = files_now(), quota_of(token)
+    sent = {
+        "a picture alone": ({}, ("a.png", "image/png", png), 422),
+        "a blank prompt": ({"prompt": "   "}, ("a.png", "image/png", png), 422),
+        "text named .png": ({"prompt": "draw it"}, ("photo.png", "image/png", b"hello, no picture here"), 415),
+        "a gif": ({"prompt": "draw it"}, ("a.gif", "image/gif", b"GIF89a" + b"\x01" * 40), 415),
+        "over 10 MB": ({"prompt": "draw it"},
+                       ("big.png", "image/png", b"\x89PNG\r\n\x1a\n" + b"\x00" * (10 * 1024 * 1024)), 413),
+    }
+    answered = {name: http_form(api + "/v1/images", fields, {"image": picture}, token=akey)[0]
+                for name, (fields, picture, _) in sent.items()}
+    files_after, quota_after = files_now(), quota_of(token)
+    if (akey and answered == {name: want for name, (_, _, want) in sent.items()}
+            and files_after == files_before and quota_after == quota_before):
+        c["a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused "
+          "uncharged, nothing kept"].passed("{}; credits {} and files unchanged".format(answered, quota_after))
+    else:
+        c["a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused "
+          "uncharged, nothing kept"].failed("{}; credits {} -> {}; files added {}".format(
+              answered, quota_before, quota_after, sorted(files_after - files_before)[:3]))
+
+    # No credit: refused, and the picture sent with it is not kept.
+    me_b = http("GET", api + "/auth/me", token=btoken)[1] or {}
+    b_quota = me_b.get("quota_remaining")
+    emptied = http("PUT", "{}/admin/users/{}/quota".format(api, me_b.get("id")), {"quota_remaining": 0},
+                   token=token)[0]
+    files_before = files_now()
+    broke = http_form(api + "/v1/images", {"prompt": "a picture with no credit left"},
+                      {"image": ("b.png", "image/png", png)}, token=bkey)[0]
+    files_after, still_none = files_now(), quota_of(btoken)
+    restored = http("PUT", "{}/admin/users/{}/quota".format(api, me_b.get("id")),
+                    {"quota_remaining": b_quota}, token=token)[0] if b_quota is not None else None
+    if bkey and emptied == 200 and broke == 402 and files_after == files_before and still_none == 0 \
+            and restored == 200:
+        c["a /v1 request refused for quota keeps no picture"].passed("402 with no credit, no file kept")
+    else:
+        c["a /v1 request refused for quota keeps no picture"].failed(
+            "key {}, emptied {}, sent {}, files added {}, credits {}, restored {}".format(
+                bool(bkey), emptied, broke, sorted(files_after - files_before)[:3], still_none, restored))
+
+    if real:
+        return
+
+    # A prompt alone: queued at once, then done with a picture that downloads as its bytes.
+    q0 = quota_of(token)
+    status, sent_one = http_form(api + "/v1/images", {"prompt": "a plain blue square"}, token=akey)
+    rid = (sent_one or {}).get("id") if isinstance(sent_one, dict) else None
+    final = poll_v1(rid, akey) if rid else {}
+    images = final.get("images") or []
+    downloads = []
+    for item in images:
+        dstatus, blob = http_bytes(api + (item.get("url") or "/nowhere"), akey)
+        downloads.append((dstatus, len(blob), blob[:8] == b"\x89PNG\r\n\x1a\n", item.get("bytes"),
+                          item.get("content_type"),
+                          (item.get("url") or "").startswith("/v1/images/{}/files/".format(rid))))
+    q1 = quota_of(token)
+    if (status == 202 and (sent_one or {}).get("status") == "queued" and final.get("status") == "done"
+            and images and all(d[0] == 200 and d[1] == d[3] and d[2] and d[4] == "image/png" and d[5]
+                               for d in downloads) and q1 == q0 - 1):
+        c["a /v1 request with a prompt ends with a picture to download"].passed(
+            "202 queued, then done with {} picture(s), downloaded {} bytes, one credit".format(
+                len(images), [d[1] for d in downloads]))
+    else:
+        c["a /v1 request with a prompt ends with a picture to download"].failed(
+            "sent {} {}, then {} {}, downloads {}, credits {} -> {}".format(
+                status, sent_one, final.get("status"), final.get("error"), downloads, q0, q1))
+
+    # A prompt and a picture of each kind: the worker gets exactly those bytes, and the web shows the
+    # picture on the person's own message.
+    handed, upload_id, picture_rid = [], None, None
+    for name, ctype, blob in (("ref.png", "image/png", tiny_png((10, 200, 60))),
+                              ("ref.jpg", "image/jpeg", TINY_JPEG), ("ref.webp", "image/webp", TINY_WEBP)):
+        pstatus, posted = http_form(api + "/v1/images", {"prompt": "the same subject at night"},
+                                    {"image": (name, ctype, blob)}, token=akey)
+        prid = (posted or {}).get("id") if isinstance(posted, dict) else None
+        done = poll_v1(prid, akey) if prid else {}
+        want = "reference {} bytes sha256 {}".format(len(blob), hashlib.sha256(blob).hexdigest()[:16])
+        job = http("GET", "{}/jobs/{}".format(api, prid), token=token)[1] or {} if prid else {}
+        conv = (http("GET", "{}/conversations/{}".format(api, job.get("conversation_id")), token=token)[1]
+                or {}) if job.get("conversation_id") else {}
+        asked = [m for m in conv.get("messages") or [] if m.get("role") == "user"]
+        shown = (asked[0].get("media") or []) if asked else []
+        kept = http_bytes("{}/media/{}/file".format(api, shown[0]["id"]), token)[1] if shown else b""
+        if shown and upload_id is None:
+            upload_id, picture_rid = shown[0]["id"], prid
+        handed.append((name, pstatus, done.get("status"), want in (done.get("text") or ""), len(shown),
+                       kept == blob, len(done.get("images") or [])))
+    if all(h[1] == 202 and h[2] == "done" and h[3] and h[4] == 1 and h[5] and h[6] >= 1 for h in handed):
+        c["a /v1 request with a prompt and a picture hands the worker exactly that picture"].passed(
+            "png, jpeg, webp: each done, the worker got its exact bytes, shown on the person's message")
+    else:
+        c["a /v1 request with a prompt and a picture hands the worker exactly that picture"].failed(
+            "(name, sent, then, exact bytes, on the message, kept same, pictures) {}".format(handed))
+
+    # Only the owner reaches a request, and only its own result pictures through it.
+    result_id = images[0].get("id") if images else None
+    reach = {
+        "another person, the request": http("GET", "{}/v1/images/{}".format(api, rid), token=bkey)[0]
+        if rid else None,
+        "another person, its picture": http_bytes("{}/v1/images/{}/files/{}".format(api, rid, result_id),
+                                                  bkey)[0] if rid and result_id else None,
+        "a picture of another request": http_bytes("{}/v1/images/{}/files/{}".format(api, rid, upload_id),
+                                                   akey)[0] if rid and upload_id else None,
+        "the picture sent, not made": http_bytes("{}/v1/images/{}/files/{}".format(
+            api, picture_rid, upload_id), akey)[0] if picture_rid and upload_id else None,
+    }
+    if all(v == 404 for v in reach.values()):
+        c["a /v1 request and its pictures reach only their owner"].passed(
+            "404 for {}".format(", ".join(reach)))
+    else:
+        c["a /v1 request and its pictures reach only their owner"].failed("{}".format(reach))
+
+    # A request the provider fails gives its credit back, once.
+    q0 = quota_of(token)
+    fstatus, failing = http_form(api + "/v1/images", {"prompt": "a square, " + BROKEN_PHRASE}, token=akey)
+    frid = (failing or {}).get("id") if isinstance(failing, dict) else None
+    ended = poll_v1(frid, akey) if frid else {}
+    q1 = quota_of(token)
+    time.sleep(1.5)
+    q2 = quota_of(token)
+    if fstatus == 202 and ended.get("status") == "failed" and ended.get("error") and q1 == q0 and q2 == q0:
+        c["a failed /v1 request gives its credit back once"].passed(
+            "failed ({}), credits {} -> {} -> {}".format(str(ended.get("error"))[:50], q0, q1, q2))
+    else:
+        c["a failed /v1 request gives its credit back once"].failed(
+            "sent {}, then {} {}, credits {} -> {} -> {}".format(
+                fstatus, ended.get("status"), ended.get("error"), q0, q1, q2))
+
+
 def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, worker_ctl,
                python, restart_api, provider="chatgpt", *, db_path):
     # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
@@ -399,6 +698,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         for name, reason in (REAL_SKIPS.get(provider) or {}).items():
             if name in c:
                 c[name].skip(reason)
+        for name in V1_JOB_CHECKS:
+            c[name].skip(V1_REAL_SKIP)
     stamp = str(int(time.time() * 1000))
     # A plain domain: email-validator rejects reserved suffixes such as .local.
     user_a = "acc-a-{}@aiplatform-acceptance.com".format(stamp)
@@ -1516,6 +1817,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             c["a hold ends by itself"].failed(
                 "held at 3s {}, served again {} after {:.1f}s, then a turn {} {}".format(
                     still_held, back, back_in, after_final.get("status"), after_final.get("error")))
+
+    v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real)
 
     if not real:
         # A served turn afterwards, so the reading below is of a provider that
