@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, apiBase } from '../lib/api.js'
 import { useStrings } from '../lib/strings.jsx'
 
-// The api stores UTC without a zone; read it as UTC so the date is the person's own.
+// The api stores UTC without a zone; read it as UTC so the date is the person's own, month by name.
 function day(stamp, lang) {
-  return new Date(stamp.replace(' ', 'T') + 'Z').toLocaleDateString(lang === 'vi' ? 'vi-VN' : 'en-GB')
+  return new Date(stamp.replace(' ', 'T') + 'Z').toLocaleDateString(lang === 'vi' ? 'vi-VN' : 'en-GB',
+    { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
 export default function ApiKeys() {
@@ -12,9 +13,10 @@ export default function ApiKeys() {
   const [keys, setKeys] = useState(null)
   const [name, setName] = useState('')
   const [made, setMade] = useState(null)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const shownKey = useRef(null)
 
   useEffect(() => { load() }, [])
 
@@ -31,7 +33,7 @@ export default function ApiKeys() {
     if (!name.trim() || busy) return
     setBusy(true)
     setError(null)
-    setCopied(false)
+    setCopied(null)
     try {
       setMade(await api.createApiKey(name.trim()))
       setName('')
@@ -54,12 +56,14 @@ export default function ApiKeys() {
     }
   }
 
+  // Shown once, so a copy the browser refuses must say so, with the key selected to copy by hand.
   async function copy() {
     try {
       await navigator.clipboard.writeText(made.key)
-      setCopied(true)
+      setCopied('ok')
     } catch {
-      setCopied(false)
+      setCopied('failed')
+      if (shownKey.current) window.getSelection()?.selectAllChildren(shownKey.current)
     }
   }
 
@@ -69,40 +73,55 @@ export default function ApiKeys() {
     '  -F "prompt=a red fox in the snow" \\',
     '  -F "image=@photo.png"',
     '',
-    `curl -H "Authorization: Bearer YOUR_KEY" ${apiBase}/v1/images/REQUEST_ID`,
+    'curl -H "Authorization: Bearer YOUR_KEY" \\',
+    `  ${apiBase}/v1/images/REQUEST_ID`,
   ].join('\n')
 
   return (
-    <div className="h-full overflow-y-auto bg-slate-50 p-4 sm:p-6">
-      <div className="mx-auto max-w-2xl space-y-6">
+    <div className="h-full overflow-y-auto bg-slate-50 p-6">
+      <div className="max-w-2xl space-y-6">
         <section>
           <h2 className="text-lg font-semibold">{t.apiKeysTitle}</h2>
-          <p className="mt-1 text-sm text-slate-600">{t.apiKeysIntro}</p>
+          <p className="mt-1 max-w-prose text-sm text-slate-600">{t.apiKeysIntro}</p>
         </section>
 
         {error && <p className="text-sm text-red-700">{error}</p>}
 
-        <form onSubmit={create} className="flex flex-col gap-2 sm:flex-row">
-          <input data-testid="key-name" value={name} onChange={(e) => setName(e.target.value)} maxLength={60}
-            aria-label={t.keyName} placeholder={t.keyNamePlaceholder}
-            className="h-10 min-w-0 flex-1 rounded border bg-white px-3 text-base placeholder:text-slate-500 md:text-sm" />
-          <button data-testid="key-create" type="submit" disabled={!name.trim() || busy}
-            className="h-10 rounded bg-slate-900 px-4 text-sm text-white disabled:opacity-50">
-            {t.createKey}
-          </button>
+        <form onSubmit={create} className="space-y-1">
+          <label htmlFor="key-name" className="block text-sm font-medium">{t.keyName}</label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input id="key-name" data-testid="key-name" value={name} onChange={(e) => setName(e.target.value)}
+              maxLength={60} placeholder={t.keyNamePlaceholder}
+              className="h-10 min-w-0 rounded border border-slate-300 bg-white px-3 text-base placeholder:text-slate-500 sm:flex-1 md:text-sm" />
+            <button data-testid="key-create" type="submit" disabled={!name.trim() || busy}
+              className="h-10 rounded bg-slate-900 px-4 text-sm text-white disabled:opacity-50">
+              {t.createKey}
+            </button>
+          </div>
         </form>
 
         {made && (
-          <div role="status" className="space-y-2 rounded border border-amber-300 bg-amber-50 p-3">
-            <p className="text-sm font-medium text-amber-900">{t.keyShownOnce}</p>
-            <code data-testid="new-key"
-              className="block break-all rounded bg-white px-2 py-1 font-mono text-sm text-slate-900">
+          <div className="space-y-2 rounded border border-amber-300 bg-amber-50 p-3">
+            <p className="text-sm font-medium text-slate-900">{t.newKeyFor(made.name)}</p>
+            <p role="status" className="text-sm text-amber-900">{t.keyShownOnce}</p>
+            <code ref={shownKey} data-testid="new-key"
+              className="block select-all break-all rounded bg-white px-2 py-1 font-mono text-sm text-slate-900">
               {made.key}
             </code>
-            <button type="button" data-testid="copy-key" onClick={copy}
-              className="h-9 rounded border border-amber-300 bg-white px-3 text-sm text-slate-900 hover:bg-amber-100">
-              {copied ? t.copied : t.copy}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button type="button" data-testid="copy-key" onClick={copy}
+                className="h-9 rounded border border-amber-300 bg-white px-3 text-sm text-slate-900 hover:bg-amber-100">
+                {t.copy}
+              </button>
+              <button type="button" data-testid="key-done" onClick={() => setMade(null)}
+                className="h-9 rounded bg-slate-900 px-3 text-sm text-white">
+                {t.keyDone}
+              </button>
+              <span data-testid="copy-result" aria-live="polite"
+                className={`text-sm ${copied === 'failed' ? 'text-red-700' : 'text-slate-700'}`}>
+                {copied === 'ok' ? t.copied : copied === 'failed' ? t.copyFailed : ''}
+              </span>
+            </div>
           </div>
         )}
 
@@ -116,9 +135,11 @@ export default function ApiKeys() {
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{item.name}</p>
                     <p className="text-xs text-slate-600">
-                      <span className="font-mono">{item.prefix}…</span>
-                      {' · '}{t.keyCreated(day(item.created_at, lang))}
-                      {' · '}{item.last_used_at ? t.keyUsed(day(item.last_used_at, lang)) : t.keyNeverUsed}
+                      <span className="whitespace-nowrap font-mono">{item.prefix}…</span>
+                      {' · '}<span className="whitespace-nowrap">{t.keyCreated(day(item.created_at, lang))}</span>
+                      {' · '}<span className="whitespace-nowrap">
+                        {item.last_used_at ? t.keyUsed(day(item.last_used_at, lang)) : t.keyNeverUsed}
+                      </span>
                     </p>
                   </div>
                   <button type="button" data-testid="key-revoke" onClick={() => revoke(item)}
@@ -133,8 +154,9 @@ export default function ApiKeys() {
 
         <section>
           <h3 className="mb-2 text-sm font-semibold">{t.howToCall}</h3>
-          <pre className="overflow-x-auto rounded bg-slate-900 p-3 text-xs text-slate-100">{example}</pre>
-          <p className="mt-2 text-xs text-slate-600">{t.howToCallNote}</p>
+          <pre data-testid="key-example"
+            className="whitespace-pre-wrap break-all rounded bg-slate-900 p-3 text-xs text-slate-100">{example}</pre>
+          <p className="mt-2 max-w-prose text-xs text-slate-600">{t.howToCallNote}</p>
         </section>
       </div>
     </div>

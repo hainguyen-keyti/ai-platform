@@ -39,7 +39,8 @@ function Shell() {
         ))}
         <div className="ml-auto flex items-center gap-x-2 sm:gap-x-4">
           <span className="text-slate-500">
-            <span className="hidden sm:inline">{user.email} · </span>{t.left(user.quota_remaining)}
+            <span className="hidden max-w-[16rem] truncate align-bottom sm:inline-block">{user.email}</span>
+            <span className="hidden sm:inline"> · </span>{t.left(user.quota_remaining)}
           </span>
           <button data-testid="language-switch" type="button"
             onClick={() => setLang(lang === 'vi' ? 'en' : 'vi')}

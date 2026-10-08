@@ -1773,16 +1773,41 @@ def main():
                 handset.fill("[data-testid=key-name]", "phone key")
                 handset.click("[data-testid=key-create]")
                 handset.wait_for_selector("[data-testid=new-key]", timeout=10000)
+                # The design review, 2026-10-09: the name field collapsed to 20px on a phone, and the
+                # example call ran off its box, cut at "http://".
                 fit = handset.evaluate("""() => {
                     const shown = document.querySelector('[data-testid=new-key]').getBoundingClientRect();
+                    const example = document.querySelector('[data-testid=key-example]');
                     return {screen: window.innerWidth, page: document.scrollingElement.scrollWidth,
-                            left: Math.round(shown.left), right: Math.round(shown.right)};
+                            left: Math.round(shown.left), right: Math.round(shown.right),
+                            field: Math.round(document.querySelector('[data-testid=key-name]').getBoundingClientRect().height),
+                            example: example ? example.scrollWidth - example.clientWidth : null};
                 }""")
                 shot(handset, "17b-api-key-phone")
             finally:
                 pocket.close()
-            record(phone_key_check, fit["page"] <= fit["screen"] and fit["left"] >= 0 and fit["right"] <= fit["screen"],
-                   "{}".format(fit))
+            record(phone_key_check, fit["page"] <= fit["screen"] and fit["left"] >= 0 and fit["right"] <= fit["screen"]
+                   and fit["field"] >= 36 and fit["example"] == 0, "{}".format(fit))
+
+            # Copy says what happened, even where the browser refuses the clipboard; the box goes on
+            # "done"; dates name their month (09/10/2026 read as 10 September in English).
+            page.click("[data-testid=copy-key]")
+            page.wait_for_timeout(600)
+            copy_said = page.locator("[data-testid=copy-result]").inner_text().strip() \
+                if page.locator("[data-testid=copy-result]").count() else ""
+            dated = re.search(r"made \d{1,2} [A-Z][a-z]{2,3} \d{4}", row_text) is not None
+            # Where the browser refuses the clipboard (plain http off localhost), it says so and selects the key.
+            page.evaluate("() => { navigator.clipboard.writeText = () => Promise.reject(new Error('refused')) }")
+            page.click("[data-testid=copy-key]")
+            page.wait_for_timeout(600)
+            refused_said = page.locator("[data-testid=copy-result]").inner_text().strip()
+            selected = page.evaluate("() => window.getSelection().toString().trim()")
+            if (copy_said != "Copied" or not dated
+                    or refused_said != "Could not copy. Select the key and copy it by hand." or selected != key):
+                raise AssertionError("copy said {!r}, refused said {!r}, selected {}, row {!r}".format(
+                    copy_said, refused_said, selected == key, row_text[:80]))
+            page.click("[data-testid=key-done]", timeout=5000)
+            page.wait_for_selector("[data-testid=new-key]", state="detached", timeout=5000)
 
             page.click("nav button:has-text('chat')")
             page.click("nav button:has-text('API')")
@@ -1798,9 +1823,11 @@ def main():
             after = on_v1(key)
             record(api_page_check,
                    key.startswith("aip_") and len(key) >= 40 and key[:12] in row_text and key not in row_text
-                   and works == 404 and not shown_later and kept and after == 401,
-                   "key {}..., row {!r}, on /v1 {}, shown again {}, kept on dismiss {}, after revoke {}".format(
-                       key[:6], row_text[:60], works, shown_later, kept, after))
+                   and works == 404 and not shown_later and kept and after == 401 and dated
+                   and copy_said == "Copied" and selected == key,
+                   "key {}..., row {!r}, on /v1 {}, shown again {}, kept on dismiss {}, after revoke {}, "
+                   "dated {}, copy said {!r}".format(key[:6], row_text[:60], works, shown_later, kept, after,
+                                                     dated, copy_said))
         except Exception as exc:
             shot(page, "17-api-failure")
             for check in (api_page_check, phone_key_check):
