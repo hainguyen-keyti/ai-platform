@@ -91,6 +91,7 @@ CHECKS = (
     "a /v1 request refused for quota keeps no picture",
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
+    "the example script sends a prompt and a picture, waits, and saves the picture made",
 )
 
 # The /v1 checks that run jobs; the real requests through /v1 with a key prove them on the site.
@@ -99,6 +100,7 @@ V1_JOB_CHECKS = (
     "a /v1 request with a prompt and a picture hands the worker exactly that picture",
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
+    "the example script sends a prompt and a picture, waits, and saves the picture made",
 )
 V1_REAL_SKIP = "spends real chatgpt turns; proven by the plan's real requests through /v1 with a key"
 
@@ -673,6 +675,28 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
         c["a failed /v1 request gives its credit back once"].failed(
             "sent {}, then {} {}, credits {} -> {} -> {}".format(
                 fstatus, ended.get("status"), ended.get("error"), q0, q1, q2))
+
+    # The documented example, run as a person would: the key in the environment, never on the line.
+    example = "the example script sends a prompt and a picture, waits, and saves the picture made"
+    out = Path(tempfile.mkdtemp(prefix="acceptance-example-"))
+    reference = out / "reference.png"
+    reference.write_bytes(tiny_png((90, 90, 240)))
+    try:
+        ran = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "image_api_example.py"), "--api", api,
+             "--prompt", "the same subject on a beach", "--image", str(reference), "--out", str(out)],
+            capture_output=True, text=True, timeout=job_timeout + 30, cwd=str(out),
+            env=dict(os.environ, AIP_API_KEY=akey))
+        code, said = ran.returncode, ((ran.stdout or "") + (ran.stderr or "")).strip()
+    except Exception as exc:
+        code, said = -1, "{}: {}".format(type(exc).__name__, exc)
+    saved = [p for p in out.iterdir() if p.name != "reference.png"]
+    pictures = [p for p in saved if p.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"]
+    if code == 0 and len(pictures) >= 1 and akey not in said:
+        c[example].passed("exit 0, saved {}".format([p.name for p in pictures]))
+    else:
+        c[example].failed("exit {}, saved {}, said {!r}".format(code, [p.name for p in saved], said[-160:]))
+    shutil.rmtree(out, ignore_errors=True)
 
 
 def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, worker_ctl,
