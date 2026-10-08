@@ -1155,6 +1155,25 @@ def main():
            result.success and result.text == quoted,
            "success {} text {!r} error {!r}".format(result.success, result.text, result.error))
 
+    for answer, name in ((failure_sentence + " Here is the script anyway: a slow push-in.", "opens with"),
+                         ("The tool said: " + failure_sentence, "ends with")):
+        page = Page(clock)
+        page.answer, page.replies = answer, [stream_ok]
+        result = provider_on(page, off())._run("hello")
+        record("an answer that {} the failure sentence and has other words is returned as words".format(name),
+               result.success and result.text == answer,
+               "success {} text {!r} error {!r}".format(result.success, result.text, result.error))
+
+    page = Page(clock)
+    page.answer = failure_sentence
+    page.replies = [Response("https://lh3.googleusercontent.com/rd-gg-dl/generated", body=b"G" * 12623,
+                             ctype="image/jpeg", method="GET"), stream_ok]
+    result = provider_on(page, off())._run("Generate an image: a star")
+    sizes = [m.metadata.get("size") for m in result.media]
+    record("a picture turn whose words are the failure sentence keeps its picture",
+           result.success and sizes == [12623],
+           "success {} sizes {} error {!r}".format(result.success, sizes, result.error))
+
     def run_on(page, settings, prompt="hello", **kwargs):
         """(what happened, result): 'blocked forever', 'refused: kind', 'crashed: ...', or 'returned'."""
         try:
