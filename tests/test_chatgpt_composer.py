@@ -609,6 +609,30 @@ def main():
            said == "success" and pictures == 1 and took < 60,
            "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
 
+    # The image API sends a person's own picture with their prompt (2026-10-09): it must ride along with
+    # the turn, and the words must be theirs, not a guess that the picture shows a character.
+    def draw_with(reference):
+        page = DrawingPage(clock, tool_after=22)
+        driver = provider_on(page)
+        driver.media_path.mkdir(parents=True, exist_ok=True)
+        if reference:
+            (driver.media_path / reference).write_bytes(b"\x89PNG not really")
+        got = driver.generate_image("đổi nền thành bãi biển lúc hoàng hôn", reference_filename=reference)
+        return got, page
+
+    got, page = draw_with("upload-0123abcd.png")
+    record("a picture turn with a person's picture attaches it and sends their prompt, not a character guess",
+           got.success and len(got.media) == 1 and page.attached == ["upload-0123abcd.png"]
+           and len(page.sent) == 1 and "đổi nền thành bãi biển lúc hoàng hôn" in page.sent[0]
+           and "character" not in page.sent[0].lower(),
+           "success {}, pictures {}, attached {}, sent {}".format(
+               got.success, len(got.media), page.attached, page.sent))
+    got, page = draw_with(None)
+    record("a picture turn without one attaches nothing and asks for the picture in the prompt's words",
+           got.success and page.attached == []
+           and page.sent == ["Generate an image: đổi nền thành bãi biển lúc hoàng hôn"],
+           "success {}, attached {}, sent {}".format(got.success, page.attached, page.sent))
+
     said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, threaded=False))
     record("so is one that can only be watched on the page",
            said == "success" and pictures == 1 and took < 90,

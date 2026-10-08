@@ -951,9 +951,7 @@ class ChatGPTProvider(BaseProvider):
                        thread_url: Optional[str] = None) -> GenerationResult:
         instruction = "Generate an image: {}".format(prompt)
         if reference_filename:
-            instruction = (
-                "Using the attached image as the character reference, generate a new image: {}"
-            ).format(prompt)
+            instruction = "Use the attached image as the reference and generate a new image: {}".format(prompt)
         return self._run(instruction, upload=reference_filename, thread_url=thread_url)
 
     def generate_video_script(self, image_filename: str, duration: int = 5,
