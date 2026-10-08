@@ -114,6 +114,8 @@ PERSONAL_CONTEXT_ON = ("the shared Gemini account has personal context switched 
 SAVED_INFO_ON = ("the shared Gemini account has saved info switched on, so this turn was not "
                  "sent; ask the account owner to turn it off (gemini.google.com/saved-info) and "
                  "try again")
+# Answers Gemini gives when its turn failed, as seen on the real site (job b55dcf5d, 2026-10-01).
+FAILURE_SENTENCES = ("I encountered an error doing what you asked. Could you try again?",)
 # Each memory switch: its page, that page's own path, and the refusal while it is on.
 MEMORY_SWITCHES = ((SETTINGS_URL, SETTINGS_PATH, PERSONAL_CONTEXT_ON),
                    (SAVED_INFO_URL, SAVED_INFO_PATH, SAVED_INFO_ON))
@@ -571,6 +573,11 @@ class GeminiProvider(BaseProvider):
         if not text and not media:
             return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
                                     error="gemini's turn carried neither words nor a picture")
+        # Its markup and Gemini's stored record are an ordinary answer's: the words are the only sign.
+        if not media and self._flat(text) in FAILURE_SENTENCES:
+            return GenerationResult(success=False, thread_url=landed, error_kind="provider_error",
+                                    error="gemini answered only with its own failure sentence: {!r}".format(
+                                        self._flat(text)))
         return GenerationResult(success=True, text=text, media=media, thread_url=landed)
 
     def _landed(self, page) -> Optional[str]:
