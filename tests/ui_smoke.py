@@ -65,7 +65,9 @@ def quota_number(page):
 
 
 # The page's own smooth scroll made slow, as on a busy or slow device: a scrollTo with behavior
-# 'smooth' becomes a 4 second animation, and a new one replaces the one running.
+# 'smooth' becomes a 4 second animation, and a new one replaces the one running. A frame can be
+# stamped before the call that started it; its progress is held at 0, since a real smooth scroll
+# never moves back (it did here by half a pixel, about 1 run in 7, and the page let go of the tail).
 SLOW_SMOOTH = """(() => {
   const native = Element.prototype.scrollTo;
   const running = new WeakMap();
@@ -76,7 +78,7 @@ SLOW_SMOOTH = """(() => {
     running.set(el, token);
     const step = (now) => {
       if (running.get(el) !== token) return;
-      const t = Math.min(1, (now - began) / 4000);
+      const t = Math.min(1, Math.max(0, now - began) / 4000);
       el.scrollTop = start + (target - start) * t;
       if (t < 1) requestAnimationFrame(step);
     };
