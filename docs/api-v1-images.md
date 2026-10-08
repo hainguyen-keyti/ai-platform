@@ -30,7 +30,7 @@ here. Keep it out of code you share; if it leaks, revoke it and make another.
 | Field | Required | What |
 |---|---|---|
 | `prompt` | yes | What to make, up to 8000 characters |
-| `image` | no | One picture file to use as the reference: PNG, JPEG or WEBP, at most 10 MB |
+| `image` | no | One picture file to use as the reference: PNG, JPEG or WEBP, at most 10 MB, at most 16384 pixels a side and 50 megapixels. Send one; if several are sent, the last one is used |
 
 ```
 curl -X POST http://localhost:3000/v1/images \
@@ -45,8 +45,9 @@ Answer, `202`:
 {"id": "5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a", "status": "queued"}
 ```
 
-The picture is checked by its content, not by its file name. With a picture, ChatGPT is asked to
-use it as the reference for a new image made from your prompt.
+The picture is checked by its content, not by its file name: its own header must say PNG, JPEG or
+WEBP and give its size. With a picture, ChatGPT is asked to use it as the reference for a new image
+made from your prompt.
 
 ## 2. Ask for the status
 
@@ -97,16 +98,17 @@ curl -H "Authorization: Bearer $AIP_API_KEY" -o fox-night.png \
 
 ## Errors
 
-Every error answers JSON `{"detail": "..."}`. A refused request costs nothing and keeps nothing.
+Every error answers JSON with a `detail`: a sentence, or for a missing or malformed field (`422`) a
+list naming the field. A refused request costs nothing and keeps nothing.
 
 | Status | When |
 |---|---|
 | `401` | No key, an unknown or revoked key, or a web login token |
 | `402` | No credit left today |
-| `404` | No such request or picture, or it is someone else's |
-| `413` | The picture is over 10 MB |
-| `415` | The file is not a PNG, JPEG or WEBP picture |
-| `422` | No prompt, or a prompt that is empty or too long |
+| `404` | No such request or picture, it is someone else's, or it was not made through `/v1` |
+| `413` | The request is over 10 MB (checked before the key), or the picture is over 10 MB, 16384 pixels a side or 50 megapixels |
+| `415` | The file is not a PNG, JPEG or WEBP picture whose size can be read (an empty file too) |
+| `422` | No prompt, a prompt that is empty or too long, or `image` sent as text instead of a file |
 | `503` | ChatGPT is not available right now; try again later |
 
 ## A ready example

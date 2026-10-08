@@ -347,9 +347,29 @@ def tiny_png(rgb):
             + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
 
 
-# Signed as their kind, which is all the api reads of them.
-TINY_JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00" + b"\x11" * 64 + b"\xff\xd9"
-TINY_WEBP = b"RIFF" + struct.pack("<I", 4 + 8 + 10) + b"WEBP" + b"VP8L" + struct.pack("<I", 10) + b"\x2f" * 10
+def jpeg_head(width, height):
+    """A JPEG's opening as the api reads it: SOI, JFIF, and a baseline frame of this size."""
+    return (b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+            + b"\xff\xc0\x00\x11\x08" + struct.pack(">HH", height, width) + b"\x03\x01\x22\x00\x02\x11\x01\x03\x11\x01")
+
+
+def webp_lossless(width, height):
+    """A WEBP whose VP8L header gives this size."""
+    bits = (width - 1) | ((height - 1) << 14)
+    chunk = b"\x2f" + struct.pack("<I", bits) + b"\x00" * 5
+    return b"RIFF" + struct.pack("<I", 4 + 8 + len(chunk)) + b"WEBP" + b"VP8L" + struct.pack("<I", len(chunk)) + chunk
+
+
+def png_head(width, height):
+    """A PNG's signature and IHDR claiming this size, nothing after."""
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + ihdr
+            + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr) & 0xFFFFFFFF))
+
+
+# What the api reads of a picture is its signature and its size in pixels; these carry both.
+TINY_JPEG = jpeg_head(8, 8) + b"\x11" * 64 + b"\xff\xd9"
+TINY_WEBP = webp_lossless(8, 8)
 
 
 def free_port():
@@ -555,12 +575,37 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
         "text named .png": ({"prompt": "draw it"}, ("photo.png", "image/png", b"hello, no picture here"), 415),
         "a gif": ({"prompt": "draw it"}, ("a.gif", "image/gif", b"GIF89a" + b"\x01" * 40), 415),
         "over 10 MB": ({"prompt": "draw it"},
-                       ("big.png", "image/png", b"\x89PNG\r\n\x1a\n" + b"\x00" * (10 * 1024 * 1024)), 413),
+                       ("big.png", "image/png", png_head(8, 8) + b"\x00" * (10 * 1024 * 1024)), 413),
+        # The tier 1 review, 2026-10-09: a small file claiming a huge size would reach the shared
+        # browser; a RIFF that is not a WEBP passed a four byte check.
+        "a png of 30000x30000": ({"prompt": "draw it"}, ("huge.png", "image/png", png_head(30000, 30000)), 413),
+        "a jpeg 20000 wide": ({"prompt": "draw it"},
+                              ("wide.jpg", "image/jpeg", jpeg_head(20000, 100) + b"\x11" * 64 + b"\xff\xd9"), 413),
+        "a webp of 60 megapixels": ({"prompt": "draw it"}, ("many.webp", "image/webp", webp_lossless(10000, 6000)), 413),
+        "a wave file": ({"prompt": "draw it"},
+                        ("sound.webp", "image/webp", b"RIFF" + struct.pack("<I", 36) + b"WAVEfmt " + b"\x00" * 28), 415),
+        "a png with no header": ({"prompt": "draw it"}, ("cut.png", "image/png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 20), 415),
     }
     answered = {name: http_form(api + "/v1/images", fields, {"image": picture}, token=akey)[0]
                 for name, (fields, picture, _) in sent.items()}
+    # Refused before the key is even read, the body cut off at the limit; and refused for want of a
+    # served ChatGPT (503), the picture sent with it not kept either.
+    answered["12 MB with no key"] = http_form(
+        api + "/v1/images", {"prompt": "draw it"},
+        {"image": ("big.png", "image/png", png_head(8, 8) + b"\x00" * (12 * 1024 * 1024))})[0]
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("INSERT OR REPLACE INTO provider_holds (provider, until, reason)"
+                         " VALUES ('chatgpt', datetime('now', '+5 minutes'), 'the gate')")
+        answered["chatgpt held"] = http_form(api + "/v1/images", {"prompt": "draw it"},
+                                             {"image": ("a.png", "image/png", png)}, token=akey)[0]
+    finally:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DELETE FROM provider_holds WHERE provider = 'chatgpt' AND reason = 'the gate'")
+    wanted_answers = {name: want for name, (_, _, want) in sent.items()}
+    wanted_answers.update({"12 MB with no key": 413, "chatgpt held": 503})
     files_after, quota_after = files_now(), quota_of(token)
-    if (akey and answered == {name: want for name, (_, _, want) in sent.items()}
+    if (akey and answered == wanted_answers
             and files_after == files_before and quota_after == quota_before):
         c["a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused "
           "uncharged, nothing kept"].passed("{}; credits {} and files unchanged".format(answered, quota_after))
@@ -617,9 +662,13 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
 
     # A prompt and a picture of each kind: the worker gets exactly those bytes, and the web shows the
     # picture on the person's own message.
-    handed, upload_id, picture_rid = [], None, None
+    handed, upload_id, picture_rid, result_rids = [], None, None, []
+    exactly_ten = png_head(8, 8)
+    exactly_ten += b"\x00" * (10 * 1024 * 1024 - len(exactly_ten))
+    q_pictures = quota_of(token)
     for name, ctype, blob in (("ref.png", "image/png", tiny_png((10, 200, 60))),
-                              ("ref.jpg", "image/jpeg", TINY_JPEG), ("ref.webp", "image/webp", TINY_WEBP)):
+                              ("ref.jpg", "image/jpeg", TINY_JPEG), ("ref.webp", "image/webp", TINY_WEBP),
+                              ("exactly-10-MB.png", "image/png", exactly_ten)):
         pstatus, posted = http_form(api + "/v1/images", {"prompt": "the same subject at night"},
                                     {"image": (name, ctype, blob)}, token=akey)
         prid = (posted or {}).get("id") if isinstance(posted, dict) else None
@@ -635,12 +684,17 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
             upload_id, picture_rid = shown[0]["id"], prid
         handed.append((name, pstatus, done.get("status"), want in (done.get("text") or ""), len(shown),
                        kept == blob, len(done.get("images") or [])))
-    if all(h[1] == 202 and h[2] == "done" and h[3] and h[4] == 1 and h[5] and h[6] >= 1 for h in handed):
+        result_rids.append((prid, [i.get("id") for i in done.get("images") or []]))
+    spent = q_pictures - quota_of(token) if q_pictures is not None else None
+    if (all(h[1] == 202 and h[2] == "done" and h[3] and h[4] == 1 and h[5] and h[6] >= 1 for h in handed)
+            and spent == len(handed)):
         c["a /v1 request with a prompt and a picture hands the worker exactly that picture"].passed(
-            "png, jpeg, webp: each done, the worker got its exact bytes, shown on the person's message")
+            "png, jpeg, webp and exactly 10 MB: each done, one credit each, the worker got its exact "
+            "bytes, shown on the person's message")
     else:
         c["a /v1 request with a prompt and a picture hands the worker exactly that picture"].failed(
-            "(name, sent, then, exact bytes, on the message, kept same, pictures) {}".format(handed))
+            "(name, sent, then, exact bytes, on the message, kept same, pictures) {}, credits spent {}".format(
+                handed, spent))
 
     # Only the owner reaches a request, and only its own result pictures through it.
     result_id = images[0].get("id") if images else None
@@ -654,6 +708,25 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
         "the picture sent, not made": http_bytes("{}/v1/images/{}/files/{}".format(
             api, picture_rid, upload_id), akey)[0] if picture_rid and upload_id else None,
     }
+    # The tier 1 review, 2026-10-09: another request's result through this request's path, and the
+    # web's own requests (a picture, a chat turn) through /v1, which serves only what /v1 made.
+    other = next((ids[0] for prid, ids in result_rids if ids), None)
+    if rid and other:
+        reach["a result of another request"] = http_bytes("{}/v1/images/{}/files/{}".format(api, rid, other),
+                                                          akey)[0]
+    wstatus, web_made = http("POST", api + "/image/generate", {"provider": "chatgpt", "prompt": "a web picture"},
+                             token=token)
+    web_job = (web_made or {}).get("job_id") if wstatus == 202 else None
+    if web_job:
+        poll_job(api, web_job, token, job_timeout)
+    reach["a picture made on the web"] = http("GET", "{}/v1/images/{}".format(api, web_job), token=akey)[0] \
+        if web_job else "not made: {}".format(wstatus)
+    cstatus, chat_made = http("POST", api + "/chat", {"provider": "chatgpt", "message": "a chat turn"}, token=token)
+    chat_job = (chat_made or {}).get("job_id") if cstatus == 202 else None
+    reach["a chat turn"] = http("GET", "{}/v1/images/{}".format(api, chat_job), token=akey)[0] \
+        if chat_job else "not made: {}".format(cstatus)
+    if chat_job:
+        poll_job(api, chat_job, token, job_timeout)
     if all(v == 404 for v in reach.values()):
         c["a /v1 request and its pictures reach only their owner"].passed(
             "404 for {}".format(", ".join(reach)))

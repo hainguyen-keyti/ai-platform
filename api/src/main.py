@@ -28,6 +28,8 @@ app.add_middleware(
 for module in (auth, conversations, chat, image, video, media, admin, internal, v1):
     app.include_router(module.router)
 
+app.add_middleware(v1.RequestLimit)
+
 
 @app.get("/health")
 def health():

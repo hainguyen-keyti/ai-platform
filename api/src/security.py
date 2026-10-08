@@ -93,7 +93,9 @@ def api_key_user(authorization: str = Header(default="")) -> dict:
                     (hash_api_key(key),))
         if not found:
             raise HTTPException(status_code=401, detail="unknown or revoked api key")
-        conn.execute("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?", (found["id"],))
+        # Once a minute at most: a program asking every few seconds is not a write each time.
+        conn.execute("UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?"
+                     " AND (last_used_at IS NULL OR last_used_at < datetime('now', '-1 minute'))", (found["id"],))
         user = one(conn, "SELECT * FROM users WHERE id = ?", (found["user_id"],))
         if user:
             user = refill_if_due(conn, user)
