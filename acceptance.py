@@ -1574,14 +1574,15 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         killed_at = time.time()
         final = wait_state(job_id, ("failed", "done"), 45)
         freed_in = time.time() - killed_at
+        left = quota_now()
         back = worker_ctl["start"]()
         if (killed and final.get("status") == "failed" and final.get("error_kind") in ("no_worker", "stranded")
-                and quota_now() == q0 and back):
+                and left == q0 and back):
             c[dead].passed("failed as {} {:.0f}s after the kill, credit returned, no worker up meanwhile".format(
                 final.get("error_kind"), freed_in))
         else:
             c[dead].failed("killed {} final {} kind {} after {:.0f}s quota {} -> {} worker back {}".format(
-                killed, final.get("status"), final.get("error_kind"), freed_in, q0, quota_now(), back))
+                killed, final.get("status"), final.get("error_kind"), freed_in, q0, left, back))
 
     q0 = quota_now()
     job_id = start_job(SLOW_PHRASE + ": cancel me") if wanted("a running job can be cancelled") else None

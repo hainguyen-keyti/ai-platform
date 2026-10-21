@@ -429,6 +429,12 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
                     (thread_url, job["conversation_id"]),
                 )
 
+            # A turn called done with neither words nor media produced nothing, and nothing must
+            # not cost a credit (DECISIONS 2026-09-23): it is a failed turn, refunded below.
+            if status == "done" and not text and not media:
+                status, error_kind = "failed", "empty_reply"
+                error = "the provider's turn came back with neither words nor media"
+
             # The message comes first so its pictures can point at it.
             message_id = None
             if status == "done" and job["conversation_id"] and (text or media):
@@ -506,9 +512,10 @@ def cancel_job(user_id, job_id):
 def get_job(user_id, job_id):
     with db() as conn:
         # The person waiting is the one who notices first, so their own poll is
-        # what discovers that nobody is serving this job.
+        # what discovers that nobody is serving this job, or that its keeper died.
         conn.execute("BEGIN IMMEDIATE")
         try:
+            _sweep_stranded(conn)
             _sweep_unserved(conn, job_id)
             conn.execute("COMMIT")
         except Exception:
