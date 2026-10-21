@@ -31,6 +31,9 @@ SERVER_POLL_SECONDS = 2
 # creates the assistant row before the words arrive, and inflightResponses can
 # be empty in that gap, which is exactly how an earlier settle chose nothing.
 START_FLOOR = 4
+# The read of the thread before a follow-up's send: tries with a doubling pause, as for ChatGPT.
+BASELINE_TRIES = 3
+BASELINE_PAUSE_SECONDS = 6
 # A turn that finishes carrying nothing is a refusal, whatever the cause. Grok
 # says nothing about it in any endpoint: measured 2026-09-24, a spent free tier
 # leaves the assistant row finished and empty while /rest/rate-limits still
@@ -359,16 +362,35 @@ class GrokProvider(BaseProvider):
         return last, ("done" if (text or assets) else "empty"), status
 
     def _baseline_ids(self, page, cid):
+        """The ids of every response the thread holds before the send; none for a new conversation.
+
+        A follow-up turn that cannot know them would take the earlier answer for its own (measured
+        on a stub, 2026-10-21: a read answering 429 or 500 gave the previous turn's words after 4s),
+        so the read is tried again and, still failing, the turn is refused before it is sent.
+        """
         if not cid:
             return set()
-        status, raw = self._api(page, SERVER_TURNS.format(cid))
-        if status != 200:
-            return set()
-        try:
-            body = json.loads(raw)
-        except ValueError:
-            return set()
-        return {r.get("responseId") for r in (body.get("responses") or [])}
+        pause, status = BASELINE_PAUSE_SECONDS, None
+        for attempt in range(BASELINE_TRIES):
+            if attempt:
+                page.wait_for_timeout(pause * 1000)
+                pause *= 2
+                self._check_stop()
+            status, raw = self._api(page, SERVER_TURNS.format(cid))
+            if status != 200:
+                continue
+            try:
+                ids = {r.get("responseId") for r in (json.loads(raw).get("responses") or [])}
+            except (ValueError, AttributeError):
+                status = "no json"
+                continue
+            # A follow-up's thread always holds its earlier turn: a read with no response is no read.
+            if ids:
+                return ids
+            status = "no response"
+        self._check_stop()
+        raise ProviderError("grok's thread could not be read before sending ({}), so nothing was "
+                            "sent".format(status))
 
     def _assets(self, page, turn, prompt: str):
         """Whatever the turn drew, as bytes, fetched inside the session.
