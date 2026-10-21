@@ -866,8 +866,145 @@ def probe_fixtures(p):
         page.unroute(pattern, fail_send)
 
 
+# Everything in or near the composer that could be an attached picture's chip or its remove control,
+# by its attributes: a blob: preview, or a label, test id or alt that says file, attach, remove.
+ATTACHMENT_SHAPE = """() => {
+  const words = /(remove|delete|attach|file|upload|preview|image)/i;
+  const out = [], seen = new Set();
+  for (const n of document.querySelectorAll('img, button, [data-testid]')) {
+    const tag = n.tagName.toLowerCase();
+    const testid = n.getAttribute('data-testid') || '';
+    const label = n.getAttribute('aria-label') || '';
+    const alt = n.getAttribute('alt') || '';
+    const src = n.getAttribute('src') || '';
+    const chip = (tag === 'img' && (src.startsWith('blob:') || src.startsWith('data:'))) || words.test(testid)
+      || words.test(label) || words.test(alt);
+    if (!chip) continue;
+    const key = [tag, testid, label, alt.slice(0, 40), src.slice(0, 30)].join('|');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({tag, testid, label, alt: alt.slice(0, 40), src: src.slice(0, 40),
+              inForm: !!n.closest('form'), visible: n.getClientRects().length > 0});
+  }
+  return out.slice(0, 40);
+}"""
+
+
+def tiny_png(path):
+    """A real 8x8 PNG of one colour, so the attach is a picture the site accepts."""
+    import struct
+    import zlib
+    raw = b"".join(b"\x00" + b"\x40\x80\xc0" * 8 for _ in range(8))
+
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0))
+                     + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def probe_attachment(p):
+    """Does a picture attached to the composer and never sent stay there across the loads the
+    driver makes before its next turn? Measured 2026-10-21 for the safety plan: a chip left by a
+    turn taken away after its attach would ride along with the next person's turn. Attaches one
+    1 KB picture to the shared account's composer; sends no message. Takes PROBE_THREAD_URL from the
+    environment to also measure a load of a thread, as the driver's _open does for a follow-up."""
+    import os
+    from src.providers.chatgpt import HOME, UPLOAD_INPUT
+
+    page = p.page()
+    picture = p.media / "attachment-probe.png"
+    tiny_png(picture)
+    posts = []
+
+    def on_response(r):
+        if r.request.method in ("POST", "PUT") and ("backend-api" in r.url or "blob" in r.url):
+            posts.append("{} {} -> {}".format(r.request.method, r.url.split("chatgpt.com", 1)[-1].split("?")[0][:60],
+                                               r.status))
+
+    page.on("response", on_response)
+
+    def chips(where):
+        # Measured 2026-10-22: the preview is an img whose src is a data: url, alt the file's name,
+        # beside a button labelled "Remove <file name>", both inside the form.
+        found = [c for c in page.evaluate(ATTACHMENT_SHAPE) if c["visible"] and c["inForm"]]
+        previews = [c for c in found if c["tag"] == "img" and c["src"].startswith(("blob:", "data:"))]
+        removes = [c for c in found if c["tag"] == "button" and c["label"].lower().startswith("remove")]
+        say("attachment: " + where, "{} preview(s), {} remove control(s) in the form: {}; all matches: {}".format(
+            len(previews), len(removes), (previews + removes)[:4], found[:12]))
+        return previews + removes
+
+    def attach():
+        page.locator(UPLOAD_INPUT).first.set_input_files(str(picture))
+        page.wait_for_timeout(6000)
+
+    def wait_composer():
+        for _ in range(90):
+            page.wait_for_timeout(500)
+            if page.locator(NEW_COMPOSER).count():
+                break
+        page.wait_for_timeout(2000)
+
+    open_mounted(page, HOME)
+    chips("before any attach")
+    attach()
+    say("attachment: requests while attaching", posts[:8] or "none seen")
+    after = chips("after the attach, before anything else")
+    if not after:
+        say("attachment", "no blob preview appeared in 6s: the attach itself is not seen; stopping")
+        return
+
+    # 1. The driver's own text clearing: does select-all and Backspace take the chip with it?
+    box = page.locator(NEW_COMPOSER).first
+    p.provider._clear_composer(page, box)
+    page.wait_for_timeout(1500)
+    cleared = not chips("after _clear_composer (select all, Backspace)")
+    if cleared:
+        attach()
+        chips("attached again for the load")
+
+    # 2. The load the driver makes for a new conversation.
+    page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+    wait_composer()
+    survived_home = bool(chips("after goto HOME (a new chat's open)"))
+
+    # 3. The load the driver makes for a follow-up: the thread's own page, when one is given.
+    thread = os.environ.get("PROBE_THREAD_URL", "").strip()
+    if thread:
+        if not survived_home:
+            attach()
+            chips("attached again before the thread load")
+        page.goto(thread, timeout=90000, wait_until="domcontentloaded")
+        wait_composer()
+        say("attachment: landed", page.url[:70])
+        survived_thread = bool(chips("after goto the thread (a follow-up's open)"))
+        page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+        wait_composer()
+        chips("back on HOME after the thread")
+    else:
+        survived_thread = None
+        say("attachment: thread load", "skipped: PROBE_THREAD_URL not set")
+
+    # 4. The remove control, when a chip is still there: pressed, and the chip gone?
+    if chips("before the remove control"):
+        pressed = page.evaluate("""() => {
+          const words = /(remove|delete)/i;
+          for (const b of document.querySelectorAll('form button, button')) {
+            const label = b.getAttribute('aria-label') || '';
+            if (words.test(label) && b.getClientRects().length) { b.click(); return label; }
+          }
+          return null;
+        }""")
+        page.wait_for_timeout(1500)
+        say("attachment: remove control pressed", repr(pressed))
+        chips("after the remove control")
+    page.remove_listener("response", on_response)
+    say("attachment: summary", "cleared by _clear_composer: {}; survives goto HOME: {}; survives goto thread: {}".format(
+        cleared, survived_home, survived_thread))
+
+
 PROBES = (
     ("composer", probe_composer),
+    ("attachment", probe_attachment),
     ("turn-dom", probe_turn_dom),
     ("fixtures", probe_fixtures),
     ("send", probe_send),
@@ -877,8 +1014,8 @@ PROBES = (
     ("cleanup", probe_cleanup),
     ("memory-toggle", probe_memory_toggle),
 )
-# Changes an account setting for a few seconds; run it by name, on purpose.
-NOT_IN_ALL = {"memory-toggle", "composer"}
+# Changes an account setting for a few seconds, or uploads a file; run these by name, on purpose.
+NOT_IN_ALL = {"memory-toggle", "composer", "attachment"}
 
 
 def main():
