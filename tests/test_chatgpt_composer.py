@@ -137,6 +137,7 @@ class Removes:
     def click(self, *args, **kwargs):
         if self.page.removable and self.page.attached:
             self.page.attached.pop(0)
+            self.page.removed += 1
 
 
 class Previews:
@@ -212,13 +213,18 @@ class Page:
         self.keeps_draft = False
         self.removable = True
         self.labelled = True
+        self.removed = 0
         # What each sent turn carried along.
         self.sent_with = []
 
     def goto(self, url, *args, **kwargs):
+        # Measured 2026-10-22 (the probe's second run): a chip attached on a thread's own page is
+        # there again when that thread is loaded again (a per-conversation draft), and gone at any
+        # other load (the home page, another thread, a home draft at a reload).
+        same_thread = "/c/" in url and url == self.url
         self.url = url
         self.loads += 1
-        if not self.keeps_draft:
+        if not self.keeps_draft and not same_thread:
             self.attached = []
 
     def reload(self, *args, **kwargs):
@@ -847,6 +853,22 @@ def main():
     record("a job taken away during the last read before the send stops unsent, and says so",
            outcome == "cancelled" and page.sent == [] and (stopped or {}).get("sent") is False,
            "{}, sent {}, last_stop {}".format(outcome, len(page.sent), stopped))
+
+    # Measured 2026-10-22: a chip attached on the thread's own page is there again at that thread's
+    # next open. A follow-up with a picture taken away after its attach leaves it; the next turn in
+    # the same conversation finds it and removes it before it sends.
+    page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25)
+    media = provider_on(page).media_path
+    media.mkdir(parents=True, exist_ok=True)
+    (media / "left-behind.png").write_bytes(b"a picture")
+    outcome, result, driver, took = follow_up(page, stop=lambda: bool(page.attached), upload="left-behind.png")
+    left, stopped = list(page.attached), getattr(driver, "last_stop", None)
+    outcome2, result2, driver, took = follow_up(page)
+    record("a chip left on a thread's page by a turn taken away after its attach is removed at the next turn",
+           outcome == "cancelled" and left == ["left-behind.png"] and (stopped or {}).get("sent") is False
+           and outcome2 == "returned" and result2.success and page.removed == 1 and page.sent_with == [[]],
+           "{} with {} left, then {} removed {} sent with {}".format(outcome, left, outcome2, page.removed,
+                                                                      page.sent_with))
 
     page = DrawingPage(clock, words_after=40, earlier="words", idle_until=25, first_read=500, unreadable=100)
     outcome, result, driver, took = follow_up(page, upload="never-written.png")
