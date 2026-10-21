@@ -121,7 +121,8 @@ class Attachments:
 
 class Removes:
     """The remove control beside each chip in the composer (measured 2026-10-22: a button labelled
-    "Remove <file name>" inside the form): pressed, it takes its chip away, unless the page refuses."""
+    "Remove <file name>" inside the form): pressed, it takes its chip away, unless the page refuses.
+    On a page whose labels cannot be told apart (another interface language), none is found."""
 
     def __init__(self, page):
         self.page = page
@@ -131,11 +132,21 @@ class Removes:
         return self
 
     def count(self):
-        return len(self.page.attached)
+        return len(self.page.attached) if self.page.labelled else 0
 
     def click(self, *args, **kwargs):
         if self.page.removable and self.page.attached:
             self.page.attached.pop(0)
+
+
+class Previews:
+    """Each chip's preview, an img with a data: source inside the form (measured 2026-10-22)."""
+
+    def __init__(self, page):
+        self.page = page
+
+    def count(self):
+        return len(self.page.attached)
 
 
 class Keyboard:
@@ -200,6 +211,7 @@ class Page:
         # plays a site that keeps the chip across a load; removable, whether its remove control works.
         self.keeps_draft = False
         self.removable = True
+        self.labelled = True
         # What each sent turn carried along.
         self.sent_with = []
 
@@ -227,6 +239,8 @@ class Page:
             return Attachments(self)
         if 'aria-label^="Remove' in selector:
             return Removes(self)
+        if 'img[src^="data:"]' in selector:
+            return Previews(self)
         # A comma is a list of alternatives, as in the browser: any part may match.
         parts = [p.strip() for p in selector.split(",")]
         mounted = PROSEMIRROR in self.has or (
@@ -679,6 +693,15 @@ def main():
     page.keeps_draft, page.removable, page.attached = True, False, ["another-persons-picture.png"]
     said, pictures, _, _ = draw_on(page)
     record("a chip that cannot be removed refuses the turn unsent",
+           said.startswith("ProviderError") and page.sent == [] and page.text == "",
+           "{}, sent {}, typed {!r}".format(said, len(page.sent), page.text[:30]))
+
+    # The tier 1 review (2026-10-22): the remove control is known by its English label; a preview
+    # with no control the driver can tell apart must refuse the turn, never send it along.
+    page = DrawingPage(clock, tool_after=22)
+    page.keeps_draft, page.labelled, page.attached = True, False, ["another-persons-picture.png"]
+    said, pictures, _, _ = draw_on(page)
+    record("a chip whose remove control cannot be told apart refuses the turn unsent",
            said.startswith("ProviderError") and page.sent == [] and page.text == "",
            "{}, sent {}, typed {!r}".format(said, len(page.sent), page.text[:30]))
 

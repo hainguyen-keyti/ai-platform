@@ -156,8 +156,9 @@ class MockProvider(BaseProvider):
         thread = self._thread(thread_url)
         self.last_cancelled_thread = thread
         if EMPTY_PHRASE in lowered:
+            # Whitespace only: words to a naive check, nothing to a person.
             self._pace()
-            return GenerationResult(success=True, thread_url=thread, text="", media=[])
+            return GenerationResult(success=True, thread_url=thread, text="  \n", media=[])
         if SLOW_PHRASE in lowered and any(word in lowered for word in IMAGE_WORDS):
             # A slow picture is saved first and finishes whatever happens, like
             # a provider that completes after the platform gave up on the job;

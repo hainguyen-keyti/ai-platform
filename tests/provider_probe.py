@@ -980,6 +980,27 @@ def probe_attachment(p):
         page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
         wait_composer()
         chips("back on HOME after the thread")
+        # The tier 1 review (2026-10-22): a chip attached on the thread's own page, as a follow-up
+        # with a picture does, then the two loads the driver makes: a new chat's, and the same
+        # thread's again (a per-conversation draft would show here).
+        page.goto(thread, timeout=90000, wait_until="domcontentloaded")
+        wait_composer()
+        attach()
+        chips("attached on the thread page")
+        page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+        wait_composer()
+        survived_home_from_thread = bool(chips("after goto HOME from the thread's attach"))
+        page.goto(thread, timeout=90000, wait_until="domcontentloaded")
+        wait_composer()
+        attach()
+        chips("attached on the thread page again")
+        page.goto(thread, timeout=90000, wait_until="domcontentloaded")
+        wait_composer()
+        survived_same_thread = bool(chips("after goto the same thread again (a per-conversation draft?)"))
+        say("attachment: from the thread page", "survives goto HOME: {}; survives goto the same thread: {}".format(
+            survived_home_from_thread, survived_same_thread))
+        page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+        wait_composer()
     else:
         survived_thread = None
         say("attachment: thread load", "skipped: PROBE_THREAD_URL not set")

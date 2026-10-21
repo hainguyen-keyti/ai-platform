@@ -12,7 +12,7 @@ IMAGE_WINDOW_SECONDS = 3 * 3600
 
 
 def browser_gone(exc) -> bool:
-    """Playwright's word that the page, context or browser under a turn is gone."""
+    """Playwright's word that the page, context or browser under a call is gone."""
     try:
         from playwright._impl._errors import is_target_closed_error
     except Exception:
@@ -225,6 +225,16 @@ class BrowserPool:
             except ProviderError as exc:
                 return GenerationResult.failure(str(exc), kind=exc.kind)
             except Exception as exc:
+                if browser_gone(exc):
+                    # A browser that died while the runner was idle is first met here: drop it
+                    # now, not with the next person's job.
+                    try:
+                        provider.stop()
+                    except Exception:
+                        pass
+                    return GenerationResult.failure(
+                        "the {} browser closed under the deletion ({}: {})".format(
+                            provider_name, type(exc).__name__, exc), kind="provider_error")
                 return GenerationResult.failure(
                     "{}: {}".format(type(exc).__name__, exc), kind="worker_error")
 

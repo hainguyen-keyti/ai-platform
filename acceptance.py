@@ -1560,7 +1560,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                     restarted, final.get("status"), final.get("attempts"), q0, quota_now()))
 
     # The safety plan, 2026-10-21: with no worker coming back, the owner's own poll must free the
-    # job its dead keeper held (the lease is 2s and the served window 20s in this gate).
+    # job its dead keeper held (the lease is 2s in this gate, and the served window the api's floor of
+    # 30s, which is why the job is freed about 31s after the kill).
     q0 = quota_now()
     dead = "a running job whose worker died is failed and refunded by its owner's next poll"
     job_id = None if real else start_job(SLOW_PHRASE + ": nobody comes back for me")

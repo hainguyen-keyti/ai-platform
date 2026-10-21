@@ -431,7 +431,7 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
 
             # A turn called done with neither words nor media produced nothing, and nothing must
             # not cost a credit (DECISIONS 2026-09-23): it is a failed turn, refunded below.
-            if status == "done" and not text and not media:
+            if status == "done" and not (text or "").strip() and not media:
                 status, error_kind = "failed", "empty_reply"
                 error = "the provider's turn came back with neither words nor media"
 

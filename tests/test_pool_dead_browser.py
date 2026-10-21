@@ -55,6 +55,11 @@ class Fake:
     def stop(self):
         self.stops += 1
 
+    def delete_thread(self, thread_url):
+        if self.raises is not None:
+            raise self.raises
+        return True
+
 
 def pool_with(fake):
     pool = BrowserPool()
@@ -92,6 +97,17 @@ def main():
            and pool._providers["chatgpt"].stops == 0,
            "kind {} cooling {} stops {}".format(result.error_kind, pool.cooling_down("chatgpt"),
                                                   pool._providers["chatgpt"].stops))
+
+    # The tier 1 review (2026-10-22): a browser that dies while the runner is idle is first met by
+    # a thread deletion, which must drop the dead page the same way, not keep it for the next job.
+    fake = Fake(TargetClosedError())
+    pool = pool_with(fake)
+    result = pool.delete_thread("chatgpt", "https://chatgpt.com/c/1")
+    pool.note_result("chatgpt", result, 1.0)
+    record("a closed target under a thread deletion is a provider error: the provider is stopped and cools down",
+           not result.success and result.error_kind == "provider_error" and fake.stops == 1
+           and pool.cooling_down("chatgpt"),
+           "kind {} stops {} cooling {}".format(result.error_kind, fake.stops, pool.cooling_down("chatgpt")))
 
     pool, result = turn(Fake())
     record("a turn that works is untouched",

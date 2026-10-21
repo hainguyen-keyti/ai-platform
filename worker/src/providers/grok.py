@@ -376,7 +376,16 @@ class GrokProvider(BaseProvider):
                 page.wait_for_timeout(pause * 1000)
                 pause *= 2
                 self._check_stop()
-            status, raw = self._api(page, SERVER_TURNS.format(cid))
+            try:
+                status, raw = self._api(page, SERVER_TURNS.format(cid))
+            except Exception as exc:
+                # A rejected fetch or a page mid-navigation is a read that failed, tried again; a
+                # browser that closed is not, and reaches the pool, which drops it.
+                from playwright._impl._errors import is_target_closed_error
+                if is_target_closed_error(exc) or "has been closed" in str(exc).lower():
+                    raise
+                status = type(exc).__name__
+                continue
             if status != 200:
                 continue
             try:

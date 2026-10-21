@@ -98,11 +98,14 @@ class FollowPage:
     there at once and its answer `settled_after` seconds later, as on the real site, where an
     answer takes tens of seconds. A fresh page has no thread until the send."""
 
-    def __init__(self, clock, before=(200,), settled_after=20.0, fresh=False, empty_first=False):
+    def __init__(self, clock, before=(200,), settled_after=20.0, fresh=False, empty_first=False,
+                 raises_first=None, raises_always=None):
         self.clock, self.before, self.settled_after, self.fresh = clock, list(before), settled_after, fresh
         # empty_first: the first read answers 200 with no response at all, as no thread with an
-        # answer in it ever does.
+        # answer in it ever does. raises_first: the first read raises instead of answering (a
+        # rejected fetch); raises_always: every read raises (a browser that closed).
         self.empty_first = empty_first
+        self.raises_first, self.raises_always = raises_first, raises_always
         self.url = "https://grok.com/" if fresh else THREAD
         self.sent, self.reads, self.sent_at = [], 0, None
 
@@ -117,6 +120,8 @@ class FollowPage:
             earlier = [] if self.fresh else [EARLIER_HUMAN, EARLIER]
             if self.sent_at is None:
                 self.reads += 1
+                if self.raises_always is not None or (self.raises_first is not None and self.reads == 1):
+                    raise self.raises_always or self.raises_first
                 status = self.before[min(self.reads, len(self.before)) - 1]
                 if status != 200:
                     return {"status": status, "body": ""}
@@ -155,6 +160,8 @@ def follow_up(clock, page, stop=None):
         what, text = "cancelled", ""
     except ProviderError as exc:
         what, text = "refused as {}: {}".format(exc.kind, str(exc)[:60]), ""
+    except Exception as exc:
+        what, text = "raised {}".format(type(exc).__name__), ""
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     return what, text, len(page.sent), clock.now - started
@@ -192,6 +199,21 @@ def follow_up_cases():
     record("a read that answers 200 with no response is no read: tried again, this turn's words",
            what == "success" and text == THIS["message"] and sent == 1 and page.reads == 2,
            "{} {!r} sent {} reads {} after {:.0f}s".format(what, text, sent, page.reads, took))
+
+    # The tier 1 review (2026-10-22): a read that raises (a rejected fetch, a page mid-navigation)
+    # is the unreadable thread the retry was written for; a browser that closed is not.
+    from playwright._impl._errors import TargetClosedError
+    page = FollowPage(clock, raises_first=Exception("Evaluation failed: TypeError: Failed to fetch"))
+    what, text, sent, took = follow_up(clock, page)
+    record("a read that raises on the way is a failed try: tried again, this turn's words",
+           what == "success" and text == THIS["message"] and sent == 1 and page.reads == 2,
+           "{} {!r} sent {} reads {} after {:.0f}s".format(what, text, sent, page.reads, took))
+
+    page = FollowPage(clock, raises_always=TargetClosedError())
+    what, text, sent, took = follow_up(clock, page)
+    record("a read that raises because the browser closed is not tried again: it reaches the pool unsent",
+           what == "raised TargetClosedError" and sent == 0 and page.reads == 1,
+           "{} sent {} reads {} after {:.0f}s".format(what, sent, page.reads, took))
 
     page = FollowPage(clock, fresh=True)
     what, text, sent, took = follow_up(clock, page)

@@ -24,9 +24,11 @@ SEND_BUTTON = 'button[data-testid="send-button"], button[aria-label="Send"]'
 STOP_BUTTON = '[data-testid="stop-button"], button[aria-label="Stop"]'
 ASSISTANT_TURN = '[data-message-author-role="assistant"], [data-chatgpt-selection-message-id]'
 UPLOAD_INPUT = '#upload-files, input[type="file"][accept="image/*"]'
-# Measured 2026-10-22: a picture attached to the composer shows as a chip with a button labelled
-# "Remove <file name>" inside the form; the chip is gone at the next page load, which _open makes.
+# Measured 2026-10-22: a picture attached to the composer shows as a chip, an img with a data:
+# source beside a button labelled "Remove <file name>", inside the form; the chip is gone at the
+# next page load, which _open makes. The label is the English interface's; the preview is not.
 ATTACHMENT_REMOVE = 'form button[aria-label^="Remove "]'
+ATTACHMENT_PREVIEW = 'form img[src^="data:"]'
 
 # One ceiling for every request. A short answer still returns as soon as it
 # settles, so the generous bound only costs anything when a picture is actually
@@ -813,16 +815,18 @@ class ChatGPTProvider(BaseProvider):
         Backspace does not take it. This is the look before the send for a site that keeps a draft:
         a chip that is still there is removed, and one that cannot be removed refuses the turn.
         """
-        removes = page.locator(ATTACHMENT_REMOVE)
+        removes, previews = page.locator(ATTACHMENT_REMOVE), page.locator(ATTACHMENT_PREVIEW)
         for _ in range(3):
             if not removes.count():
-                return
+                break
             try:
                 removes.first.click(timeout=5000)
             except Exception:
                 break
             page.wait_for_timeout(500)
-        if removes.count():
+        # A preview with no control the driver can tell apart (another interface language) is an
+        # attachment too: refused, never sent along.
+        if removes.count() or previews.count():
             raise ProviderError("chatgpt's composer holds an attachment of another turn that could not be "
                                 "removed, so nothing was sent")
 
