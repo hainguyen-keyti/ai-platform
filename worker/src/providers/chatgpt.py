@@ -811,22 +811,33 @@ class ChatGPTProvider(BaseProvider):
     def _drop_attachments(self, page):
         """Nothing attached by an earlier turn may ride along with this one.
 
-        Measured 2026-10-22: a chip does not survive the load _open makes, and select-all plus
-        Backspace does not take it. This is the look before the send for a site that keeps a draft:
-        a chip that is still there is removed, and one that cannot be removed refuses the turn.
+        Measured 2026-10-22: a chip attached on a thread's own page is there again when that thread
+        is loaded again (a per-conversation draft), gone at any other load; select-all plus
+        Backspace does not take it; a plain click on its remove control takes nothing, a hover on
+        the preview and then the click takes it. A chip that is still there is removed, and one
+        that cannot be removed refuses the turn.
         """
         removes, previews = page.locator(ATTACHMENT_REMOVE), page.locator(ATTACHMENT_PREVIEW)
-        for _ in range(3):
-            if not removes.count():
-                break
-            try:
-                removes.first.click(timeout=5000)
-            except Exception:
-                break
-            page.wait_for_timeout(500)
-        # A preview with no control the driver can tell apart (another interface language) is an
-        # attachment too: refused, never sent along.
-        if removes.count() or previews.count():
+        try:
+            for _ in range(3):
+                if not removes.count():
+                    break
+                try:
+                    (previews.first if previews.count() else removes.first).hover(timeout=3000)
+                    removes.first.click(timeout=3000)
+                except Exception:
+                    break
+                page.wait_for_timeout(1500)
+            # A preview with no control the driver can tell apart (another interface language) is
+            # an attachment too: refused, never sent along.
+            left = removes.count() or previews.count()
+        except Exception as exc:
+            from playwright._impl._errors import is_target_closed_error
+            if is_target_closed_error(exc):
+                raise
+            raise ProviderError("chatgpt's composer could not be looked at before sending ({}), so "
+                                "nothing was sent".format(type(exc).__name__))
+        if left:
             raise ProviderError("chatgpt's composer holds an attachment of another turn that could not be "
                                 "removed, so nothing was sent")
 

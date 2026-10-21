@@ -121,8 +121,10 @@ class Attachments:
 
 class Removes:
     """The remove control beside each chip in the composer (measured 2026-10-22: a button labelled
-    "Remove <file name>" inside the form): pressed, it takes its chip away, unless the page refuses.
-    On a page whose labels cannot be told apart (another interface language), none is found."""
+    "Remove <file name>" inside the form). Measured the same day on the real page: a plain click
+    takes nothing; hovered first (the preview or the control), the click takes its chip, unless the
+    page refuses. On a page whose labels cannot be told apart (another interface language), none is
+    found."""
 
     def __init__(self, page):
         self.page = page
@@ -134,10 +136,14 @@ class Removes:
     def count(self):
         return len(self.page.attached) if self.page.labelled else 0
 
+    def hover(self, *args, **kwargs):
+        self.page.hovered = True
+
     def click(self, *args, **kwargs):
-        if self.page.removable and self.page.attached:
+        if self.page.removable and self.page.hovered and self.page.attached:
             self.page.attached.pop(0)
             self.page.removed += 1
+        self.page.hovered = False
 
 
 class Previews:
@@ -146,8 +152,15 @@ class Previews:
     def __init__(self, page):
         self.page = page
 
+    @property
+    def first(self):
+        return self
+
     def count(self):
         return len(self.page.attached)
+
+    def hover(self, *args, **kwargs):
+        self.page.hovered = True
 
 
 class Keyboard:
@@ -213,6 +226,7 @@ class Page:
         self.keeps_draft = False
         self.removable = True
         self.labelled = True
+        self.hovered = False
         self.removed = 0
         # What each sent turn carried along.
         self.sent_with = []

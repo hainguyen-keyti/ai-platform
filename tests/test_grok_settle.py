@@ -202,8 +202,8 @@ def follow_up_cases():
 
     # The tier 1 review (2026-10-22): a read that raises (a rejected fetch, a page mid-navigation)
     # is the unreadable thread the retry was written for; a browser that closed is not.
-    from playwright._impl._errors import TargetClosedError
-    page = FollowPage(clock, raises_first=Exception("Evaluation failed: TypeError: Failed to fetch"))
+    from playwright._impl._errors import Error as PlaywrightError, TargetClosedError
+    page = FollowPage(clock, raises_first=PlaywrightError("Evaluation failed: TypeError: Failed to fetch"))
     what, text, sent, took = follow_up(clock, page)
     record("a read that raises on the way is a failed try: tried again, this turn's words",
            what == "success" and text == THIS["message"] and sent == 1 and page.reads == 2,

@@ -100,14 +100,21 @@ def main():
 
     # The tier 1 review (2026-10-22): a browser that dies while the runner is idle is first met by
     # a thread deletion, which must drop the dead page the same way, not keep it for the next job.
+    # The runner never notes a deletion's result, so no cooldown is claimed here: the stop is what
+    # ends the fast-fail loop, and a browser that dies again under the next turn gets execute's.
     fake = Fake(TargetClosedError())
     pool = pool_with(fake)
     result = pool.delete_thread("chatgpt", "https://chatgpt.com/c/1")
-    pool.note_result("chatgpt", result, 1.0)
-    record("a closed target under a thread deletion is a provider error: the provider is stopped and cools down",
-           not result.success and result.error_kind == "provider_error" and fake.stops == 1
-           and pool.cooling_down("chatgpt"),
-           "kind {} stops {} cooling {}".format(result.error_kind, fake.stops, pool.cooling_down("chatgpt")))
+    record("a closed target under a thread deletion is a provider error and the provider is stopped",
+           not result.success and result.error_kind == "provider_error" and fake.stops == 1,
+           "kind {} stops {}".format(result.error_kind, fake.stops))
+
+    fake = Fake(RuntimeError("a driver bug"))
+    pool = pool_with(fake)
+    result = pool.delete_thread("chatgpt", "https://chatgpt.com/c/1")
+    record("any other exception under a thread deletion stays a worker error, the browser kept",
+           not result.success and result.error_kind == "worker_error" and fake.stops == 0,
+           "kind {} stops {}".format(result.error_kind, fake.stops))
 
     pool, result = turn(Fake())
     record("a turn that works is untouched",

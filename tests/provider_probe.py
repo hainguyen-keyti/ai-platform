@@ -986,14 +986,16 @@ def probe_attachment(p):
         page.goto(thread, timeout=90000, wait_until="domcontentloaded")
         wait_composer()
         attach()
-        chips("attached on the thread page")
+        if not chips("attached on the thread page"):
+            say("attachment", "the attach on the thread page showed no chip: the loads below measure nothing")
         page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
         wait_composer()
         survived_home_from_thread = bool(chips("after goto HOME from the thread's attach"))
         page.goto(thread, timeout=90000, wait_until="domcontentloaded")
         wait_composer()
         attach()
-        chips("attached on the thread page again")
+        if not chips("attached on the thread page again"):
+            say("attachment", "the second attach on the thread page showed no chip")
         page.goto(thread, timeout=90000, wait_until="domcontentloaded")
         wait_composer()
         survived_same_thread = bool(chips("after goto the same thread again (a per-conversation draft?)"))
@@ -1002,25 +1004,25 @@ def probe_attachment(p):
         page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
         wait_composer()
     else:
-        survived_thread = None
+        survived_thread = survived_home_from_thread = survived_same_thread = None
         say("attachment: thread load", "skipped: PROBE_THREAD_URL not set")
 
-    # 4. The remove control, when a chip is still there: pressed, and the chip gone?
+    # 4. The remove control, when a chip is still there: hovered and pressed (measured 2026-10-22: a
+    # plain click takes nothing, a hover first then the click takes the chip), and the chip gone?
     if chips("before the remove control"):
-        pressed = page.evaluate("""() => {
-          const words = /(remove|delete)/i;
-          for (const b of document.querySelectorAll('form button, button')) {
-            const label = b.getAttribute('aria-label') || '';
-            if (words.test(label) && b.getClientRects().length) { b.click(); return label; }
-          }
-          return null;
-        }""")
+        try:
+            page.locator(ATTACHMENT_PREVIEW).first.hover(timeout=3000)
+            page.locator(ATTACHMENT_REMOVE).first.click(timeout=3000)
+            pressed = "hovered the preview, clicked the remove control"
+        except Exception as exc:
+            pressed = "raised {}: {}".format(type(exc).__name__, str(exc)[:80])
         page.wait_for_timeout(1500)
-        say("attachment: remove control pressed", repr(pressed))
+        say("attachment: remove control pressed", pressed)
         chips("after the remove control")
     page.remove_listener("response", on_response)
-    say("attachment: summary", "cleared by _clear_composer: {}; survives goto HOME: {}; survives goto thread: {}".format(
-        cleared, survived_home, survived_thread))
+    say("attachment: summary", "cleared by _clear_composer: {}; attached on HOME: survives goto HOME {}, survives "
+        "goto thread {}; attached on the thread: survives goto HOME {}, survives goto the same thread {}".format(
+            cleared, survived_home, survived_thread, survived_home_from_thread, survived_same_thread))
 
 
 PROBES = (
