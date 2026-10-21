@@ -98,8 +98,11 @@ class FollowPage:
     there at once and its answer `settled_after` seconds later, as on the real site, where an
     answer takes tens of seconds. A fresh page has no thread until the send."""
 
-    def __init__(self, clock, before=(200,), settled_after=20.0, fresh=False):
+    def __init__(self, clock, before=(200,), settled_after=20.0, fresh=False, empty_first=False):
         self.clock, self.before, self.settled_after, self.fresh = clock, list(before), settled_after, fresh
+        # empty_first: the first read answers 200 with no response at all, as no thread with an
+        # answer in it ever does.
+        self.empty_first = empty_first
         self.url = "https://grok.com/" if fresh else THREAD
         self.sent, self.reads, self.sent_at = [], 0, None
 
@@ -117,6 +120,8 @@ class FollowPage:
                 status = self.before[min(self.reads, len(self.before)) - 1]
                 if status != 200:
                     return {"status": status, "body": ""}
+                if self.empty_first and self.reads == 1:
+                    return {"status": 200, "body": json.dumps({"responses": []})}
                 return {"status": 200, "body": json.dumps({"responses": earlier})}
             rows = earlier + [THIS_HUMAN]
             if self.clock.now - self.sent_at >= self.settled_after:
@@ -174,10 +179,18 @@ def follow_up_cases():
            what.startswith("refused as provider_error") and sent == 0 and took < 40,
            "{} {!r} sent {} after {:.0f}s".format(what, text, sent, took))
 
+    # Stopped after the first pause (6s), not only after the last try (18s): the mutant that dropped
+    # the stop check between the tries went through the check without the time bound.
     page = FollowPage(clock, before=(429,))
     what, text, sent, took = follow_up(clock, page, stop=lambda: page.reads >= 1)
     record("a job taken away while its thread is read again before the send stops there, nothing sent",
-           what == "cancelled" and sent == 0,
+           what == "cancelled" and sent == 0 and took < 10,
+           "{} {!r} sent {} reads {} after {:.0f}s".format(what, text, sent, page.reads, took))
+
+    page = FollowPage(clock, empty_first=True)
+    what, text, sent, took = follow_up(clock, page)
+    record("a read that answers 200 with no response is no read: tried again, this turn's words",
+           what == "success" and text == THIS["message"] and sent == 1 and page.reads == 2,
            "{} {!r} sent {} reads {} after {:.0f}s".format(what, text, sent, page.reads, took))
 
     page = FollowPage(clock, fresh=True)
