@@ -92,6 +92,8 @@ CHECKS = (
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
+    "a done result with nothing in it fails and refunds",
+    "a running job whose worker died is failed and refunded by its owner's next poll",
 )
 
 # The /v1 checks that run jobs; the real requests through /v1 with a key prove them on the site.
@@ -158,6 +160,7 @@ REAL_SKIPS = {
 # Phrases the mock provider reacts to, so failure modes can be exercised on purpose.
 SLOW_PHRASE = "take your time"
 BROKEN_PHRASE = "pretend the provider broke"
+EMPTY_PHRASE = "answer with nothing"
 MEMORY_PHRASE = "pretend memory is on"
 UNSENT_PHRASE = "wait before you speak"
 SILENT_PHRASE = "and say nothing of it"
@@ -841,7 +844,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                             capture_output=True, text=True, cwd=str(ROOT))
     lines = [l for l in ((settle.stdout or "") + (settle.stderr or "")).splitlines() if l.strip()]
     summary = next((l for l in reversed(lines) if "PASSED" in l), "")
-    if settle.returncode == 0 and summary.startswith("8/8"):
+    settled = re.match(r"(\d+)/(\d+) PASSED", summary)
+    if settle.returncode == 0 and settled and settled.group(1) == settled.group(2) and int(settled.group(2)) >= 8:
         c["grok settles on words or a picture, never on an empty turn"].passed(summary)
     else:
         c["grok settles on words or a picture, never on an empty turn"].failed(
@@ -1513,6 +1517,26 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                     final.get("status"), final.get("error_kind"), q0, quota_now(),
                     (final.get("error") or "")[:60]))
 
+    # The safety plan, 2026-10-21: a driver that calls a turn done with neither words nor media.
+    q0 = quota_now()
+    if real:
+        c["a done result with nothing in it fails and refunds"].skip(
+            "needs a driver that answers with nothing on command; covered in mock mode")
+    else:
+        job_id = start_job(EMPTY_PHRASE + " for this one message")
+        final = wait_state(job_id, ("done", "failed"), job_timeout) if job_id else {}
+        conv = (job_state(job_id) or {}).get("conversation_id") if job_id else None
+        cstatus, cbody = http("GET", "{}/conversations/{}".format(api, conv), token=token) if conv else (0, {})
+        answers = [m for m in (cbody or {}).get("messages") or [] if m.get("role") == "assistant"]
+        if (final.get("status") == "failed" and final.get("error_kind") == "empty_reply"
+                and quota_now() == q0 and cstatus == 200 and answers == []):
+            c["a done result with nothing in it fails and refunds"].passed(
+                "failed as empty_reply, credit returned, no answer stored")
+        else:
+            c["a done result with nothing in it fails and refunds"].failed(
+                "status {} kind {} quota {} -> {} answers stored {} conversation {}".format(
+                    final.get("status"), final.get("error_kind"), q0, quota_now(), len(answers), cstatus))
+
     q0 = quota_now()
     job_id = None if real else start_job(SLOW_PHRASE + ": survive a dead worker")
     seen = wait_state(job_id, ("running",), 10) if job_id else {}
@@ -1534,6 +1558,30 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             c["a stranded job is reclaimed"].failed(
                 "worker restarted {} final {} attempts {} quota {} -> {}".format(
                     restarted, final.get("status"), final.get("attempts"), q0, quota_now()))
+
+    # The safety plan, 2026-10-21: with no worker coming back, the owner's own poll must free the
+    # job its dead keeper held (the lease is 2s and the served window 20s in this gate).
+    q0 = quota_now()
+    dead = "a running job whose worker died is failed and refunded by its owner's next poll"
+    job_id = None if real else start_job(SLOW_PHRASE + ": nobody comes back for me")
+    seen = wait_state(job_id, ("running",), 10) if job_id else {}
+    if real:
+        c[dead].skip("kills the worker mid-turn; provider-agnostic, covered in mock mode")
+    elif seen.get("status") != "running":
+        c[dead].failed("job never observed running (status {})".format(seen.get("status")))
+    else:
+        killed = worker_ctl["stop"]()
+        killed_at = time.time()
+        final = wait_state(job_id, ("failed", "done"), 45)
+        freed_in = time.time() - killed_at
+        back = worker_ctl["start"]()
+        if (killed and final.get("status") == "failed" and final.get("error_kind") in ("no_worker", "stranded")
+                and quota_now() == q0 and back):
+            c[dead].passed("failed as {} {:.0f}s after the kill, credit returned, no worker up meanwhile".format(
+                final.get("error_kind"), freed_in))
+        else:
+            c[dead].failed("killed {} final {} kind {} after {:.0f}s quota {} -> {} worker back {}".format(
+                killed, final.get("status"), final.get("error_kind"), freed_in, q0, quota_now(), back))
 
     q0 = quota_now()
     job_id = start_job(SLOW_PHRASE + ": cancel me") if wanted("a running job can be cancelled") else None

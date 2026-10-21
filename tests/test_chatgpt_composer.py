@@ -119,6 +119,25 @@ class Attachments:
         self.page.attached.append(Path(path).name)
 
 
+class Removes:
+    """The remove control beside each chip in the composer (measured 2026-10-22: a button labelled
+    "Remove <file name>" inside the form): pressed, it takes its chip away, unless the page refuses."""
+
+    def __init__(self, page):
+        self.page = page
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return len(self.page.attached)
+
+    def click(self, *args, **kwargs):
+        if self.page.removable and self.page.attached:
+            self.page.attached.pop(0)
+
+
 class Keyboard:
     def __init__(self, page):
         self.page = page
@@ -140,6 +159,7 @@ class Keyboard:
             self.page.enters += 1
             if self.page.text.strip():
                 self.page.sent.append(self.page.text)
+                self.page.sent_with.append(list(self.page.attached))
                 # The site starts writing its reply the moment a turn is sent.
                 self.page.writing = True
             self.page.text = ""
@@ -175,10 +195,19 @@ class Page:
         self.writing = False
         self.stop_presses = 0
         self.attached = []
+        # Measured 2026-10-22 (tests/provider_probe.py attachment): a chip left in the composer is
+        # gone at the next page load, and select-all plus Backspace does not take it. keeps_draft
+        # plays a site that keeps the chip across a load; removable, whether its remove control works.
+        self.keeps_draft = False
+        self.removable = True
+        # What each sent turn carried along.
+        self.sent_with = []
 
     def goto(self, url, *args, **kwargs):
         self.url = url
         self.loads += 1
+        if not self.keeps_draft:
+            self.attached = []
 
     def reload(self, *args, **kwargs):
         self.loads += 1
@@ -196,6 +225,8 @@ class Page:
             return StopButton(self)
         if selector == chatgpt.UPLOAD_INPUT:
             return Attachments(self)
+        if 'aria-label^="Remove' in selector:
+            return Removes(self)
         # A comma is a list of alternatives, as in the browser: any part may match.
         parts = [p.strip() for p in selector.split(",")]
         mounted = PROSEMIRROR in self.has or (
@@ -632,6 +663,33 @@ def main():
            got.success and page.attached == []
            and page.sent == ["Generate an image: đổi nền thành bãi biển lúc hoàng hôn"],
            "success {}, attached {}, sent {}".format(got.success, page.attached, page.sent))
+
+    # The safety plan, 2026-10-21. On the real page (2026-10-22) a chip never survives the load
+    # _open makes, so a turn taken away after its attach leaves nothing for the next turn; the
+    # driver still looks before it sends, for a site that keeps a draft, and refuses one it cannot
+    # clear: a chip of another turn must never ride along.
+    page = DrawingPage(clock, tool_after=22)
+    page.keeps_draft, page.attached = True, ["another-persons-picture.png"]
+    said, pictures, _, _ = draw_on(page)
+    record("a chip a site keeps across the open is removed before the turn is sent",
+           said == "success" and page.sent_with == [[]] and page.attached == [],
+           "{}, sent with {}, left {}".format(said, page.sent_with, page.attached))
+
+    page = DrawingPage(clock, tool_after=22)
+    page.keeps_draft, page.removable, page.attached = True, False, ["another-persons-picture.png"]
+    said, pictures, _, _ = draw_on(page)
+    record("a chip that cannot be removed refuses the turn unsent",
+           said.startswith("ProviderError") and page.sent == [] and page.text == "",
+           "{}, sent {}, typed {!r}".format(said, len(page.sent), page.text[:30]))
+
+    page = DrawingPage(clock, tool_after=22)
+    outcome, stopped = run_on(page, lambda: bool(page.attached), upload="someone-elses-picture.png")
+    left = list(page.attached)
+    said, pictures, _, _ = draw_on(page)
+    record("as the site is, a chip left by a turn taken away after its attach is gone at the next open",
+           outcome == "cancelled" and left == ["someone-elses-picture.png"]
+           and (stopped or {}).get("sent") is False and said == "success" and page.sent_with == [[]],
+           "{} with {} left, then {} sent with {}".format(outcome, left, said, page.sent_with))
 
     said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=22, threaded=False))
     record("so is one that can only be watched on the page",

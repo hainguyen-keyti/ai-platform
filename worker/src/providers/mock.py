@@ -22,6 +22,8 @@ MEMORY_PHRASE = "pretend memory is on"
 UNSENT_PHRASE = "wait before you speak"
 SILENT_PHRASE = "and say nothing of it"
 LYING_PHRASE = "and call it unsent"
+# A driver that calls a turn done with neither words nor media (the safety plan, 2026-10-21).
+EMPTY_PHRASE = "answer with nothing"
 # Gemini makes a video when asked for one (2026-10-06); the mock answers this phrase with a clip.
 VIDEO_PHRASE = "make a short video"
 SLOW_SECONDS = 6.0
@@ -153,6 +155,9 @@ class MockProvider(BaseProvider):
         # cancelled or not; the api learns of it either way.
         thread = self._thread(thread_url)
         self.last_cancelled_thread = thread
+        if EMPTY_PHRASE in lowered:
+            self._pace()
+            return GenerationResult(success=True, thread_url=thread, text="", media=[])
         if SLOW_PHRASE in lowered and any(word in lowered for word in IMAGE_WORDS):
             # A slow picture is saved first and finishes whatever happens, like
             # a provider that completes after the platform gave up on the job;
