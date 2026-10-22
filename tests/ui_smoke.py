@@ -100,7 +100,7 @@ def png(width, height):
 
 # The first video on screen, once it knows its length (or has given up): what a person can play.
 PLAYABLE = """() => new Promise((resolve) => {
-  const v = document.querySelector('[data-testid=media-video]');
+  const v = [...document.querySelectorAll('[data-testid=media-video]')].find((n) => n.getClientRects().length > 0);
   if (!v) return resolve({found: false});
   let told = false;
   const done = () => {
@@ -108,7 +108,7 @@ PLAYABLE = """() => new Promise((resolve) => {
     told = true;
     resolve({found: true, state: v.readyState, duration: v.duration, width: v.videoWidth,
              blob: (v.currentSrc || v.src || '').startsWith('blob:'), named: !!v.getAttribute('aria-label'),
-             download: !!document.querySelector('[data-testid=video-download][download]')});
+             download: !!v.parentElement.querySelector('[data-testid=video-download][download]')});
   };
   if (v.readyState >= 1) return done();
   v.addEventListener('loadedmetadata', done, {once: true});
@@ -630,7 +630,7 @@ def main():
         shot(page, "08-gallery")
         heading = page.locator("text=/Gallery \\(\\d+\\)/").first.inner_text()
         gallery_images = page.evaluate(
-            "() => Array.from(document.images).filter(i => i.naturalWidth > 0).length"
+            "() => Array.from(document.images).filter(i => i.naturalWidth > 0 && i.getClientRects().length > 0).length"
         )
         record("gallery lists the generated media", gallery_images >= 1,
                "{}, {} thumbnail(s)".format(heading, gallery_images))
@@ -650,7 +650,8 @@ def main():
                 window.__leftVideo = false;
                 const chat = [...document.querySelectorAll('nav button')].find((b) => b.textContent.trim() === 'chat');
                 const seen = new MutationObserver(() => {
-                    if (!window.__leftVideo && document.querySelector('[data-testid=media-video]')) {
+                    const shown = [...document.querySelectorAll('[data-testid=media-video]')].some((n) => n.getClientRects().length > 0);
+                    if (!window.__leftVideo && shown && !document.querySelector('[data-testid=message-scroll]').getClientRects().length) {
                         window.__leftVideo = true;
                         seen.disconnect();
                         chat.click();
@@ -758,7 +759,7 @@ def main():
             )
             record("the selector greys out a provider no worker serves, with a note",
                    bool(option) and option["disabled"] is True and option["text"] != "grok", repr(option))
-            # Coming back to the chat opens no conversation; open the chatgpt one this test made.
+            # Open the chatgpt one this test made.
             page.locator("[data-testid=conversation-item] button").first.click(timeout=5000)
             page.wait_for_selector("[data-testid=user-bubble]", timeout=10000)
             page.wait_for_timeout(800)
@@ -908,6 +909,9 @@ def main():
         try:
             small.click("nav button:has-text('chat')")
             small.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
+            # The chat keeps its open conversation across the gallery (2026-10-22), so a new chat is asked for.
+            small.click("[data-testid=open-conversations]", timeout=5000)
+            small.click("#conversation-list button:has-text('New chat')", timeout=5000)
             small.wait_for_timeout(800)
             title = small.locator("[data-testid=conversation-title]")
             fresh = title.inner_text().strip() if title.count() else None
@@ -948,11 +952,14 @@ def main():
             small.press("[data-testid=rename-input]", "Enter")
             small.wait_for_timeout(800)
             provoked.update(i for i in range(start, len(errors)) if "500" in errors[i].split(" @ ")[0])
-            in_list = small.locator("aside").get_by_text("rename refused by the smoke test")
+            # The person reads a sentence in their language; the api's own words stay as its title (2026-10-22).
+            in_list = small.locator("aside [title='rename refused by the smoke test']")
             shown = in_list.count() > 0 and in_list.first.is_visible()
+            said = in_list.first.inner_text().strip() if in_list.count() else ""
             shot(small, "13-phone-list-error")
-            record("on a phone an error from the list shows in the list", shown,
-                   "{} copy of the error in the list, visible {}".format(in_list.count(), shown))
+            record("on a phone an error from the list shows in the list",
+                   shown and said == "The server ran into a problem. Please try again.",
+                   "{} copy of the error in the list, visible {}, reads {!r}".format(in_list.count(), shown, said))
         except Exception as exc:
             record("on a phone an error from the list shows in the list", False,
                    "{}: {}".format(type(exc).__name__, str(exc)[:200]))
@@ -1604,7 +1611,8 @@ def main():
                                     .format(token, lang))
             view = context.new_page()
             view.on("console", heard(errors))
-            for pattern in ("**/conversations", "**/conversations/look", "**/media", "**/media/look-pic/file"):
+            # "**/media*" also takes the paged list, /media?limit=100&offset=0 (a glob matches the query too).
+            for pattern in ("**/conversations", "**/conversations/look", "**/media*", "**/media/look-pic/file"):
                 view.route(pattern, answer_look)
             view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
             view.wait_for_selector("[data-testid=provider-select]", timeout=20000)
@@ -1705,7 +1713,7 @@ def main():
                 context, view = look(width, lang)
                 start = len(errors)
                 try:
-                    view.route("**/media", answer_videos)
+                    view.route("**/media*", answer_videos)
                     view.route("**/media/look-vid-gone/file", answer_videos)
                     view.click("nav button:has-text('{}')".format(gallery), timeout=10000)
                     view.wait_for_selector("[data-testid=media-video]", timeout=15000)
@@ -1740,13 +1748,12 @@ def main():
         stamp_w = "2026-10-22 10:00:00"
         json_headers = {"access-control-allow-origin": "*", "content-type": "application/json"}
 
-        def answered_web(state, lang="en", me_fails_first=False):
+        def answered_web(state, lang="en"):
             """A page whose conversations, chat, jobs and media are answered from `state`; the rest
             (the account, the providers) goes to the real api. Held routes wait in state["held"]."""
             context = browser.new_context(viewport={"width": 1280, "height": 900})
             context.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', {!r});".format(
                 token, lang))
-            me_calls = {"n": 0}
 
             def answer(route):
                 request = route.request
@@ -1755,12 +1762,9 @@ def main():
                 if method == "OPTIONS":
                     route.continue_()
                     return
-                if path == "/auth/me" and me_fails_first:
-                    me_calls["n"] += 1
-                    if me_calls["n"] == 1:
-                        route.abort()
-                        return
-                    route.continue_()
+                # Every account read fails while the api is "down": the dev build reads it twice.
+                if path == "/auth/me" and state.get("me_down"):
+                    route.abort()
                     return
                 if path == "/conversations" and method == "GET":
                     body = {"items": [{"id": cid, "provider": "chatgpt", "title": conv["title"], "created_at": stamp_w,
@@ -1931,7 +1935,8 @@ def main():
             context.close()
 
         blip_check = "a first account read that fails on the network keeps the session and its retry brings the shell"
-        context, view = answered_web({"convs": {}, "job": {"status": "done"}, "media": []}, me_fails_first=True)
+        blip = {"convs": {}, "job": {"status": "done"}, "media": [], "me_down": True}
+        context, view = answered_web(blip)
         start = len(errors)
         try:
             view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
@@ -1943,6 +1948,7 @@ def main():
             retry = view.locator("[data-testid=retry-connection]")
             offered = retry.count() == 1
             if offered:
+                blip["me_down"] = False
                 retry.click()
                 view.wait_for_selector("nav", timeout=10000)
             back = view.locator("nav").count() == 1
@@ -2069,8 +2075,10 @@ def main():
             # No credit left: refused before any job.
             state["chat_status"], state["chat_detail"] = 402, "quota exhausted"
             view.fill(composer_vi, "còn lượt không")
+            start = len(errors)
             view.click("button:has-text('Gửi')")
             view.wait_for_timeout(1500)
+            provoked.update(i for i in range(start, len(errors)) if "402" in errors[i].split(" @ ")[0])
             quota_vi = view.locator("header .text-red-600").first.inner_text().strip() \
                 if view.locator("header .text-red-600").count() else ""
 

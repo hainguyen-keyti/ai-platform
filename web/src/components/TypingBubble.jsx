@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useStrings } from '../lib/strings.jsx'
 
 const HINT_AFTER_SECONDS = 60
 
@@ -8,6 +9,7 @@ function format(seconds) {
 }
 
 export default function TypingBubble({ hint, phase }) {
+  const { t } = useStrings()
   const [elapsed, setElapsed] = useState(0)
 
   useEffect(() => {
@@ -33,7 +35,7 @@ export default function TypingBubble({ hint, phase }) {
               indistinguishable from a hung request. */}
           <span className="text-xs tabular-nums text-slate-500">{format(elapsed)}</span>
           {phase && phase !== 'claimed' && (
-            <span data-testid="typing-phase" className="text-xs text-slate-500">{phase}</span>
+            <span data-testid="typing-phase" className="text-xs text-slate-500">{t.phases[phase] || phase}</span>
           )}
         </div>
         {hint && elapsed >= HINT_AFTER_SECONDS && (

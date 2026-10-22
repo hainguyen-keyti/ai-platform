@@ -1,5 +1,6 @@
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 export const apiBase = BASE
+export const MEDIA_PAGE = 100
 
 let token = localStorage.getItem('token') || null
 
@@ -13,6 +14,21 @@ export function setToken(next) {
   else localStorage.removeItem('token')
 }
 
+// The shell is told the moment the api refuses the login, whichever call it was.
+let onUnauthorized = null
+
+export function whenUnauthorized(handler) {
+  onUnauthorized = handler
+}
+
+function expired() {
+  setToken(null)
+  if (onUnauthorized) onUnauthorized()
+  const failure = new Error('session expired, sign in again')
+  failure.status = 401
+  return failure
+}
+
 async function request(method, path, body) {
   const headers = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
@@ -24,10 +40,7 @@ async function request(method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
-  if (response.status === 401) {
-    setToken(null)
-    throw new Error('session expired, sign in again')
-  }
+  if (response.status === 401) throw expired()
   if (response.status === 204) return null
 
   const text = await response.text()
@@ -46,6 +59,7 @@ export const api = {
   register: (email, password, name, invite_code) =>
     request('POST', '/auth/register', { email, password, name, invite_code }),
   me: () => request('GET', '/auth/me'),
+  logout: () => request('POST', '/auth/logout'),
   conversations: (q) => request('GET', q ? `/conversations?q=${encodeURIComponent(q)}` : '/conversations'),
   conversation: (id) => request('GET', `/conversations/${id}`),
   renameConversation: (id, title) => request('PATCH', `/conversations/${id}`, { title }),
@@ -55,7 +69,7 @@ export const api = {
   job: (id) => request('GET', `/jobs/${id}`),
   cancelJob: (id) => request('POST', `/jobs/${id}/cancel`),
   providers: () => request('GET', '/providers'),
-  media: () => request('GET', '/media'),
+  media: (offset = 0) => request('GET', `/media?limit=${MEDIA_PAGE}&offset=${offset}`),
   deleteMedia: (id) => request('DELETE', `/media/${id}`),
   apiKeys: () => request('GET', '/auth/api-keys'),
   createApiKey: (name) => request('POST', '/auth/api-keys', { name }),
@@ -66,6 +80,7 @@ export async function mediaBlobUrl(id) {
   const response = await fetch(`${BASE}/media/${id}/file`, {
     headers: { Authorization: `Bearer ${token}` },
   })
+  if (response.status === 401) throw expired()
   if (!response.ok) throw new Error('could not load image')
   return URL.createObjectURL(await response.blob())
 }
@@ -77,7 +92,12 @@ export async function conversationZipUrl(conversationId, messageId) {
   const response = await fetch(`${BASE}/conversations/${conversationId}/media.zip${query}`, {
     headers: { Authorization: `Bearer ${token}` },
   })
-  if (!response.ok) throw new Error(`could not build the archive (${response.status})`)
+  if (response.status === 401) throw expired()
+  if (!response.ok) {
+    const failure = new Error(`could not build the archive (${response.status})`)
+    failure.status = response.status
+    throw failure
+  }
   const match = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '')
   return {
     url: URL.createObjectURL(await response.blob()),
@@ -91,7 +111,7 @@ export async function waitForJob(jobId, onTick) {
     if (job.status === 'done' || job.status === 'cancelled') return job
     if (job.status === 'failed') {
       const failure = new Error(job.error || 'job failed')
-      failure.kind = job.error_kind
+      failure.kind = job.error_kind || 'failed'
       throw failure
     }
     if (onTick) onTick(job.status, job.phase)

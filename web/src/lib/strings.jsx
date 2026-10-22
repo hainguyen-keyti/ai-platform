@@ -11,6 +11,16 @@ const STRINGS = {
     left: (n) => `${n} left`,
     language: 'VI',
     loading: 'loading...',
+    offline: 'Could not reach the server.',
+    retry: 'Try again',
+    turnFailed: 'This turn did not go through; your credit was returned. Please try again.',
+    noCredit: "You have used today's credits.",
+    notFound: 'Not found: it may have just been deleted.',
+    otherProvider: 'This conversation belongs to another provider. Start a new chat to use this one.',
+    refusedInput: 'The message was refused: it is empty or too long.',
+    serverFailed: 'The server ran into a problem. Please try again.',
+    // The worker names its phases in English already.
+    phases: {},
     newChat: 'New chat',
     conversations: 'Conversations',
     openConversations: 'Open conversations',
@@ -44,6 +54,8 @@ const STRINGS = {
     close: 'Close',
     galleryTitle: (n) => `Gallery (${n})`,
     nothingYet: 'Nothing generated yet.',
+    confirmDeleteMedia: 'Delete this file for good? This cannot be undone.',
+    showMore: (n) => `Show more (${n} left)`,
     signIn: 'Sign in',
     createAccount: 'Create account',
     email: 'email',
@@ -81,6 +93,26 @@ const STRINGS = {
     left: (n) => `còn ${n}`,
     language: 'EN',
     loading: 'đang tải...',
+    offline: 'Không kết nối được máy chủ.',
+    retry: 'Thử lại',
+    turnFailed: 'Lượt này chưa thành công, lượt đã được hoàn lại. Hãy thử lại.',
+    noCredit: 'Bạn đã dùng hết lượt hôm nay.',
+    notFound: 'Không tìm thấy: có thể nó vừa bị xoá.',
+    otherProvider: 'Cuộc trò chuyện này thuộc nhà cung cấp khác. Hãy mở trò chuyện mới để dùng bên này.',
+    refusedInput: 'Tin nhắn bị từ chối: trống hoặc quá dài.',
+    serverFailed: 'Máy chủ gặp lỗi. Hãy thử lại.',
+    phases: {
+      waiting: 'đang chờ',
+      'waiting for the provider': 'đang chờ nhà cung cấp',
+      'retrying the composer': 'đang thử lại',
+      requeued: 'đang thử lại',
+      'reply started': 'đang viết câu trả lời',
+      'reply finished': 'đã viết xong',
+      'making a video': 'đang làm video',
+      'picture appeared': 'đã có ảnh, đang lấy về',
+      'video appeared': 'đã có video, đang lấy về',
+      'file appeared': 'đã có tệp, đang lấy về',
+    },
     newChat: 'Trò chuyện mới',
     conversations: 'Các cuộc trò chuyện',
     openConversations: 'Mở danh sách trò chuyện',
@@ -113,6 +145,8 @@ const STRINGS = {
     close: 'Đóng',
     galleryTitle: (n) => `Thư viện (${n})`,
     nothingYet: 'Chưa tạo gì cả.',
+    confirmDeleteMedia: 'Xoá vĩnh viễn tệp này? Không thể hoàn tác.',
+    showMore: (n) => `Xem thêm (còn ${n})`,
     signIn: 'Đăng nhập',
     createAccount: 'Tạo tài khoản',
     email: 'email',
@@ -167,4 +201,15 @@ export function LanguageProvider({ children }) {
 
 export function useStrings() {
   return useContext(LanguageContext)
+}
+
+// What a person reads for a failure, in their language; the raw text is kept for a title.
+export function failureText(err, t) {
+  if (err.kind) return t.turnFailed
+  if (err.status === 402) return t.noCredit
+  if (err.status === 404) return t.notFound
+  if (err.status === 409) return t.otherProvider
+  if (err.status === 422) return t.refusedInput
+  if (err instanceof TypeError) return t.offline
+  return t.serverFailed
 }

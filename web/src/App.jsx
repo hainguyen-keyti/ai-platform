@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { api, getToken, setToken } from './lib/api.js'
+import { useEffect, useRef, useState } from 'react'
+import { api, getToken, setToken, whenUnauthorized } from './lib/api.js'
 import { LanguageProvider, useStrings } from './lib/strings.jsx'
 import Login from './pages/Login.jsx'
 import Chat from './pages/Chat.jsx'
@@ -13,18 +13,48 @@ function Shell() {
   // Counts taps on "chat": one while the chat already shows still closes the phone's list over it.
   const [chatTaps, setChatTaps] = useState(0)
   const [checking, setChecking] = useState(true)
+  // The first look at the account failed for a reason other than the login: the session is kept.
+  const [unreachable, setUnreachable] = useState(false)
+  // Only the latest look counts (the dev build looks twice, a retry looks again).
+  const looks = useRef(0)
 
   useEffect(() => {
-    if (!getToken()) { setChecking(false); return }
-    api.me().then(setUser).catch(() => setToken(null)).finally(() => setChecking(false))
+    whenUnauthorized(() => setUser(null))
+    return () => whenUnauthorized(null)
   }, [])
 
-  function signOut() {
+  function lookAtAccount() {
+    const look = ++looks.current
+    if (!getToken()) { setChecking(false); return }
+    setChecking(true)
+    setUnreachable(false)
+    api.me()
+      .then((me) => { if (look === looks.current) setUser(me) })
+      .catch((err) => { if (look === looks.current && err.status !== 401) setUnreachable(true) })
+      .finally(() => { if (look === looks.current) setChecking(false) })
+  }
+
+  useEffect(() => { lookAtAccount() }, [])
+
+  async function signOut() {
+    // Ended on the server too; one that cannot be reached still forgets the session here.
+    try { await api.logout() } catch { /* forgotten below either way */ }
     setToken(null)
     setUser(null)
   }
 
   if (checking) return <div className="p-6 text-sm text-slate-500">{t.loading}</div>
+  if (unreachable) {
+    return (
+      <div className="p-6 text-sm">
+        <p className="text-slate-700">{t.offline}</p>
+        <button type="button" data-testid="retry-connection" onClick={lookAtAccount}
+          className="mt-3 rounded border px-3 py-1 hover:bg-slate-100">
+          {t.retry}
+        </button>
+      </div>
+    )
+  }
   if (!user) return <Login onSignedIn={setUser} />
 
   return (
@@ -51,9 +81,13 @@ function Shell() {
         </div>
       </nav>
       <main className="flex-1 min-h-0">
-        {view === 'chat'
-          ? <Chat chatTaps={chatTaps} onQuotaSpent={() => api.me().then(setUser).catch(() => {})} />
-          : view === 'gallery' ? <Gallery /> : <ApiKeys />}
+        {/* Kept mounted while another view shows: a running job keeps its poll, its Stop and its reply. */}
+        <div className={view === 'chat' ? 'h-full' : 'hidden'}>
+          <Chat chatTaps={chatTaps} visible={view === 'chat'}
+            onQuotaSpent={() => api.me().then(setUser).catch(() => {})} />
+        </div>
+        {view === 'gallery' && <Gallery />}
+        {view === 'api' && <ApiKeys />}
       </main>
     </div>
   )

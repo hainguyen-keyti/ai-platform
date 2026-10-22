@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import { api, conversationZipUrl, waitForJob } from '../lib/api.js'
-import { useStrings } from '../lib/strings.jsx'
+import { failureText, useStrings } from '../lib/strings.jsx'
 import MediaImage from '../components/MediaImage.jsx'
 import MediaVideo from '../components/MediaVideo.jsx'
 import TypingBubble from '../components/TypingBubble.jsx'
@@ -54,14 +54,18 @@ function MediaCard({ item, busy, onOpen, onScript, label }) {
   )
 }
 
-export default function Chat({ onQuotaSpent, chatTaps }) {
+export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
   const { t } = useStrings()
   const [conversations, setConversations] = useState([])
   const [query, setQuery] = useState('')
   // The search the list on screen answers; null until the list has answered once.
   const [listedFor, setListedFor] = useState(null)
   const [activeId, setActiveId] = useState(null)
+  // The open conversation as a job sees it after an await: a reply paints only the one still open.
+  const activeIdRef = useRef(null)
   const [conversation, setConversation] = useState(null)
+  // The conversation the running job belongs to; its typing bubble and Stop show only there.
+  const [jobConversation, setJobConversation] = useState(null)
   const [provider, setProvider] = useState('chatgpt')
   const [input, setInput] = useState('')
   const [status, setStatus] = useState(null)
@@ -109,7 +113,7 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
       // Revoking straight away can cancel the transfer that just started.
       setTimeout(() => URL.revokeObjectURL(url), 60000)
     } catch (err) {
-      setError(err.message)
+      setError(err)
     } finally {
       setPacking(false)
     }
@@ -132,8 +136,30 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
   useEffect(() => {
     stickToBottom.current = true
     if (!activeId) { setConversation(null); return }
-    api.conversation(activeId).then(setConversation).catch((e) => setError(e.message))
+    let live = true
+    api.conversation(activeId)
+      .then((c) => { if (live) setConversation(c) })
+      .catch((e) => { if (live) setError(e) })
+    return () => { live = false }
   }, [activeId])
+
+  // Hidden while another view shows, so a running job keeps its poll; shown again, the list and
+  // the open conversation are asked afresh (the gallery may have deleted something in them).
+  const wasHidden = useRef(false)
+  const [shownAgain, setShownAgain] = useState(0)
+  useEffect(() => {
+    if (!visible) {
+      wasHidden.current = true
+      setListOpen(false)
+      return
+    }
+    if (!wasHidden.current) return
+    wasHidden.current = false
+    setShownAgain((n) => n + 1)
+    refreshList()
+    const id = activeIdRef.current
+    if (id) api.conversation(id).then((c) => { if (activeIdRef.current === id) setConversation(c) }).catch(() => {})
+  }, [visible])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -169,7 +195,7 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
     ask()
     const id = setInterval(ask, 60000)
     return () => { live = false; clearInterval(id) }
-  }, [])
+  }, [shownAgain])
 
   // The open list takes the focus and gives it back to its button; Escape closes it.
   useEffect(() => {
@@ -277,32 +303,43 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
       setConversations(data.items)
       setListedFor(asked)
     } catch (err) {
-      setError(err.message)
+      setError(err)
     }
+  }
+
+  function show(id) {
+    activeIdRef.current = id
+    setActiveId(id)
   }
 
   async function runJob(starter, hint = null, draft = null) {
     setError(null)
     setStatus('queued')
     setPendingHint(hint)
+    setJobConversation(activeIdRef.current)
     cancelWanted.current = false
     jobRef.current = null
     // Sending is an explicit request to watch the tail again.
     stickToBottom.current = true
+    // A person who opened another conversation while the job was being made stays there.
+    const stillHere = activeIdRef.current
     try {
       const created = await starter()
+      const own = created.conversation_id
       jobRef.current = created.job_id
       if (cancelWanted.current) await api.cancelJob(created.job_id)
-      setActiveId(created.conversation_id)
+      setJobConversation(own)
+      if (activeIdRef.current === stillHere) show(own)
       // The api made the conversation before answering, so the list shows it (and drops its empty note) now.
       refreshList()
       // Show what was just said straight away. Setting the id alone does not
       // reload an already open conversation, so a follow-up message stayed
       // invisible until its job finished, which for a picture is minutes.
-      setConversation(await api.conversation(created.conversation_id))
+      const said = await api.conversation(own)
+      if (activeIdRef.current === own) setConversation(said)
       await waitForJob(created.job_id, (s, p) => { setStatus(s); setPhase(p) })
-      const fresh = await api.conversation(created.conversation_id)
-      setConversation(fresh)
+      const fresh = await api.conversation(own)
+      if (activeIdRef.current === own) setConversation(fresh)
       announce()
       refreshList()
       // Every job costs a credit, so the number in the nav is stale the moment
@@ -312,11 +349,12 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
       // Refused before any job existed: nothing was sent, so the words go back in the box.
       if (!jobRef.current && draft) setInput(draft)
       // Nobody serves it, or its account needs its admin: unavailable either way, not an error to read.
-      const unavailable = err.status === 503 || err.kind === 'provider_misconfigured'
+      const unavailable = err.status === 503 || err.kind === 'provider_misconfigured' || err.kind === 'no_worker'
       if (unavailable) setServed((s) => ({ ...s, [provider]: false }))
-      else setError(err.message)
+      else setError(err)
     } finally {
       setStatus(null)
+      setJobConversation(null)
       jobRef.current = null
       setPhase(null)
       setPendingHint(null)
@@ -331,7 +369,7 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
       // runJob sees "cancelled" and unwinds on its own.
       await api.cancelJob(jobRef.current)
     } catch (err) {
-      setError(err.message)
+      setError(err)
     }
   }
 
@@ -367,7 +405,7 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
       if (conversation?.id === id) setConversation({ ...conversation, title })
       refreshList()
     } catch (err) {
-      setError(err.message)
+      setError(err)
     }
   }
 
@@ -375,12 +413,14 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
     if (!window.confirm(t.confirmDelete)) return
     try {
       await api.deleteConversation(id)
-      if (activeId === id) { setActiveId(null); setConversation(null) }
+      if (activeId === id) { show(null); setConversation(null) }
       refreshList()
     } catch (err) {
-      setError(err.message)
+      setError(err)
     }
   }
+
+  const jobHere = !!status && jobConversation === activeId
 
   // Named from the list, so a phone's header reads right the moment a conversation is picked.
   const openTitle = activeId
@@ -398,14 +438,14 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
             {t.close}
           </button>
         </div>
-        <button onClick={() => { setActiveId(null); setConversation(null); setListOpen(false) }}
+        <button onClick={() => { show(null); setConversation(null); setListOpen(false) }}
           className="m-3 rounded bg-slate-900 text-white py-2 text-sm">
           {t.newChat}
         </button>
         <input data-testid="conversation-search" value={query} placeholder={t.search}
           onChange={(e) => setQuery(e.target.value)}
           className="mx-3 mb-2 rounded border px-2 py-1 text-base md:text-sm" />
-        {error && <p className="mx-3 mb-2 text-sm text-red-600 md:hidden">{error}</p>}
+        {error && <p className="mx-3 mb-2 text-sm text-red-600 md:hidden" title={error.message}>{failureText(error, t)}</p>}
         <div className="flex-1 overflow-y-auto">
           {/* Always in the page, so a screen reader hears the note arrive. */}
           <div role="status">
@@ -428,7 +468,7 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
                   onBlur={() => setRenaming(null)}
                   className="min-w-0 flex-1 rounded border px-1 py-0.5 text-base font-normal md:text-sm" />
               ) : (
-                <button onClick={() => { setActiveId(c.id); setListOpen(false) }}
+                <button onClick={() => { show(c.id); setListOpen(false) }}
                   className="min-w-0 flex-1 truncate py-3 text-left md:py-1.5">
                   <span className="text-slate-600 mr-1">{c.provider}</span>
                   {c.title || t.untitled}
@@ -476,7 +516,7 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
               {packing ? t.packing : t.downloadAll(mediaCount)}
             </button>
           )}
-          {error && <span className="text-sm text-red-600">{error}</span>}
+          {error && <span className="text-sm text-red-600" title={error.message}>{failureText(error, t)}</span>}
         </header>
 
         <div ref={scrollRef} onScroll={trackScroll} data-testid="message-scroll"
@@ -518,7 +558,7 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
               )
             )}
 
-            {status && <TypingBubble hint={pendingHint} phase={phase} />}
+            {jobHere && <TypingBubble hint={pendingHint} phase={phase} />}
           </div>
         </div>
 
@@ -538,13 +578,13 @@ export default function Chat({ onQuotaSpent, chatTaps }) {
           <input value={input} onChange={(e) => setInput(e.target.value)}
             placeholder={t.composer} aria-describedby={unserved ? 'provider-unserved' : undefined}
             className="min-w-0 flex-1 border rounded px-3 py-2 text-base md:text-sm" />
-          {status ? (
+          {jobHere ? (
             <button type="button" onClick={stopJob}
               className="rounded bg-red-600 px-4 text-sm text-white hover:bg-red-700">
               {t.stop}
             </button>
           ) : (
-            <button type="submit" disabled={unserved}
+            <button type="submit" disabled={unserved || !!status}
               className="bg-slate-900 text-white rounded px-4 text-sm disabled:opacity-50">
               {t.send}
             </button>
