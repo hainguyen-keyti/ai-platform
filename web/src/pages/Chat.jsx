@@ -436,6 +436,8 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
   }
 
   const jobHere = !!status && jobConversation === activeId
+  // Under the job's own conversation only: right after opening it, the one before is still on screen.
+  const bubbleHere = jobHere && (!conversation || conversation.id === activeId)
   const busyElsewhere = !!status && !jobHere
   // A job's failure belongs to its own conversation; any other failure shows wherever the person is.
   const shownError = error && (error.conversation === undefined || error.conversation === activeId) ? error : null
@@ -576,7 +578,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
               )
             )}
 
-            {jobHere && <TypingBubble hint={pendingHint} phase={phase} startedAt={jobStarted} />}
+            {bubbleHere && <TypingBubble hint={pendingHint} phase={phase} startedAt={jobStarted} />}
           </div>
         </div>
 

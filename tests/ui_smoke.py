@@ -651,7 +651,8 @@ def main():
                 const chat = [...document.querySelectorAll('nav button')].find((b) => b.textContent.trim() === 'chat');
                 const seen = new MutationObserver(() => {
                     const shown = [...document.querySelectorAll('[data-testid=media-video]')].some((n) => n.getClientRects().length > 0);
-                    if (!window.__leftVideo && shown && !document.querySelector('[data-testid=message-scroll]').getClientRects().length) {
+                    const chatShown = !!document.querySelector('[data-testid=message-scroll]')?.getClientRects().length;
+                    if (!window.__leftVideo && shown && !chatShown) {
                         window.__leftVideo = true;
                         seen.disconnect();
                         chat.click();
@@ -1957,7 +1958,8 @@ def main():
         finally:
             context.close()
 
-        elsewhere_check = "a job running in another conversation says so beside the disabled Send, and opens it"
+        elsewhere_check = ("a job running in another conversation says so beside the disabled Send, and opens it "
+                           "with its bubble only under it")
         clock_check = "the typing bubble's clock keeps counting while another conversation is open"
         state = two_conversations({"status": "running"})
         context, view = answered_web(state)
@@ -1968,15 +1970,22 @@ def main():
             note = view.locator("[data-testid=job-elsewhere]")
             noted = note.count() == 1 and note.first.is_visible()
             held = view.locator("form button[type=submit]").is_disabled()
+            # Alpha's read is held a moment: while bravo is still on screen, alpha's bubble must not show under it.
+            state["hold_once"] = {"wa"}
             if noted:
                 note.locator("button").first.click()
             else:
                 view.locator("[data-testid=conversation-item] button", has_text="Alpha").first.click()
+            view.wait_for_timeout(800)
+            early = view.locator("[data-testid=typing-bubble]").count() if "answer bravo" in thread_text(view) else 0
+            for route, body in state.get("held_once", []):
+                route.fulfill(status=200, headers=json_headers, body=body)
             view.wait_for_selector("[data-testid=typing-bubble]", timeout=5000)
-            opened = noted and "question alpha" in thread_text(view)
+            opened = noted and early == 0 and "question alpha" in thread_text(view)
             clock = view.locator("[data-testid=typing-bubble] .tabular-nums").first.inner_text().strip()
             record(elsewhere_check, noted and held and opened,
-                   "note shown {}, Send disabled {}, its button opened alpha with its bubble {}".format(noted, held, opened))
+                   "note shown {}, Send disabled {}, a bubble under bravo while alpha loaded {}, its button opened "
+                   "alpha with its bubble {}".format(noted, held, early, opened))
             seconds = int(clock[:-1]) if clock.endswith("s") and clock[:-1].isdigit() else (60 if ":" in clock else -1)
             record(clock_check, seconds >= 4, "back in alpha after 5s in bravo the clock reads {!r}".format(clock))
         except Exception as exc:
