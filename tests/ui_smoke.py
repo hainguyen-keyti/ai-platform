@@ -1735,6 +1735,369 @@ def main():
         except Exception as exc:
             record(videos_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
+        # The web plan of 2026-10-22 (the review of 2026-10-21). Each check has a context of its own,
+        # this person's session, and the api answered in the browser where a state has to be held.
+        stamp_w = "2026-10-22 10:00:00"
+        json_headers = {"access-control-allow-origin": "*", "content-type": "application/json"}
+
+        def answered_web(state, lang="en", me_fails_first=False):
+            """A page whose conversations, chat, jobs and media are answered from `state`; the rest
+            (the account, the providers) goes to the real api. Held routes wait in state["held"]."""
+            context = browser.new_context(viewport={"width": 1280, "height": 900})
+            context.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', {!r});".format(
+                token, lang))
+            me_calls = {"n": 0}
+
+            def answer(route):
+                request = route.request
+                url = urlparse(request.url)
+                path, method = url.path, request.method
+                if method == "OPTIONS":
+                    route.continue_()
+                    return
+                if path == "/auth/me" and me_fails_first:
+                    me_calls["n"] += 1
+                    if me_calls["n"] == 1:
+                        route.abort()
+                        return
+                    route.continue_()
+                    return
+                if path == "/conversations" and method == "GET":
+                    body = {"items": [{"id": cid, "provider": "chatgpt", "title": conv["title"], "created_at": stamp_w,
+                                       "updated_at": stamp_w} for cid, conv in state.get("convs", {}).items()]}
+                elif path.startswith("/conversations/") and method == "GET":
+                    cid = path.rsplit("/", 1)[-1]
+                    if cid in state.get("hold", set()):
+                        state.setdefault("held", []).append((route, cid))
+                        return
+                    conv = state["convs"][cid]
+                    body = {"id": cid, "provider": "chatgpt", "title": conv["title"], "created_at": stamp_w,
+                            "updated_at": stamp_w, "orphan_media": [], "messages": conv["messages"]}
+                elif path == "/chat" and method == "POST":
+                    if state.get("chat_status"):
+                        route.fulfill(status=state["chat_status"], headers=json_headers,
+                                      body=json.dumps({"detail": state.get("chat_detail", "refused")}))
+                        return
+                    sent = json.loads(request.post_data)
+                    cid = sent.get("conversation_id") or state["new_conv"]
+                    state["convs"].setdefault(cid, {"title": sent["message"][:40], "messages": []})
+                    state["convs"][cid]["messages"].append(
+                        {"id": "u-{}".format(len(state["convs"][cid]["messages"])), "role": "user",
+                         "content": sent["message"], "created_at": stamp_w, "media": []})
+                    state["job_conv"] = cid
+                    body = {"job_id": "web-job", "conversation_id": cid}
+                elif path == "/jobs/web-job" and method == "GET":
+                    job = state["job"]
+                    body = {"id": "web-job", "status": job["status"], "phase": job.get("phase"),
+                            "error": job.get("error"), "error_kind": job.get("error_kind"),
+                            "conversation_id": state.get("job_conv")}
+                elif path == "/media" and method == "GET":
+                    query = dict(p.split("=", 1) for p in url.query.split("&") if "=" in p)
+                    offset, limit = int(query.get("offset", 0)), int(query.get("limit", 100))
+                    items = state.get("media", [])
+                    body = {"total": len(items), "items": items[offset:offset + limit]}
+                elif path.startswith("/media/") and path.endswith("/file"):
+                    route.fulfill(status=200, headers={"access-control-allow-origin": "*", "content-type": "image/png"},
+                                  body=png(8, 8))
+                    return
+                elif path.startswith("/media/") and method == "DELETE":
+                    state.setdefault("deleted", []).append(path.split("/")[2])
+                    route.fulfill(status=204, headers={"access-control-allow-origin": "*"}, body="")
+                    return
+                else:
+                    route.continue_()
+                    return
+                route.fulfill(status=200, headers=json_headers, body=json.dumps(body))
+
+            view = context.new_page()
+            view.on("console", heard(errors))
+            view.route(API_URL + "/**", answer)
+            return context, view
+
+        def msg(mid, role, content):
+            return {"id": mid, "role": role, "content": content, "created_at": stamp_w, "media": []}
+
+        def thread_text(view):
+            return view.locator("[data-testid=message-scroll]").inner_text()
+
+        # 1. Leaving the chat mid-job and coming back: the job is still watched.
+        left_check = "leaving the chat for the gallery mid-job and coming back keeps the job, its Stop and its reply"
+        state = {"convs": {}, "new_conv": "w1", "job": {"status": "running"}, "media": []}
+        context, view = answered_web(state)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.wait_for_selector(COMPOSER, timeout=20000)
+            view.fill(COMPOSER, "draw me a lighthouse")
+            view.click("button:has-text('Send')")
+            view.wait_for_selector("[data-testid=typing-bubble]", timeout=10000)
+            view.click("nav button:has-text('gallery')")
+            view.wait_for_timeout(1500)
+            view.click("nav button:has-text('chat')")
+            view.wait_for_timeout(1500)
+            bubble = view.locator("[data-testid=typing-bubble]").count()
+            stop = view.locator("button:has-text('Stop')").count()
+            state["convs"]["w1"]["messages"].append(msg("a-1", "assistant", "Here is the lighthouse."))
+            state["job"] = {"status": "done"}
+            landed = False
+            for _ in range(16):
+                view.wait_for_timeout(500)
+                if "Here is the lighthouse." in thread_text(view):
+                    landed = True
+                    break
+            record(left_check, bubble == 1 and stop == 1 and landed,
+                   "back in the chat: typing bubble {}, Stop {}, reply landed {}".format(bubble, stop, landed))
+        except Exception as exc:
+            record(left_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        # 2. A job finishing while another conversation is open, and a slow load answered late.
+        other_check = "a job finishing while another conversation is open leaves that one on screen"
+        state = {"convs": {"wa": {"title": "Alpha", "messages": [msg("a0", "user", "question alpha")]},
+                           "wb": {"title": "Bravo", "messages": [msg("b0", "user", "question bravo"),
+                                                                 msg("b1", "assistant", "answer bravo")]}},
+                 "job": {"status": "running"}, "media": []}
+        context, view = answered_web(state)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.locator("[data-testid=conversation-item] button", has_text="Alpha").first.click(timeout=20000)
+            view.wait_for_selector("text=question alpha", timeout=10000)
+            view.fill(COMPOSER, "and a follow up")
+            view.click("button:has-text('Send')")
+            view.wait_for_selector("[data-testid=typing-bubble]", timeout=10000)
+            view.locator("[data-testid=conversation-item] button", has_text="Bravo").first.click()
+            view.wait_for_selector("text=answer bravo", timeout=10000)
+            state["convs"]["wa"]["messages"].append(msg("a1", "assistant", "answer alpha two"))
+            state["job"] = {"status": "done"}
+            view.wait_for_timeout(5000)
+            shown = thread_text(view)
+            record(other_check, "answer bravo" in shown and "answer alpha two" not in shown
+                   and view.locator("[data-testid=typing-bubble]").count() == 0,
+                   "after the job ended: bravo shown {}, alpha's answer shown {}, typing bubble {}".format(
+                       "answer bravo" in shown, "answer alpha two" in shown,
+                       view.locator("[data-testid=typing-bubble]").count()))
+        except Exception as exc:
+            record(other_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        race_check = "a slow load of one conversation answered after the next one's leaves the next one on screen"
+        state = {"convs": {"wa": {"title": "Alpha", "messages": [msg("a0", "user", "question alpha")]},
+                           "wb": {"title": "Bravo", "messages": [msg("b0", "user", "question bravo")]}},
+                 "job": {"status": "done"}, "media": [], "hold": {"wa"}}
+        context, view = answered_web(state)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.locator("[data-testid=conversation-item] button", has_text="Alpha").first.click(timeout=20000)
+            view.wait_for_timeout(500)
+            view.locator("[data-testid=conversation-item] button", has_text="Bravo").first.click()
+            view.wait_for_selector("text=question bravo", timeout=10000)
+            state["hold"] = set()
+            for route, cid in state.get("held", []):
+                conv = state["convs"][cid]
+                route.fulfill(status=200, headers=json_headers, body=json.dumps(
+                    {"id": cid, "provider": "chatgpt", "title": conv["title"], "created_at": stamp_w,
+                     "updated_at": stamp_w, "orphan_media": [], "messages": conv["messages"]}))
+            view.wait_for_timeout(1500)
+            shown = thread_text(view)
+            record(race_check, "question bravo" in shown and "question alpha" not in shown,
+                   "after alpha's late answer: bravo shown {}, alpha shown {}".format(
+                       "question bravo" in shown, "question alpha" in shown))
+        except Exception as exc:
+            record(race_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        # 3. A login the api refuses brings the sign-in page; a failed first look keeps the session.
+        expired_check = "a call refused with 401 brings the sign-in page, not a red error in the shell"
+        state = {"convs": {}, "new_conv": "w3", "job": {"status": "running"}, "media": [],
+                 "chat_status": 401, "chat_detail": "session revoked"}
+        context, view = answered_web(state)
+        start = len(errors)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.wait_for_selector(COMPOSER, timeout=20000)
+            view.fill(COMPOSER, "hello after a long night")
+            view.click("button:has-text('Send')")
+            view.wait_for_timeout(2500)
+            # The 401 is this check's own doing.
+            provoked.update(i for i in range(start, len(errors)) if "401" in errors[i].split(" @ ")[0])
+            signin = view.locator("button:has-text('Sign in')").count() >= 1 and view.locator("nav").count() == 0
+            record(expired_check, signin, "sign-in shown {}, nav still there {}".format(
+                view.locator("button:has-text('Sign in')").count(), view.locator("nav").count()))
+        except Exception as exc:
+            record(expired_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        blip_check = "a first account read that fails on the network keeps the session and its retry brings the shell"
+        context, view = answered_web({"convs": {}, "job": {"status": "done"}, "media": []}, me_fails_first=True)
+        start = len(errors)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.wait_for_timeout(3000)
+            # The aborted account read is this check's own doing.
+            provoked.update(i for i in range(start, len(errors))
+                            if "ERR_FAILED" in errors[i] and "/auth/me" in errors[i])
+            kept = view.evaluate("() => localStorage.getItem('token')") == token
+            retry = view.locator("[data-testid=retry-connection]")
+            offered = retry.count() == 1
+            if offered:
+                retry.click()
+                view.wait_for_selector("nav", timeout=10000)
+            back = view.locator("nav").count() == 1
+            record(blip_check, kept and offered and back,
+                   "token kept {}, retry offered {}, shell after the retry {}".format(kept, offered, back))
+        except Exception as exc:
+            record(blip_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        # 4. Sign out ends the session on the server too.
+        signout_check = "sign out revokes the session: its token is refused afterwards"
+        try:
+            asked = urllib.request.Request(API_URL + "/auth/login", method="POST",
+                                           data=json.dumps({"email": email, "password": password}).encode(),
+                                           headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(asked, timeout=20) as resp:
+                own = json.loads(resp.read())["token"]
+            context = browser.new_context(viewport={"width": 1280, "height": 900})
+            context.add_init_script("localStorage.setItem('token', {!r}); localStorage.setItem('lang', 'en');".format(own))
+            start = len(errors)
+            try:
+                view = context.new_page()
+                view.on("console", heard(errors))
+                view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+                view.wait_for_selector("button:has-text('sign out')", timeout=20000)
+                view.click("button:has-text('sign out')")
+                view.wait_for_selector("button:has-text('Sign in')", timeout=10000)
+                view.wait_for_timeout(1000)
+            finally:
+                context.close()
+            # A call still in flight when the session ended answers 401: the ending's own doing.
+            provoked.update(i for i in range(start, len(errors)) if "401" in errors[i].split(" @ ")[0])
+            checked = urllib.request.Request(API_URL + "/auth/me", headers={"Authorization": "Bearer " + own})
+            try:
+                with urllib.request.urlopen(checked, timeout=20) as resp:
+                    after = resp.status
+            except urllib.error.HTTPError as exc:
+                after = exc.code
+            record(signout_check, after == 401, "/auth/me with the signed-out token: {}".format(after))
+        except Exception as exc:
+            record(signout_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
+        # 5 and 6. The gallery: a delete asks first; every item shows, a hundred at a time.
+        def tile(n):
+            return {"id": "g{}".format(n), "type": "image", "provider": "chatgpt", "prompt": "picture {}".format(n),
+                    "filename": "g{}.png".format(n), "conversation_id": None, "metadata": {}, "created_at": stamp_w}
+
+        confirm_check = "a gallery delete asks first, and a dismissed question deletes nothing"
+        state = {"convs": {}, "job": {"status": "done"}, "media": [tile(1)]}
+        context, view = answered_web(state)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.click("nav button:has-text('gallery')", timeout=20000)
+            view.wait_for_selector("[data-testid=media-thumb]", timeout=10000)
+            asked = []
+
+            def dismiss(dialog):
+                asked.append(dialog.message)
+                dialog.dismiss()
+            view.once("dialog", dismiss)
+            view.locator("button:has-text('delete')").first.click()
+            view.wait_for_timeout(1000)
+            after_dismiss = list(state.get("deleted", []))
+            view.once("dialog", lambda d: d.accept())
+            view.locator("button:has-text('delete')").first.click()
+            view.wait_for_timeout(1000)
+            record(confirm_check, asked and after_dismiss == [] and state.get("deleted") == ["g1"],
+                   "asked {}, deleted after dismissing {}, after accepting {}".format(
+                       [a[:50] for a in asked], after_dismiss, state.get("deleted")))
+        except Exception as exc:
+            record(confirm_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        more_check = "a gallery of 137 shows 100 and a show more that brings the rest"
+        state = {"convs": {}, "job": {"status": "done"}, "media": [tile(n) for n in range(137)]}
+        context, view = answered_web(state)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.click("nav button:has-text('gallery')", timeout=20000)
+            view.wait_for_selector("text=/Gallery \\(137\\)/", timeout=10000)
+            for _ in range(30):
+                view.wait_for_timeout(500)
+                if view.locator("[data-testid=media-thumb]").count() >= 100:
+                    break
+            first = view.locator("[data-testid=media-thumb]").count()
+            more = view.locator("[data-testid=gallery-more]")
+            offered = more.count() == 1
+            if offered:
+                more.click()
+                for _ in range(30):
+                    view.wait_for_timeout(500)
+                    if view.locator("[data-testid=media-thumb]").count() >= 137:
+                        break
+            final = view.locator("[data-testid=media-thumb]").count()
+            gone = view.locator("[data-testid=gallery-more]").count() == 0
+            record(more_check, first == 100 and offered and final == 137 and gone,
+                   "first {}, show more offered {}, then {}, button gone at the end {}".format(first, offered, final, gone))
+        except Exception as exc:
+            record(more_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        # 7. The person's language: the phase, a provider failure, no worker, no credit.
+        words_check = "in Vietnamese the phase, a provider failure, no worker and no credit read in Vietnamese"
+        state = {"convs": {}, "new_conv": "w7", "media": [],
+                 "job": {"status": "running", "phase": "picture appeared"}}
+        context, view = answered_web(state, lang="vi")
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.wait_for_selector("button:has-text('Gửi')", timeout=20000)
+            composer_vi = "input[placeholder^='Nhập tin nhắn']"
+            view.fill(composer_vi, "vẽ một ngọn hải đăng")
+            view.click("button:has-text('Gửi')")
+            view.wait_for_selector("[data-testid=typing-phase]", timeout=10000)
+            phase_vi = view.locator("[data-testid=typing-phase]").inner_text().strip()
+            state["job"] = {"status": "failed", "error_kind": "provider_error",
+                            "error": "TimeoutError: Locator.inner_text: Timeout 30000ms exceeded."}
+            view.wait_for_selector("header .text-red-600", timeout=10000)
+            failed_vi = view.locator("header .text-red-600").first.inner_text().strip()
+            failed_title = view.locator("header .text-red-600").first.get_attribute("title") or ""
+
+            # No credit left: refused before any job.
+            state["chat_status"], state["chat_detail"] = 402, "quota exhausted"
+            view.fill(composer_vi, "còn lượt không")
+            view.click("button:has-text('Gửi')")
+            view.wait_for_timeout(1500)
+            quota_vi = view.locator("header .text-red-600").first.inner_text().strip() \
+                if view.locator("header .text-red-600").count() else ""
+
+            # Nobody serving it any more: the unavailable notice, not a red English sentence.
+            state["chat_status"] = None
+            state["job"] = {"status": "running"}
+            view.fill(composer_vi, "thêm một lượt nữa")
+            view.click("button:has-text('Gửi')")
+            view.wait_for_selector("[data-testid=typing-bubble]", timeout=10000)
+            state["job"] = {"status": "failed", "error_kind": "no_worker",
+                            "error": "no worker is serving chatgpt right now"}
+            view.wait_for_selector("[data-testid=typing-bubble]", state="detached", timeout=10000)
+            view.wait_for_timeout(500)
+            notice = view.locator("[data-testid=provider-unserved]").count()
+            red_after_no_worker = view.locator("header .text-red-600").count()
+            record(words_check, phase_vi == "đã có ảnh, đang lấy về"
+                   and failed_vi == "Lượt này chưa thành công, lượt đã được hoàn lại. Hãy thử lại."
+                   and "TimeoutError" in failed_title and quota_vi == "Bạn đã dùng hết lượt hôm nay."
+                   and notice == 1 and red_after_no_worker == 0,
+                   "phase {!r}; failure {!r} title {!r}; 402 {!r}; no worker: notice {} red {}".format(
+                       phase_vi, failed_vi[:60], failed_title[:30], quota_vi[:50], notice, red_after_no_worker))
+        except Exception as exc:
+            shot(view, "18-words-failure")
+            record(words_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
         # The API page (2026-10-09): a key is made, shown once, listed by its prefix only, works on /v1,
         # survives a revoke that is dismissed, and stops working once a revoke is confirmed.
         def on_v1(key):
@@ -1756,6 +2119,8 @@ def main():
             page.click("[data-testid=key-create]")
             page.wait_for_selector("[data-testid=new-key]", timeout=10000)
             key = page.locator("[data-testid=new-key]").inner_text().strip()
+            # The list reloads after the key is shown: wait for its row (read too early on 2026-10-22).
+            page.wait_for_selector("[data-testid=key-row]:has-text('smoke key')", timeout=10000)
             row = page.locator("[data-testid=key-row]", has_text="smoke key")
             row_text = row.inner_text() if row.count() == 1 else ""
             shot(page, "17-api-key-made")
