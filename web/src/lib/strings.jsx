@@ -11,16 +11,27 @@ const STRINGS = {
     left: (n) => `${n} left`,
     language: 'VI',
     loading: 'loading...',
-    offline: 'Could not reach the server.',
+    locale: 'en-US',
+    offline: 'Could not reach the server. Check your connection, then try again.',
     retry: 'Try again',
-    turnFailed: 'This turn did not go through; your credit was returned. Please try again.',
-    noCredit: "You have used today's credits.",
+    turnFailed: 'This request failed; your credit was returned. Please try again.',
+    noCredit: (time) => `You have no credits left. They come back at ${time}.`,
     notFound: 'Not found: it may have just been deleted.',
     otherProvider: 'This conversation belongs to another provider. Start a new chat to use this one.',
     refusedInput: 'The message was refused: it is empty or too long.',
     serverFailed: 'The server ran into a problem. Please try again.',
-    // The worker names its phases in English already.
-    phases: {},
+    jobElsewhere: 'A reply is still coming in another conversation. You can send when it is done.',
+    openIt: 'Open it',
+    phases: {
+      'retrying the composer': 'trying again',
+      requeued: 'trying again',
+      'reply started': 'writing the reply',
+      'reply finished': 'reply written',
+      'making a video': 'making the video',
+      'picture appeared': 'picture ready, fetching it',
+      'video appeared': 'video ready, fetching it',
+      'file appeared': 'file ready, fetching it',
+    },
     newChat: 'New chat',
     conversations: 'Conversations',
     openConversations: 'Open conversations',
@@ -54,7 +65,8 @@ const STRINGS = {
     close: 'Close',
     galleryTitle: (n) => `Gallery (${n})`,
     nothingYet: 'Nothing generated yet.',
-    confirmDeleteMedia: 'Delete this file for good? This cannot be undone.',
+    galleryHeading: 'Gallery',
+    confirmDeleteMedia: 'Delete this file for good? It also disappears from its conversation. This cannot be undone.',
     showMore: (n) => `Show more (${n} left)`,
     signIn: 'Sign in',
     createAccount: 'Create account',
@@ -93,10 +105,13 @@ const STRINGS = {
     left: (n) => `còn ${n}`,
     language: 'EN',
     loading: 'đang tải...',
-    offline: 'Không kết nối được máy chủ.',
+    locale: 'vi-VN',
+    offline: 'Không kết nối được máy chủ. Kiểm tra mạng rồi thử lại.',
     retry: 'Thử lại',
-    turnFailed: 'Lượt này chưa thành công, lượt đã được hoàn lại. Hãy thử lại.',
-    noCredit: 'Bạn đã dùng hết lượt hôm nay.',
+    turnFailed: 'Yêu cầu này không thành công, bạn đã được hoàn lại 1 lượt. Hãy thử lại.',
+    noCredit: (time) => `Bạn đã hết lượt. Lượt được cấp lại lúc ${time}.`,
+    jobElsewhere: 'Một cuộc trò chuyện khác đang chờ trả lời. Bạn gửi được khi nó xong.',
+    openIt: 'Mở cuộc trò chuyện đó',
     notFound: 'Không tìm thấy: có thể nó vừa bị xoá.',
     otherProvider: 'Cuộc trò chuyện này thuộc nhà cung cấp khác. Hãy mở trò chuyện mới để dùng bên này.',
     refusedInput: 'Tin nhắn bị từ chối: trống hoặc quá dài.',
@@ -145,7 +160,8 @@ const STRINGS = {
     close: 'Đóng',
     galleryTitle: (n) => `Thư viện (${n})`,
     nothingYet: 'Chưa tạo gì cả.',
-    confirmDeleteMedia: 'Xoá vĩnh viễn tệp này? Không thể hoàn tác.',
+    galleryHeading: 'Thư viện',
+    confirmDeleteMedia: 'Xoá vĩnh viễn tệp này? Nó cũng biến mất khỏi cuộc trò chuyện. Không thể hoàn tác.',
     showMore: (n) => `Xem thêm (còn ${n})`,
     signIn: 'Đăng nhập',
     createAccount: 'Tạo tài khoản',
@@ -203,10 +219,17 @@ export function useStrings() {
   return useContext(LanguageContext)
 }
 
+// Credits come back on the first request after midnight UTC, said in the person's own clock.
+function refillTime(locale) {
+  const now = new Date()
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1))
+  return next.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
+}
+
 // What a person reads for a failure, in their language; the raw text is kept for a title.
 export function failureText(err, t) {
   if (err.kind) return t.turnFailed
-  if (err.status === 402) return t.noCredit
+  if (err.status === 402) return t.noCredit(refillTime(t.locale))
   if (err.status === 404) return t.notFound
   if (err.status === 409) return t.otherProvider
   if (err.status === 422) return t.refusedInput

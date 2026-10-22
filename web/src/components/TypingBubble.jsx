@@ -8,13 +8,15 @@ function format(seconds) {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-export default function TypingBubble({ hint, phase }) {
+// startedAt is the job's own start, so the clock keeps counting when the bubble is shown again.
+export default function TypingBubble({ hint, phase, startedAt }) {
   const { t } = useStrings()
-  const [elapsed, setElapsed] = useState(0)
+  const [mounted] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now())
+  const elapsed = Math.max(0, Math.floor((now - (startedAt || mounted)) / 1000))
 
   useEffect(() => {
-    const started = Date.now()
-    const id = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000)
+    const id = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(id)
   }, [])
 

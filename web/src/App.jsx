@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, getToken, setToken, whenUnauthorized } from './lib/api.js'
-import { LanguageProvider, useStrings } from './lib/strings.jsx'
+import { failureText, LanguageProvider, useStrings } from './lib/strings.jsx'
 import Login from './pages/Login.jsx'
 import Chat from './pages/Chat.jsx'
 import Gallery from './pages/Gallery.jsx'
@@ -14,7 +14,7 @@ function Shell() {
   const [chatTaps, setChatTaps] = useState(0)
   const [checking, setChecking] = useState(true)
   // The first look at the account failed for a reason other than the login: the session is kept.
-  const [unreachable, setUnreachable] = useState(false)
+  const [unreachable, setUnreachable] = useState(null)
   // Only the latest look counts (the dev build looks twice, a retry looks again).
   const looks = useRef(0)
 
@@ -27,18 +27,19 @@ function Shell() {
     const look = ++looks.current
     if (!getToken()) { setChecking(false); return }
     setChecking(true)
-    setUnreachable(false)
+    setUnreachable(null)
     api.me()
       .then((me) => { if (look === looks.current) setUser(me) })
-      .catch((err) => { if (look === looks.current && err.status !== 401) setUnreachable(true) })
+      .catch((err) => { if (look === looks.current && err.status !== 401) setUnreachable(err) })
       .finally(() => { if (look === looks.current) setChecking(false) })
   }
 
   useEffect(() => { lookAtAccount() }, [])
 
-  async function signOut() {
-    // Ended on the server too; one that cannot be reached still forgets the session here.
-    try { await api.logout() } catch { /* forgotten below either way */ }
+  function signOut() {
+    // Ended on the server too; the call already carries the token, so the session is forgotten
+    // here at once, and a server that cannot be reached does not hold the person up.
+    api.logout().catch(() => {})
     setToken(null)
     setUser(null)
   }
@@ -47,9 +48,9 @@ function Shell() {
   if (unreachable) {
     return (
       <div className="p-6 text-sm">
-        <p className="text-slate-700">{t.offline}</p>
+        <p className="text-slate-700" title={unreachable.message}>{failureText(unreachable, t)}</p>
         <button type="button" data-testid="retry-connection" onClick={lookAtAccount}
-          className="mt-3 rounded border px-3 py-1 hover:bg-slate-100">
+          className="mt-3 h-10 rounded border px-4 hover:bg-slate-100">
           {t.retry}
         </button>
       </div>

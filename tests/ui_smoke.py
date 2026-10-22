@@ -1777,6 +1777,11 @@ def main():
                     conv = state["convs"][cid]
                     body = {"id": cid, "provider": "chatgpt", "title": conv["title"], "created_at": stamp_w,
                             "updated_at": stamp_w, "orphan_media": [], "messages": conv["messages"]}
+                    # The next read only, answered later with the conversation as it was when asked.
+                    if cid in state.get("hold_once", set()):
+                        state["hold_once"].discard(cid)
+                        state.setdefault("held_once", []).append((route, json.dumps(body)))
+                        return
                 elif path == "/chat" and method == "POST":
                     if state.get("chat_status"):
                         route.fulfill(status=state["chat_status"], headers=json_headers,
@@ -1796,6 +1801,10 @@ def main():
                             "error": job.get("error"), "error_kind": job.get("error_kind"),
                             "conversation_id": state.get("job_conv")}
                 elif path == "/media" and method == "GET":
+                    if state.get("media_status"):
+                        route.fulfill(status=state["media_status"], headers=json_headers,
+                                      body=json.dumps({"detail": "database is locked"}))
+                        return
                     query = dict(p.split("=", 1) for p in url.query.split("&") if "=" in p)
                     offset, limit = int(query.get("offset", 0)), int(query.get("limit", 100))
                     items = state.get("media", [])
@@ -1909,6 +1918,107 @@ def main():
                        "question bravo" in shown, "question alpha" in shown))
         except Exception as exc:
             record(race_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        # The review of 2026-10-22: a job's failure, a late read, the disabled Send and the bubble's clock.
+        def two_conversations(job):
+            return {"convs": {"wa": {"title": "Alpha", "messages": [msg("a0", "user", "question alpha")]},
+                              "wb": {"title": "Bravo", "messages": [msg("b0", "user", "question bravo"),
+                                                                    msg("b1", "assistant", "answer bravo")]}},
+                    "job": job, "media": []}
+
+        def send_in_alpha_then_open_bravo(view):
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.locator("[data-testid=conversation-item] button", has_text="Alpha").first.click(timeout=20000)
+            view.wait_for_selector("text=question alpha", timeout=10000)
+            view.fill(COMPOSER, "and a follow up")
+            view.click("button:has-text('Send')")
+            view.wait_for_selector("[data-testid=typing-bubble]", timeout=10000)
+            view.locator("[data-testid=conversation-item] button", has_text="Bravo").first.click()
+            view.wait_for_selector("text=answer bravo", timeout=10000)
+
+        home_check = "a job failing while another conversation is open shows its error in its own conversation only"
+        state = two_conversations({"status": "running"})
+        context, view = answered_web(state)
+        try:
+            send_in_alpha_then_open_bravo(view)
+            state["job"] = {"status": "failed", "error_kind": "provider_error", "error": "TimeoutError: page gone"}
+            view.wait_for_timeout(4000)
+            in_bravo = view.locator("header .text-red-600").count()
+            view.locator("[data-testid=conversation-item] button", has_text="Alpha").first.click()
+            view.wait_for_selector("text=question alpha", timeout=10000)
+            view.wait_for_timeout(800)
+            in_alpha = view.locator("header .text-red-600").count()
+            record(home_check, in_bravo == 0 and in_alpha == 1,
+                   "red errors: in bravo while alpha failed {}, back in alpha {}".format(in_bravo, in_alpha))
+        except Exception as exc:
+            record(home_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        elsewhere_check = "a job running in another conversation says so beside the disabled Send, and opens it"
+        clock_check = "the typing bubble's clock keeps counting while another conversation is open"
+        state = two_conversations({"status": "running"})
+        context, view = answered_web(state)
+        try:
+            send_in_alpha_then_open_bravo(view)
+            # Five seconds away, so a clock that kept counting reads at least 4s (3.5s read "3s").
+            view.wait_for_timeout(5000)
+            note = view.locator("[data-testid=job-elsewhere]")
+            noted = note.count() == 1 and note.first.is_visible()
+            held = view.locator("form button[type=submit]").is_disabled()
+            if noted:
+                note.locator("button").first.click()
+            else:
+                view.locator("[data-testid=conversation-item] button", has_text="Alpha").first.click()
+            view.wait_for_selector("[data-testid=typing-bubble]", timeout=5000)
+            opened = noted and "question alpha" in thread_text(view)
+            clock = view.locator("[data-testid=typing-bubble] .tabular-nums").first.inner_text().strip()
+            record(elsewhere_check, noted and held and opened,
+                   "note shown {}, Send disabled {}, its button opened alpha with its bubble {}".format(noted, held, opened))
+            seconds = int(clock[:-1]) if clock.endswith("s") and clock[:-1].isdigit() else (60 if ":" in clock else -1)
+            record(clock_check, seconds >= 4, "back in alpha after 5s in bravo the clock reads {!r}".format(clock))
+        except Exception as exc:
+            record(elsewhere_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+            record(clock_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        stale_check = "a read of the open conversation answered after its reply landed does not take the reply away"
+        state = {"convs": {"wa": {"title": "Alpha", "messages": [msg("a0", "user", "question alpha")]}},
+                 "job": {"status": "running"}, "media": []}
+        context, view = answered_web(state)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.locator("[data-testid=conversation-item] button", has_text="Alpha").first.click(timeout=20000)
+            view.wait_for_selector("text=question alpha", timeout=10000)
+            view.fill(COMPOSER, "draw a harbour")
+            view.click("button:has-text('Send')")
+            view.wait_for_selector("[data-testid=typing-bubble]", timeout=10000)
+            view.click("nav button:has-text('gallery')")
+            view.wait_for_timeout(1000)
+            state["hold_once"] = {"wa"}
+            view.click("nav button:has-text('chat')")
+            view.wait_for_timeout(1000)
+            asked_on_return = len(state.get("held_once", []))
+            state["convs"]["wa"]["messages"].append(msg("a1", "assistant", "Here is the harbour."))
+            state["job"] = {"status": "done"}
+            landed = False
+            for _ in range(16):
+                view.wait_for_timeout(500)
+                if "Here is the harbour." in thread_text(view):
+                    landed = True
+                    break
+            for route, body in state.get("held_once", []):
+                route.fulfill(status=200, headers=json_headers, body=body)
+            view.wait_for_timeout(1500)
+            kept = "Here is the harbour." in thread_text(view)
+            record(stale_check, asked_on_return == 1 and landed and kept,
+                   "reads held on return {}, reply landed {}, still shown after the older read answered {}".format(
+                       asked_on_return, landed, kept))
+        except Exception as exc:
+            record(stale_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
         finally:
             context.close()
 
@@ -2053,6 +2163,60 @@ def main():
         finally:
             context.close()
 
+        unloaded_check = "a gallery that cannot load says so with a retry, not as an empty gallery"
+        state = {"convs": {}, "job": {"status": "done"}, "media": [tile(1), tile(2)], "media_status": 500}
+        context, view = answered_web(state)
+        start = len(errors)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.click("nav button:has-text('gallery')", timeout=20000)
+            view.wait_for_timeout(2500)
+            # The refused list is this check's own doing.
+            provoked.update(i for i in range(start, len(errors)) if "500" in errors[i].split(" @ ")[0])
+            empty_note = view.get_by_text("Nothing generated yet.").count()
+            zero = view.get_by_text("Gallery (0)").count()
+            retry = view.locator("[data-testid=gallery-retry]")
+            offered = retry.count() == 1
+            thumbs = 0
+            if offered:
+                state["media_status"] = None
+                retry.click()
+                for _ in range(20):
+                    view.wait_for_timeout(500)
+                    thumbs = view.locator("[data-testid=media-thumb]").count()
+                    if thumbs >= 2:
+                        break
+            record(unloaded_check, empty_note == 0 and zero == 0 and offered and thumbs == 2,
+                   "empty note {}, 'Gallery (0)' {}, retry offered {}, pictures after the retry {}".format(
+                       empty_note, zero, offered, thumbs))
+        except Exception as exc:
+            record(unloaded_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
+        credit_check = "a send refused for want of credit asks the account again, so the nav's count is right"
+        state = {"convs": {}, "new_conv": "w6", "job": {"status": "done"}, "media": [],
+                 "chat_status": 402, "chat_detail": "quota exhausted"}
+        context, view = answered_web(state)
+        reads = []
+        view.on("request", lambda r: reads.append(r.url) if urlparse(r.url).path == "/auth/me" else None)
+        start = len(errors)
+        try:
+            view.goto(WEB_URL, wait_until="domcontentloaded", timeout=30000)
+            view.wait_for_selector(COMPOSER, timeout=20000)
+            view.wait_for_timeout(1000)
+            before = len(reads)
+            view.fill(COMPOSER, "one more picture")
+            view.click("button:has-text('Send')")
+            view.wait_for_timeout(2000)
+            provoked.update(i for i in range(start, len(errors)) if "402" in errors[i].split(" @ ")[0])
+            record(credit_check, len(reads) > before,
+                   "account reads before the refused send {}, after {}".format(before, len(reads)))
+        except Exception as exc:
+            record(credit_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+        finally:
+            context.close()
+
         # 7. The person's language: the phase, a provider failure, no worker, no credit.
         words_check = "in Vietnamese the phase, a provider failure, no worker and no credit read in Vietnamese"
         state = {"convs": {}, "new_conv": "w7", "media": [],
@@ -2094,9 +2258,12 @@ def main():
             view.wait_for_timeout(500)
             notice = view.locator("[data-testid=provider-unserved]").count()
             red_after_no_worker = view.locator("header .text-red-600").count()
+            # The wording of the design review of 2026-10-22: the request, not the turn, failed; the
+            # credits come back at the next UTC midnight, said in the person's own clock.
             record(words_check, phase_vi == "đã có ảnh, đang lấy về"
-                   and failed_vi == "Lượt này chưa thành công, lượt đã được hoàn lại. Hãy thử lại."
-                   and "TimeoutError" in failed_title and quota_vi == "Bạn đã dùng hết lượt hôm nay."
+                   and failed_vi == "Yêu cầu này không thành công, bạn đã được hoàn lại 1 lượt. Hãy thử lại."
+                   and "TimeoutError" in failed_title
+                   and re.fullmatch(r"Bạn đã hết lượt\. Lượt được cấp lại lúc \d{1,2}:\d{2}\.", quota_vi)
                    and notice == 1 and red_after_no_worker == 0,
                    "phase {!r}; failure {!r} title {!r}; 402 {!r}; no worker: notice {} red {}".format(
                        phase_vi, failed_vi[:60], failed_title[:30], quota_vi[:50], notice, red_after_no_worker))

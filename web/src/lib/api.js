@@ -21,18 +21,22 @@ export function whenUnauthorized(handler) {
   onUnauthorized = handler
 }
 
-function expired() {
-  setToken(null)
-  if (onUnauthorized) onUnauthorized()
+// A refusal of an older token (a poll still running from before a new sign-in) leaves the new one be.
+function expired(sent) {
+  if (token === sent) {
+    setToken(null)
+    if (onUnauthorized) onUnauthorized()
+  }
   const failure = new Error('session expired, sign in again')
   failure.status = 401
   return failure
 }
 
 async function request(method, path, body) {
+  const sent = token
   const headers = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
-  if (token) headers['Authorization'] = `Bearer ${token}`
+  if (sent) headers['Authorization'] = `Bearer ${sent}`
 
   const response = await fetch(BASE + path, {
     method,
@@ -40,7 +44,7 @@ async function request(method, path, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   })
 
-  if (response.status === 401) throw expired()
+  if (response.status === 401) throw expired(sent)
   if (response.status === 204) return null
 
   const text = await response.text()
@@ -77,10 +81,11 @@ export const api = {
 }
 
 export async function mediaBlobUrl(id) {
+  const sent = token
   const response = await fetch(`${BASE}/media/${id}/file`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${sent}` },
   })
-  if (response.status === 401) throw expired()
+  if (response.status === 401) throw expired(sent)
   if (!response.ok) throw new Error('could not load image')
   return URL.createObjectURL(await response.blob())
 }
@@ -89,10 +94,11 @@ export async function mediaBlobUrl(id) {
 // Returns a blob url and the file name the server chose.
 export async function conversationZipUrl(conversationId, messageId) {
   const query = messageId ? `?message_id=${encodeURIComponent(messageId)}` : ''
+  const sent = token
   const response = await fetch(`${BASE}/conversations/${conversationId}/media.zip${query}`, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${sent}` },
   })
-  if (response.status === 401) throw expired()
+  if (response.status === 401) throw expired(sent)
   if (!response.ok) {
     const failure = new Error(`could not build the archive (${response.status})`)
     failure.status = response.status

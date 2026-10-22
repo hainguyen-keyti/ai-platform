@@ -66,6 +66,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
   const [conversation, setConversation] = useState(null)
   // The conversation the running job belongs to; its typing bubble and Stop show only there.
   const [jobConversation, setJobConversation] = useState(null)
+  const [jobStarted, setJobStarted] = useState(null)
   const [provider, setProvider] = useState('chatgpt')
   const [input, setInput] = useState('')
   const [status, setStatus] = useState(null)
@@ -136,11 +137,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
   useEffect(() => {
     stickToBottom.current = true
     if (!activeId) { setConversation(null); return }
-    let live = true
-    api.conversation(activeId)
-      .then((c) => { if (live) setConversation(c) })
-      .catch((e) => { if (live) setError(e) })
-    return () => { live = false }
+    readOpen(activeId).catch((e) => { if (activeIdRef.current === activeId) setError(e) })
   }, [activeId])
 
   // Hidden while another view shows, so a running job keeps its poll; shown again, the list and
@@ -157,8 +154,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
     wasHidden.current = false
     setShownAgain((n) => n + 1)
     refreshList()
-    const id = activeIdRef.current
-    if (id) api.conversation(id).then((c) => { if (activeIdRef.current === id) setConversation(c) }).catch(() => {})
+    if (activeIdRef.current) readOpen(activeIdRef.current).catch(() => {})
   }, [visible])
 
   useEffect(() => {
@@ -307,9 +303,21 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
     }
   }
 
+  // Every read of the open conversation is numbered, and opening another one counts too: a read is
+  // shown only if nothing was asked or opened after it, so a late or older answer never paints.
+  const reads = useRef(0)
+
   function show(id) {
+    if (activeIdRef.current !== id) reads.current += 1
     activeIdRef.current = id
     setActiveId(id)
+  }
+
+  async function readOpen(id) {
+    if (activeIdRef.current !== id) return
+    const n = ++reads.current
+    const fresh = await api.conversation(id)
+    if (n === reads.current) setConversation(fresh)
   }
 
   async function runJob(starter, hint = null, draft = null) {
@@ -317,15 +325,18 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
     setStatus('queued')
     setPendingHint(hint)
     setJobConversation(activeIdRef.current)
+    setJobStarted(Date.now())
     cancelWanted.current = false
     jobRef.current = null
     // Sending is an explicit request to watch the tail again.
     stickToBottom.current = true
     // A person who opened another conversation while the job was being made stays there.
     const stillHere = activeIdRef.current
+    // The conversation the job belongs to, which its error belongs to as well.
+    let own = stillHere
     try {
       const created = await starter()
-      const own = created.conversation_id
+      own = created.conversation_id
       jobRef.current = created.job_id
       if (cancelWanted.current) await api.cancelJob(created.job_id)
       setJobConversation(own)
@@ -335,11 +346,9 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
       // Show what was just said straight away. Setting the id alone does not
       // reload an already open conversation, so a follow-up message stayed
       // invisible until its job finished, which for a picture is minutes.
-      const said = await api.conversation(own)
-      if (activeIdRef.current === own) setConversation(said)
+      await readOpen(own)
       await waitForJob(created.job_id, (s, p) => { setStatus(s); setPhase(p) })
-      const fresh = await api.conversation(own)
-      if (activeIdRef.current === own) setConversation(fresh)
+      await readOpen(own)
       announce()
       refreshList()
       // Every job costs a credit, so the number in the nav is stale the moment
@@ -348,13 +357,19 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
     } catch (err) {
       // Refused before any job existed: nothing was sent, so the words go back in the box.
       if (!jobRef.current && draft) setInput(draft)
+      // Out of credit while the nav still shows some (spent by a key or another tab): ask again.
+      if (err.status === 402 && onQuotaSpent) onQuotaSpent()
       // Nobody serves it, or its account needs its admin: unavailable either way, not an error to read.
       const unavailable = err.status === 503 || err.kind === 'provider_misconfigured' || err.kind === 'no_worker'
       if (unavailable) setServed((s) => ({ ...s, [provider]: false }))
-      else setError(err)
+      else {
+        err.conversation = own
+        setError(err)
+      }
     } finally {
       setStatus(null)
       setJobConversation(null)
+      setJobStarted(null)
       jobRef.current = null
       setPhase(null)
       setPendingHint(null)
@@ -421,6 +436,9 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
   }
 
   const jobHere = !!status && jobConversation === activeId
+  const busyElsewhere = !!status && !jobHere
+  // A job's failure belongs to its own conversation; any other failure shows wherever the person is.
+  const shownError = error && (error.conversation === undefined || error.conversation === activeId) ? error : null
 
   // Named from the list, so a phone's header reads right the moment a conversation is picked.
   const openTitle = activeId
@@ -445,7 +463,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
         <input data-testid="conversation-search" value={query} placeholder={t.search}
           onChange={(e) => setQuery(e.target.value)}
           className="mx-3 mb-2 rounded border px-2 py-1 text-base md:text-sm" />
-        {error && <p className="mx-3 mb-2 text-sm text-red-600 md:hidden" title={error.message}>{failureText(error, t)}</p>}
+        {shownError && <p className="mx-3 mb-2 text-sm text-red-600 md:hidden" title={shownError.message}>{failureText(shownError, t)}</p>}
         <div className="flex-1 overflow-y-auto">
           {/* Always in the page, so a screen reader hears the note arrive. */}
           <div role="status">
@@ -458,7 +476,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
               className={`flex items-center gap-1 px-3 text-sm hover:bg-slate-100 ${
                 c.id === activeId ? 'bg-slate-100 font-medium' : ''}`}>
               {renaming === c.id ? (
-                <input data-testid="rename-input" autoFocus value={draftTitle}
+                <input data-testid="rename-input" autoFocus value={draftTitle} maxLength={80}
                   onChange={(e) => setDraftTitle(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') commitRename(c.id)
@@ -516,7 +534,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
               {packing ? t.packing : t.downloadAll(mediaCount)}
             </button>
           )}
-          {error && <span className="text-sm text-red-600" title={error.message}>{failureText(error, t)}</span>}
+          {shownError && <span className="text-sm text-red-600" title={shownError.message}>{failureText(shownError, t)}</span>}
         </header>
 
         <div ref={scrollRef} onScroll={trackScroll} data-testid="message-scroll"
@@ -558,7 +576,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
               )
             )}
 
-            {jobHere && <TypingBubble hint={pendingHint} phase={phase} />}
+            {jobHere && <TypingBubble hint={pendingHint} phase={phase} startedAt={jobStarted} />}
           </div>
         </div>
 
@@ -573,10 +591,21 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
               {t.providerUnserved(provider, anotherServed, !!activeId)}
             </p>
           )}
+          {!unserved && busyElsewhere && (
+            <p id="job-elsewhere" data-testid="job-elsewhere"
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t bg-amber-50 px-4 py-2 text-sm text-amber-800">
+              {t.jobElsewhere}
+              <button type="button" onClick={() => show(jobConversation)}
+                className="h-10 rounded border border-amber-300 bg-white px-4 text-amber-900 hover:bg-amber-100 md:h-8">
+                {t.openIt}
+              </button>
+            </p>
+          )}
         </div>
         <form onSubmit={send} className="flex gap-2 border-t bg-white p-3">
           <input value={input} onChange={(e) => setInput(e.target.value)}
-            placeholder={t.composer} aria-describedby={unserved ? 'provider-unserved' : undefined}
+            placeholder={t.composer}
+            aria-describedby={unserved ? 'provider-unserved' : busyElsewhere ? 'job-elsewhere' : undefined}
             className="min-w-0 flex-1 border rounded px-3 py-2 text-base md:text-sm" />
           {jobHere ? (
             <button type="button" onClick={stopJob}
