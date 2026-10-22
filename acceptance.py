@@ -1579,8 +1579,9 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         back = worker_ctl["start"]()
         if (killed and final.get("status") == "failed" and final.get("error_kind") in ("no_worker", "stranded")
                 and left == q0 and back):
-            c[dead].passed("failed as {} {:.0f}s after the kill, credit returned, no worker up meanwhile".format(
-                final.get("error_kind"), freed_in))
+            c[dead].passed("failed as {} {:.0f}s after the kill, credit returned, no worker up meanwhile; the "
+                           "new worker seen by the api {:.1f}s after its health answered".format(
+                               final.get("error_kind"), freed_in, worker_ctl["seen_after"]()))
         else:
             c[dead].failed("killed {} final {} kind {} after {:.0f}s quota {} -> {} worker back {}".format(
                 killed, final.get("status"), final.get("error_kind"), freed_in, q0, left, back))
@@ -2093,17 +2094,37 @@ def main():
             boot_error = "worker never became healthy ({})\n{}".format(detail, tail(workspace / "worker.log"))
             raise RuntimeError(boot_error)
 
-        worker_logs = {"n": 1}
+        worker_logs = {"n": 1, "seen_after": None}
+
+        def seen_by_api(providers, since, seconds=30):
+            """Seconds until the api had a contact (a claim or a ping) from each provider since `since`,
+            None if it never did: the api counts a worker as serving only from that contact."""
+            started = time.time()
+            while time.time() < started + seconds:
+                with sqlite3.connect(db_dir / "app.db") as conn:
+                    seen = {row[0] for row in conn.execute(
+                        "SELECT provider FROM worker_pings WHERE last_seen >= ?", (since,))}
+                if set(providers) <= seen:
+                    return time.time() - started
+                time.sleep(0.25)
+            return None
 
         def start_worker(extra_env=None):
             nonlocal worker_proc, worker_log
             worker_logs["n"] += 1
             env = dict(worker_env)
             env.update(extra_env or {})
+            with sqlite3.connect(db_dir / "app.db") as conn:
+                since = conn.execute("SELECT datetime('now')").fetchone()[0]
             worker_proc, worker_log = start_service(
                 python, ROOT / "worker", worker_port, env,
                 workspace / "worker-{}.log".format(worker_logs["n"]))
-            return wait_healthy(worker_health, 40)[0]
+            if not wait_healthy(worker_health, 40)[0]:
+                return False
+            # Healthy is not yet serving: a check that sends at once was refused 503 with no job on a
+            # loaded machine (2026-10-22, twice), so the gate waits for the api to have seen it.
+            worker_logs["seen_after"] = seen_by_api(env["PROVIDERS"].split(","), since)
+            return worker_logs["seen_after"] is not None
 
         def stop_worker():
             """Kill the worker outright; a job claimed by it loses its keeper."""
@@ -2124,7 +2145,8 @@ def main():
             stop_worker()
             return start_worker(extra_env)
 
-        worker_ctl = {"restart": restart_worker, "stop": stop_worker, "start": start_worker}
+        worker_ctl = {"restart": restart_worker, "stop": stop_worker, "start": start_worker,
+                      "seen_after": lambda: worker_logs["seen_after"]}
 
         def restart_api(extra_env):
             """Bring the api back with extra settings, on the same database and port."""
