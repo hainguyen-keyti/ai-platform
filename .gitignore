@@ -11,6 +11,9 @@ storage/
 # The test gate's command names this machine's path and WSL distro (HANDOFF, Phase 0)
 .claude/test-command.txt
 
+# Child sessions' reports to the orchestrator (one per ticket, kept on this machine)
+.scratch/
+
 # Legacy scratch output from the CLI experiments
 images/
 page.html

@@ -6,8 +6,16 @@ a probe reached the site from another device each time, and nothing a browser le
 back. Two fresh logins were ended by their sites within the hour. A profile keeps what its browser
 learns, Chromium lets one browser at a time open it, and the seed kept inside it makes every launch
 the same device.
+
+The seed pins the device, not the browser build. At a launch cloakbrowser 0.5.10 looks for a newer
+Chromium (at most once an hour, in a background thread), fetches it and uses it from the next launch
+on, unless CLOAKBROWSER_AUTO_UPDATE=false (download.py); a new build changes what the sites see. So
+the way in turns that look off before it launches, unless the process set the variable itself. It
+does not undo a build some other launch already fetched: cloakbrowser then picks the newest it has
+(get_effective_version in config.py). A newer build is a choice of its own, made with a real run.
 """
 
+import os
 import random
 from pathlib import Path
 
@@ -67,6 +75,7 @@ def open_session(sessions_path, name: str, headless: bool = True, create: bool =
     elif not saved(sessions_path, name):
         raise ProviderError(NO_SESSION.format(profile, name))
     seed = device_seed(profile, draw=create)
+    os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
     try:
         return cloakbrowser.launch_persistent_context(
             str(profile), headless=headless, args=["--fingerprint={}".format(seed)])

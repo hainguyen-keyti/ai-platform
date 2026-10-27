@@ -10,11 +10,12 @@ back, and a Gemini login was signed out by Google after four such launches in 47
 profile directory and one seed a second launch reads the same device, keeps its cookies, and a
 second browser on the same profile is refused by Chromium itself.
 The sessions folder here is as this machine has it: each provider's old state file, a cookie still
-in it, lies beside the profile its login made. Prints N/12 PASSED.
+in it, lies beside the profile its login made. Prints N/13 PASSED.
 """
 
 import http.server
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ from src.providers.base import ProviderError  # noqa: E402
 
 DRIVERS = (("chatgpt", chatgpt.ChatGPTProvider), ("grok", grok.GrokProvider), ("gemini", gemini.GeminiProvider))
 SEED = "device-seed"
+UPDATE = "CLOAKBROWSER_AUTO_UPDATE"
 OLD_STATE = json.dumps({"origins": [], "cookies": [{
     "name": "stale", "value": "1", "domain": "127.0.0.1", "path": "/", "expires": time.time() + 86400,
     "httpOnly": False, "secure": False, "sameSite": "Lax"}]})
@@ -401,6 +403,30 @@ def main():
                     "directory the Finder has looked at drew {}; another failure {!r}; a held profile {!r}".format(
                         asked[:2], len(seen.get("edges") or []), seen.get("drawn"), seen.get("other"), seen.get("held")))
     check("the way in opens with a window when asked, and a launch that fails says its own reason", way_in)
+
+    def keeps_build():
+        real, given = cloakbrowser.launch_persistent_context, folder({"chatgpt": "24680"})
+        before, seen = os.environ.pop(UPDATE, None), {}
+
+        def launcher(*args, **kwargs):
+            seen.setdefault("at launch", []).append(os.environ.get(UPDATE))
+            return "a browser"
+        try:
+            cloakbrowser.launch_persistent_context = launcher
+            session.open_session(given, "chatgpt")
+            seen["after"] = os.environ.get(UPDATE)
+            os.environ[UPDATE] = "true"
+            session.open_session(given, "chatgpt")
+            seen["chosen"] = os.environ.get(UPDATE)
+        finally:
+            cloakbrowser.launch_persistent_context = real
+            os.environ.pop(UPDATE, None)
+            if before is not None:
+                os.environ[UPDATE] = before
+        ok = seen.get("at launch") == ["false", "true"] and seen.get("after") == "false" and seen.get("chosen") == "true"
+        return ok, ("{} as each launch saw it (unset, then set to 'true' beforehand) {}; the process kept {!r}, "
+                    "then {!r}".format(UPDATE, seen.get("at launch"), seen.get("after"), seen.get("chosen")))
+    check("the way in keeps the installed Chromium build unless the process chose otherwise", keeps_build)
 
     def only_the_login_makes():
         sources = (list((ROOT / "worker" / "src").rglob("*.py")) + list((ROOT / "scripts").glob("*.py"))

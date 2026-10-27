@@ -1,5 +1,12 @@
 # Installed into the existing cloakbrowser venv by scripts/run-worker.sh.
-# cloakbrowser itself is already present there and is intentionally not pinned here.
+# cloakbrowser and playwright are pinned to the versions the gates and the three sites have seen:
+# a new cloakbrowser can bring a new Chromium build, and a build change is the one thing that
+# silently changes what the sites see (the device seed pins the fingerprint, not the build).
+# Moving either is a choice of its own, made with a real run. open_session also sets
+# CLOAKBROWSER_AUTO_UPDATE=false so cloakbrowser does not fetch a Chromium newer than the
+# installed 146.0.7680.177.5.
+cloakbrowser==0.5.10
+playwright==1.63.0
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 httpx==0.28.1

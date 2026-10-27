@@ -346,6 +346,22 @@ commit. Progress:
   second independent review. The child left an image `ai-platform-web:plan3-03-old` and a dangling
   volume behind; removing them is the owner's call. `npm ci` reports "3 vulnerabilities (1
   moderate, 2 high)" in the lockfile, not looked into.
+- **#4 done** (plan3 ticket 04): `worker/requirements.txt` pins `cloakbrowser==0.5.10` and
+  `playwright==1.63.0` and says why; `open_session` sets `CLOAKBROWSER_AUTO_UPDATE=false` unless the
+  process set it. A new check in `tests/test_session_profile.py` read 12/13 red before and 13/13
+  after (orchestrator's run 13/13); two mutants (overwriting instead of `setdefault`; setting it
+  after the launch) red. `pip install -r` changed nothing, `pip check` clean. **Full gate, the
+  orchestrator's run through the test gate: 58/58, build, 74/74, exit 0 in 512s;**
+  `~/.cloakbrowser/` still holds only `chromium-146.0.7680.177.5`. **The hole it left, measured by
+  the child in cloakbrowser 0.5.10's own code:** a launch that does not go through `open_session`
+  (`tests/test_dom_signatures.py`, `tests/ui_smoke.py`, `tests/ui_journey.py`,
+  `tests/test_gemini_driver.py`, `tests/gemini_probe.py`) still checks for a newer Chromium at most
+  once an hour in a background thread, downloads it and writes the marker
+  `~/.cloakbrowser/latest_version_linux-x64`, and `get_effective_version` then picks that build for
+  every later launch, `open_session` included, whatever `CLOAKBROWSER_AUTO_UPDATE` says. Nothing
+  changed today only because the newest free linux build upstream is still 146 (the ten newest
+  releases are `-pro`, no linux tarball). The owner chose option A on 2026-10-28: issue #9, worked
+  next (below). `.scratch/` (the child sessions' reports) is now git-ignored.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
