@@ -264,7 +264,17 @@ machine downloads its Chromium; run alone right after, one try met a passing WSL
 Chromium is cloakbrowser's free binary **v146**, where the macOS machine ran chromium-145.0.7632.109.2:
 the browser build the sites see changes on this machine (plan (3)'s cloakbrowser pin and
 `CLOAKBROWSER_AUTO_UPDATE`); it also warns that the Windows font set is incomplete. Next: 0-1 (Docker
-Desktop, the owner, not installed yet), then 0-5.
+Desktop, the owner, not installed yet), then 0-5. **0-1 done** (Docker Desktop, engine 29.9.2, its
+WSL integration on for Ubuntu, compose v5.6.1). **0-5 at 7b53dac: compose build and up (api health
+ok, web 200), `npm ci` and `npm run build` exit 0 (npm 11 warns it held esbuild's postinstall), the
+mock worker with `MOCK_DELAY_SECONDS=4` claiming from the api, `tests/ui_smoke.py` 73/74 in 3m53s.**
+The one red, "on a phone the nav is one row from 360px in both languages, its right side kept
+together": nav heights en 360 39, en 390 39, vi 360 **63**, vi 390 39, the right side split, no word
+wrapped inside an item. Measured right after through CDP (`CSS.getPlatformFontsForNode` on the
+login page): the web's text (`ui-sans-serif, system-ui, sans-serif`) renders in **DejaVu Sans**, the
+only sans family in this WSL besides Ubuntu's, where macOS rendered its own system face; DejaVu is
+wider, so the Vietnamese nav no longer fits one row at 360px. A host-font difference of the test
+machine, not a code change; how to treat it is the owner's call (Parked questions).
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
@@ -386,6 +396,11 @@ Desktop was off too, so api, web and worker were all down until restarted.
 
 ## Parked questions
 
+- **ui_smoke's layout checks depend on the test machine's fonts** (2026-10-27, Phase 0): the web
+  names no font of its own, so inside WSL its text renders in DejaVu Sans and the Vietnamese phone
+  nav takes two rows at 360px (63px, 73/74). Phones render their own system face. Options: give the
+  web a font of its own (a code change, plan (3) or a ticket), or install fonts in WSL that match the
+  devices the check stands for; the check is not loosened
 - **`tests/provider_probe.py attachment` cannot press remove** (read 2026-10-27, not run): lines
   1014-1015 use `ATTACHMENT_PREVIEW` and `ATTACHMENT_REMOVE`, defined only in
   `worker/src/providers/chatgpt.py:30-31` and not in the probe's import (lines 28-30), so that step
