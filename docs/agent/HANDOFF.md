@@ -275,6 +275,19 @@ login page): the web's text (`ui-sans-serif, system-ui, sans-serif`) renders in 
 only sans family in this WSL besides Ubuntu's, where macOS rendered its own system face; DejaVu is
 wider, so the Vietnamese nav no longer fits one row at 360px. A host-font difference of the test
 machine, not a code change; how to treat it is the owner's call (Parked questions).
+**Fonts settled the same day (the owner's choice):** Roboto from apt with a fontconfig alias changed
+nothing in the browser: cloakbrowser's Chromium on Linux claims Windows (`navigator.platform` Win32)
+and rendered every named host family (Roboto, Ubuntu, even DejaVu Serif) as DejaVu Sans, only the
+generic families reaching DejaVu. The owner chose cloakbrowser's own advice instead: 28 font files
+of this machine's Windows (Segoe UI, Arial, Calibri, Consolas, Courier New, Marlett, Franklin
+Gothic, MS Gothic) copied from `C:\Windows\Fonts` into `~/.local/share/fonts/windows` in WSL, then
+`fc-cache -f`. The web's text then renders in **Arial** and cloakbrowser's font warning is gone.
+**`tests/ui_smoke.py` 74/74 in 3m46s at 47a35d0** (2026-10-27 12:38 UTC, the nav 39px in both
+languages at 360 and 390). The code is the same from 2ebc188 to 47a35d0 (only this file changed),
+so the full gate reads quick 56/56, build exit 0, ui_smoke 74/74 on this machine. Real runs will
+also show the sites this Windows font set, where the macOS machine showed its own. Roboto and
+`~/.config/fontconfig/fonts.conf` stay installed, inert for the browser. Next: 0-6, the test
+command for the orchestration.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
@@ -397,10 +410,11 @@ Desktop was off too, so api, web and worker were all down until restarted.
 ## Parked questions
 
 - **ui_smoke's layout checks depend on the test machine's fonts** (2026-10-27, Phase 0): the web
-  names no font of its own, so inside WSL its text renders in DejaVu Sans and the Vietnamese phone
-  nav takes two rows at 360px (63px, 73/74). Phones render their own system face. Options: give the
-  web a font of its own (a code change, plan (3) or a ticket), or install fonts in WSL that match the
-  devices the check stands for; the check is not loosened
+  names no font of its own, so what the checks measure is whatever face the test browser has. In
+  WSL without Windows fonts that was DejaVu Sans and the Vietnamese phone nav took two rows at 360px
+  (63px, 73/74); with the Windows fonts copied in it is Arial and 74/74. Phones render their own
+  system face, which no machine here reproduces. A font of the web's own would make the measure the
+  same everywhere (a code change, plan (3) or a ticket); the check is not loosened
 - **`tests/provider_probe.py attachment` cannot press remove** (read 2026-10-27, not run): lines
   1014-1015 use `ATTACHMENT_PREVIEW` and `ATTACHMENT_REMOVE`, defined only in
   `worker/src/providers/chatgpt.py:30-31` and not in the probe's import (lines 28-30), so that step
