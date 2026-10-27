@@ -365,6 +365,21 @@ commit. Progress:
   changed today only because the newest free linux build upstream is still 146 (the ten newest
   releases are `-pro`, no linux tarball). The owner chose option A on 2026-10-28: issue #9, worked
   next (below). `.scratch/` (the child sessions' reports) is now git-ignored.
+- **#9 done** (plan3 ticket 09): the five test files that launch cloakbrowser themselves
+  (`test_dom_signatures.py`, `ui_smoke.py`, `ui_journey.py`, `test_gemini_driver.py`,
+  `gemini_probe.py`) set `CLOAKBROWSER_AUTO_UPDATE=false` with `setdefault` at the top of the module.
+  A new check in `tests/test_session_profile.py` reads every `.py` under `worker/`, `scripts/` and
+  `tests/` with `ast` and fails a launch (any of cloakbrowser's seven launchers or `ensure_binary`,
+  by module or by name) with no such `setdefault` above it at module level or in its own function:
+  red 13/14 on the old tree naming the five files and their first launch lines, 14/14 after; 18
+  mutants red; two child reviews (the first found `launch_context` missed, fixed). Orchestrator's
+  runs: `test_session_profile.py` 14/14, `test_dom_signatures.py` 10/10, `test_gemini_driver.py`
+  143/143, none printing cloakbrowser's "Update available" (it did before, the variable also turns
+  off the wrapper check); `ui_journey.py` and `gemini_probe.py` not run (real accounts), the child
+  imported both. **Full gate, the orchestrator's run through the test gate: 58/58, build, 74/74, exit
+  0 in 501s, no "Update available" in ui_smoke**; `~/.cloakbrowser/` still holds only
+  `chromium-146.0.7680.177.5`, no marker. The hourly Chromium check itself is shown off only
+  indirectly (the same variable gates it; upstream has nothing newer to fetch).
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can

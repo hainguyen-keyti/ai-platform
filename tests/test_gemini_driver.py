@@ -16,10 +16,14 @@ Prints N/N PASSED.
 """
 
 import json
+import os
 import re
 import sys
 import unicodedata
 from pathlib import Path
+
+# The installed Chromium build, as open_session keeps it: a launch of its own looks hourly for a newer one to fetch.
+os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))

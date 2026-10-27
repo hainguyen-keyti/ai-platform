@@ -17,12 +17,16 @@ setting. Measured first on 2026-09-25 with a throwaway copy of this file; see do
 
 import base64
 import json
+import os
 import sys
 import threading
 import time
 from pathlib import Path
 
 import cloakbrowser
+
+# The installed Chromium build, as open_session keeps it: a launch of its own looks hourly for a newer one to fetch.
+os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))

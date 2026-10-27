@@ -31,6 +31,9 @@ from urllib.parse import urlparse
 
 import cloakbrowser
 
+# The installed Chromium build, as open_session keeps it: a launch of its own looks hourly for a newer one to fetch.
+os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
+
 WEB_URL = os.environ.get("WEB_URL", "http://localhost:5173")
 API_URL = os.environ.get("API_URL", "http://localhost:3000")
 INVITE_CODE = os.environ.get("INVITE_CODE", "")

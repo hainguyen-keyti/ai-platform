@@ -9,8 +9,12 @@ and not in an ordinary reply, so a detector that matches everything, or nothing,
 fails here without a real failure to provoke. Prints N/10 PASSED.
 """
 
+import os
 import sys
 from pathlib import Path
+
+# The installed Chromium build, as open_session keeps it: a launch of its own looks hourly for a newer one to fetch.
+os.environ.setdefault("CLOAKBROWSER_AUTO_UPDATE", "false")
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"

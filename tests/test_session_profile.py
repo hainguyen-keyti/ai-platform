@@ -10,9 +10,10 @@ back, and a Gemini login was signed out by Google after four such launches in 47
 profile directory and one seed a second launch reads the same device, keeps its cookies, and a
 second browser on the same profile is refused by Chromium itself.
 The sessions folder here is as this machine has it: each provider's old state file, a cookie still
-in it, lies beside the profile its login made. Prints N/13 PASSED.
+in it, lies beside the profile its login made. Prints N/14 PASSED.
 """
 
+import ast
 import http.server
 import json
 import os
@@ -427,6 +428,67 @@ def main():
         return ok, ("{} as each launch saw it (unset, then set to 'true' beforehand) {}; the process kept {!r}, "
                     "then {!r}".format(UPDATE, seen.get("at launch"), seen.get("after"), seen.get("chosen")))
     check("the way in keeps the installed Chromium build unless the process chose otherwise", keeps_build)
+
+    def every_launch_keeps_build():
+        # A launch is a call that reaches ensure_binary, where cloakbrowser 0.5.10 starts its update check:
+        # one of its launchers or ensure_binary itself, by a module (import cloakbrowser[.browser] [as x],
+        # from cloakbrowser import browser) or by its own name (from cloakbrowser import launch [as y]).
+        # It is kept when the setdefault stands above it in the text, as a statement of the module's own
+        # body or in the function that launches; a file that opens only through open_session has no
+        # launch of its own. Read from the text, not run: a setdefault in a branch of that function that
+        # never runs still counts, one inside a module-level if or try does not, a later assignment or
+        # pop of the variable is not seen, nor a launcher reached through getattr, a variable, import *
+        # or importlib.
+        # check_for_update is not a launch: it fetches whatever the variable says.
+        sources = sorted(path for top in ("worker", "scripts", "tests") for path in (ROOT / top).rglob("*.py"))
+        launchers = {"launch", "launch_async", "launch_context", "launch_context_async", "launch_persistent_context",
+                     "launch_persistent_context_async", "ensure_binary"}
+        launching, bare = [], {}
+        for path in sources:
+            tree = ast.parse(path.read_text(), str(path))
+            modules, names, parent = set(), set(), {}
+            for node in ast.walk(tree):
+                for child in ast.iter_child_nodes(node):
+                    parent[child] = node
+                if isinstance(node, ast.Import):
+                    modules |= {(alias.asname or alias.name).split(".")[0] for alias in node.names
+                                if alias.name.split(".")[0] == "cloakbrowser"}
+                elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "cloakbrowser":
+                    names |= {alias.asname or alias.name for alias in node.names if alias.name in launchers}
+                    modules |= {alias.asname or alias.name for alias in node.names if alias.name not in launchers}
+
+            def root(expr):
+                while isinstance(expr, ast.Attribute):
+                    expr = expr.value
+                return expr.id if isinstance(expr, ast.Name) else None
+
+            def where(node):
+                while node in parent and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    node = parent[node]
+                return node
+
+            calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+            launches = [call for call in calls if (
+                isinstance(call.func, ast.Attribute) and call.func.attr in launchers
+                and root(call.func.value) in modules) or (isinstance(call.func, ast.Name) and call.func.id in names)]
+            keeps = [call for call in calls if isinstance(call.func, ast.Attribute) and call.func.attr == "setdefault"
+                     and isinstance(call.func.value, ast.Attribute) and call.func.value.attr == "environ"
+                     and [getattr(arg, "value", None) for arg in call.args] == [UPDATE, "false"]]
+            on_top = [keep.lineno for keep in keeps if isinstance(parent.get(keep), ast.Expr)
+                      and parent[parent[keep]] is tree]
+            if not launches:
+                continue
+            name = str(path.relative_to(ROOT))
+            launching.append(name)
+            loose = [call.lineno for call in launches
+                     if not any(line < call.lineno for line in on_top)
+                     and not any(where(keep) is where(call) and keep.lineno < call.lineno for keep in keeps)]
+            if loose:
+                bare[name] = min(loose)
+        ok = "worker/src/providers/session.py" in launching and not bare
+        return ok, ("of {} files read, {} launch cloakbrowser themselves: {}; with no {} setdefault above the "
+                    "launch (file: first such line) {}".format(len(sources), len(launching), launching, UPDATE, bare))
+    check("every launch, the way in's and any other, keeps the installed Chromium build", every_launch_keeps_build)
 
     def only_the_login_makes():
         sources = (list((ROOT / "worker" / "src").rglob("*.py")) + list((ROOT / "scripts").glob("*.py"))
