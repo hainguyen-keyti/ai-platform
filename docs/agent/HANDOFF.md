@@ -306,8 +306,11 @@ api's settings and `.env.example`, #3 the web image's lockfile, #4 the cloakbrow
 Chromium pin, #5 the records against the code, #6 stale comments and the probe's import (blocked
 by #1), #7 the README and CLAUDE.md's commands (blocked by #2, #3, #4). **Added 2026-10-28 with
 the owner's yes: #8** (T9), `scripts/run-worker.sh` passes the worker every line `.env` sets for
-it and a name given on the command line still wins, found by #2, medium risk; it blocks #7. The
-order is now #3, #4, #8, #5, #6, #7 (none of #3, #4, #8 shares a file). Each issue holds its goal,
+it and a name given on the command line still wins, found by #2, medium risk; it blocks #7. **And
+#9** (T10, 2026-10-28, option A): every browser launch that bypasses `open_session` sets
+`CLOAKBROWSER_AUTO_UPDATE=false` too, with a guard check, found by #4. The order is now #9, #8, #5,
+#6, #7; the orchestrator hands each next ticket on once the previous one is committed, stopping
+only for the owner's decision or a ticket failing twice (DECISIONS 2026-10-28). Each issue holds its goal,
 its files, its "done when" checklist and the common rules; the orchestrator hands each to a child
 session by the `/orchestrate` skill, checks the diff and the full gate, and commits one ticket per
 commit. Progress:
