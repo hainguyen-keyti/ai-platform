@@ -1,0 +1,16 @@
+# The project runs inside WSL (DECISIONS 2026-10-27): every text file is checked out with LF,
+# whatever core.autocrlf says, since a CR breaks the shell scripts and the sourced .env.
+* text=auto eol=lf
+
+# Binary files: never converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mp4 binary
+*.zip binary
+*.pdf binary
+*.woff binary
+*.woff2 binary

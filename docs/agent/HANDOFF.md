@@ -236,6 +236,28 @@ account.
 
 ## Next steps
 
+**Phase 0, approved 2026-10-27 (DECISIONS 2026-10-27): make the project run on the Windows
+machine, inside WSL Ubuntu, from `/mnt/d/keyti/ai-platform`.** Steps: 0-1 Docker Desktop with the
+WSL2 backend (the owner, UAC); 0-2 the venv `~/cloakbrowser-env` in WSL (PyPI checked first); 0-3
+`.env` with new secrets; 0-4 `python acceptance.py --keep` 56/56; 0-5 compose up, web build, mock
+worker with `MOCK_DELAY_SECONDS=4`, `tests/ui_smoke.py` 74/74; 0-6 `.claude/test-command.txt`
+running the full gate through `wsl -d Ubuntu --exec bash -lc`; 0-7 every difference from macOS
+written down, as input to plan (3)'s setup guide. Then plan (3). Tickets in GitHub Issues (each
+asked first), state in this file; provider logins only after Phase 0.
+Progress 2026-10-27: **0-2 done**: `~/cloakbrowser-env` in WSL (Ubuntu 26.04.1), Python 3.11.17
+installed by uv 0.13.5 (`uv venv --seed`, since the gate and `run-worker.sh` call the venv's pip),
+`cloakbrowser==0.5.10` and `playwright==1.63.0` (the versions the macOS machine ran; cloakbrowser
+0.6.4 of 2026-10-23 was under two weeks old), then both requirements files; `pip check` clean. No
+Chromium downloaded yet. **0-3 done**: `.env` written from `.env.example` with new JWT_SECRET,
+INVITE_CODE and WORKER_TOKEN, LF line endings, git-ignored; no value was printed. **Blocker found**:
+`core.autocrlf=true` on this machine checks 167 files out with CRLF and there is no
+`.gitattributes`, so in WSL `bash -n scripts/run-worker.sh` fails ("unexpected end of file"); the
+shell scripts cannot run until the line endings are settled. **Settled the same day** (the owner's
+choice): a `.gitattributes` with `* text=auto eol=lf` and the binary types marked `binary`; the
+working tree was written again from the index, 167 text files LF and the 28 PNG untouched, and
+`bash -n` passes on both tracked `.sh` files inside WSL. Next: 0-1 (Docker Desktop, the owner),
+then 0-4.
+
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
 start (the skill refuses a call from the agent, `disable-model-invocation`); then
