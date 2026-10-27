@@ -286,8 +286,18 @@ Gothic, MS Gothic) copied from `C:\Windows\Fonts` into `~/.local/share/fonts/win
 languages at 360 and 390). The code is the same from 2ebc188 to 47a35d0 (only this file changed),
 so the full gate reads quick 56/56, build exit 0, ui_smoke 74/74 on this machine. Real runs will
 also show the sites this Windows font set, where the macOS machine showed its own. Roboto and
-`~/.config/fontconfig/fonts.conf` stay installed, inert for the browser. Next: 0-6, the test
-command for the orchestration.
+`~/.config/fontconfig/fonts.conf` stay installed, inert for the browser. **0-6 done**: the full
+gate is one command, `scripts/full-gate.sh` (the quick gate, the web build, `docker compose up -d`
+and a wait for api and web, a mock worker with `MOCK_DELAY_SECONDS=4` started when nothing answers
+on :8000 and stopped on exit, a worker already there used only if its health says mock, then
+`tests/ui_smoke.py` with INVITE_CODE read from `.env`), and `.claude/test-command.txt` holds the
+one line the test gate runs, `wsl -d Ubuntu --exec bash -lc "cd /mnt/d/keyti/ai-platform &&
+./scripts/full-gate.sh"` (double quotes: cmd.exe and wsl.exe do not treat single quotes as
+quotes). Run as the gate runs it, `cmd.exe /d /c "<line> 2>&1"` from the project folder, with no
+worker up: **exit 0 in 504s**, ui_smoke 74/74 (`set -eu`, so the quick gate and the build were
+green before it), and the worker it started was gone afterwards. The file names this machine's
+path, so it stays on this machine, git-ignored (the owner's choice). **Phase 0 is done**; next:
+plan (3), the docs and the configuration.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can

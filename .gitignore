@@ -8,6 +8,9 @@ storage/
 .claude/session-start
 .claude/active-plan
 
+# The test gate's command names this machine's path and WSL distro (HANDOFF, Phase 0)
+.claude/test-command.txt
+
 # Legacy scratch output from the CLI experiments
 images/
 page.html
