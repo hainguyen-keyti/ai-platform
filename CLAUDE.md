@@ -60,3 +60,17 @@ SPECIFIC to this repo, and a repo rule wins on conflict.
 - Name a failure's cause only from the failing run's own record: run real gates with `--keep` and
   read the worker's error (the api's `thread_tombstones.error`, the job's error) before fixing; a
   defect measured elsewhere is a suspect until that record names it (paid for twice, 2026-09-27).
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues on hainguyen-keyti/ai-platform (via `gh`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage labels (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
