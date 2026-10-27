@@ -336,8 +336,8 @@ commit. Progress:
   `docker compose config` listed five variables and `DEFAULT_QUOTA=7` gave a new user 100 credits
   (`printenv` in the container exit 1); after: seven, and 7 credits, back to 100 without it. A mock
   worker serving all three providers keeps ui_smoke at 74/74. **Full gate, the orchestrator's run
-  through the test gate: 58/58, build, 74/74, exit 0 in 507s.** Its finding outside its files is
-  parked (Parked questions: `run-worker.sh` exports none of the worker's lines).
+  through the test gate: 58/58, build, 74/74, exit 0 in 507s.** Its finding outside its files,
+  `run-worker.sh` exporting none of the worker's lines, became #8 (done, below).
 - **#3 done** (plan3 ticket 03): `web/Dockerfile` copies `package.json` and `package-lock.json` and
   runs `npm ci`. Before: the old Dockerfile rebuilt with no cache installed vite 6.4.5, postcss
   8.5.32 and autoprefixer 10.6.2, the newest in their `^` ranges, where the lockfile says 6.4.3,
@@ -380,6 +380,24 @@ commit. Progress:
   0 in 501s, no "Update available" in ui_smoke**; `~/.cloakbrowser/` still holds only
   `chromium-146.0.7680.177.5`, no marker. The hourly Chromium check itself is shown off only
   indirectly (the same variable gates it; upstream has nothing newer to fetch).
+- **#8 done** (plan3 ticket 08, worked in the orchestrator's own session at the owner's "Do this task
+  here"): `scripts/run-worker.sh` snapshots `export -p`, sources `.env` under `set -a`, then reads
+  the snapshot back, so every line `.env` sets reaches the worker and every name the command line
+  or the calling shell exported wins, an empty one too (it then falls to the script's default).
+  `tests/test_run_worker_env.py` (new) runs the script from a temp copy with its own `.env` (the file
+  says real; the command line says mock) against a fake api recording the token: red 3/5 before
+  (`providers ['chatgpt']`, `min_gap 0.0` with the file saying `chatgpt,grok` and 7; `PROVIDERS=grok`
+  on the command line overwritten), 5/5 after under dash; three mutants red (no `set -a` 3/5, no
+  `eval` 2/5, snapshot after the file 2/5). With this machine's `.env` the full gate's mock worker
+  now reads `min_gap 3.0` (it read 0.0) and ui_smoke stays 74/74, so `scripts/full-gate.sh` is
+  unchanged. **Full gate through the test gate, that worker reused: 58/58, build, 74/74, exit 0 in
+  499s** (the script's comments and the test's `mode` assertion were added after it, on the
+  independent review; the test was re-run 5/5 with the mutants after them). Independent review:
+  passed, minors left open: under bash an exported `SHELLOPTS` or `BASHOPTS` makes the `eval` stop
+  the script (readonly; dash is fine), and `set -a` also puts the api's lines of `.env`
+  (`JWT_SECRET`, `INVITE_CODE`) in the worker's environment (no path prints it); the new test is in
+  no gate. **From now on a real worker paces as `.env` says** (3s between turns, Grok 150s once the
+  owner's `.env` carries those lines).
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
@@ -512,15 +530,11 @@ Desktop was off too, so api, web and worker were all down until restarted.
 
 ## Parked questions
 
-- **`scripts/run-worker.sh` exports none of the worker's own lines of `.env`** (found by plan (3)
-  #2, 2026-10-27): it runs `. ./.env` with no `set -a`, and exports only `API_URL`, `WORKER_TOKEN`,
-  `PROVIDER_MODE` and the paths, so `PROVIDERS`, `MIN_GAP_SECONDS`, `IMAGE_BUDGET_3H`, `COOLDOWN_*`
-  and the `__GROK` lines reach the worker only when the starting shell exported them. Measured: a
-  mock worker started through it read `min_gap_seconds 0.0` with `.env` saying 3, and 3.0 once
-  `set -a; . ./.env; set +a` ran first. This is the root of the records review's item 6 (CLAUDE.md's
-  Run line serving ChatGPT alone, HANDOFF passing `PROVIDERS` by hand) and of the minimum gap being
-  off in production since 2026-10-01. `.env.example` now says so. The fix is issue #8 (2026-10-28,
-  the owner's yes), worked after #4 and before #7
+- **`scripts/run-worker.sh` after #8** (2026-10-28): under bash (macOS `/bin/sh` is bash in sh
+  mode) an exported `SHELLOPTS` or `BASHOPTS` comes back from `export -p` as readonly and stops the
+  script at the `eval` (measured under bash 5.3; 3.2 not measured); `set -a` exports the api's lines
+  of `.env` to the worker too; `tests/test_run_worker_env.py` is in no gate. Small tickets of their
+  own if wanted
 - **`create_api_key` still ends its failed transaction with a bare `ROLLBACK`**
   (`api/src/routes/auth.py`, found by both reviews of plan (3) #1): if SQLite has already rolled
   back on its own, "no transaction is active" replaces the real error. `register()` now uses the

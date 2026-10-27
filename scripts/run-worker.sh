@@ -12,18 +12,19 @@ if [ ! -x "$VENV/bin/python" ]; then
   exit 1
 fi
 
-# Anything set on the command line must survive .env being sourced.
-_cli_api_url=${API_URL-}
-_cli_worker_token=${WORKER_TOKEN-}
-_cli_provider_mode=${PROVIDER_MODE-}
-
+# Every line .env sets reaches the worker (set -a exports it: PROVIDERS and the pacing are read by
+# the worker, not by this script), and every name the command line or the calling shell exported
+# wins over the file, an empty one too (`PROVIDER_MODE= ./scripts/run-worker.sh` falls to the
+# default below, real): `export -p` prints them quoted for the shell to read back, and they are
+# read back once the file is in.
 if [ -f .env ]; then
+  _given=$(export -p)
+  set -a
   . ./.env
+  set +a
+  eval "$_given"
+  unset _given
 fi
-
-[ -n "$_cli_api_url" ] && API_URL=$_cli_api_url
-[ -n "$_cli_worker_token" ] && WORKER_TOKEN=$_cli_worker_token
-[ -n "$_cli_provider_mode" ] && PROVIDER_MODE=$_cli_provider_mode
 
 "$VENV/bin/pip" install --quiet --disable-pip-version-check -r worker/requirements.txt
 
