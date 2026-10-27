@@ -74,3 +74,17 @@ The five default triage labels (`needs-triage`, `needs-info`, `ready-for-agent`,
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Precedence over the kt layer
+
+Where a mattpocock skill and the kt layer (`docs/agent/`, the `=== kt rules ===` block, the
+session-start hook) disagree, the mattpocock skill wins (the owner, 2026-10-27). It does not widen
+the Allowed / Ask first / Forbidden list above: a push still follows it, and creating or changing a
+GitHub issue, comment or label is still asked first.
+
+Three overlaps, settled:
+- **Specs**: a new spec goes to a GitHub issue through `to-spec`; `docs/specs/` keeps the existing
+  ones and takes no new ones.
+- **Handoff between sessions**: kt's `docs/agent/HANDOFF.md` (`/kt:load`, `/kt:save`);
+  `/mattpocock-skills:handoff` only when work moves to another folder, such as a prototype.
+- **Commits**: `implement` commits locally on its own; a push still follows the rule above.
