@@ -299,6 +299,16 @@ green before it), and the worker it started was gone afterwards. The file names 
 path, so it stays on this machine, git-ignored (the owner's choice). **Phase 0 is done**; next:
 plan (3), the docs and the configuration.
 
+**Plan (3), approved 2026-10-27 (DECISIONS 2026-10-27, decisions D1-D8): seven GitHub issues, all
+open, labelled `ready-for-agent`, worked one at a time in this order** (each full gate shares the
+Docker stack and port 8000): #1 the first-admin race (high risk: an independent reviewer), #2 the
+api's settings and `.env.example`, #3 the web image's lockfile, #4 the cloakbrowser, playwright and
+Chromium pin, #5 the records against the code, #6 stale comments and the probe's import (blocked
+by #1), #7 the README and CLAUDE.md's commands (blocked by #2, #3, #4). Each issue holds its goal,
+its files, its "done when" checklist and the common rules; the orchestrator hands each to a child
+session by the `/orchestrate` skill, checks the diff and the full gate, and commits one ticket per
+commit. Not started yet.
+
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
 start (the skill refuses a call from the agent, `disable-model-invocation`); then
