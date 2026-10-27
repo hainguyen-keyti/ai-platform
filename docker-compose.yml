@@ -12,6 +12,15 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       INVITE_CODE: ${INVITE_CODE:?set INVITE_CODE in .env}
       WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
+      # The rest of what api/src/config.py reads, from the shell or .env; each
+      # default is config.py's own, so leaving one unset changes nothing.
+      TOKEN_TTL_HOURS: ${TOKEN_TTL_HOURS:-24}
+      DEFAULT_QUOTA: ${DEFAULT_QUOTA:-100}
+      JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-420}
+      JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
+      CLOCK_OFFSET_SECONDS: ${CLOCK_OFFSET_SECONDS:-0}
+      NO_WORKER_SECONDS: ${NO_WORKER_SECONDS:-180}
+      PROVIDER_HOLD_SECONDS: ${PROVIDER_HOLD_SECONDS:-600}
     volumes:
       - ./api/src:/app/src
       - ./storage/db:/data/db

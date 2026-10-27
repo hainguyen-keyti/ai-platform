@@ -321,7 +321,17 @@ commit. Progress:
   green 5/5 on both checks (one admin each round), mutant C red 5/5 on both (2 to 4 admins a
   round). Two independent reviews, the second "Đạt". **Full gate, the orchestrator's run through
   the test gate: quick gate 58/58, build, ui_smoke 74/74, exit 0 in 522s.** The quick gate now
-  has 58 checks. Issue #1 not ticked or closed yet (a GitHub write, asked first).
+  has 58 checks. Issue #1 ticked with its evidence and closed (the two checks race eight
+  registrations, not two, written on the issue).
+- **#2 done** (plan3 ticket 02): compose names the seven api settings it lacked as
+  `${VAR:-default}`, each default `config.py`'s own; `.env.example` holds D2's values
+  (`PROVIDERS=chatgpt,grok,gemini`, `MIN_GAP_SECONDS=3`, Grok's 150 and 600, `NO_WORKER_SECONDS=310`
+  with the floor explained, `TOKEN_TTL_HOURS=24`) and says which lines the api reads. Before:
+  `docker compose config` listed five variables and `DEFAULT_QUOTA=7` gave a new user 100 credits
+  (`printenv` in the container exit 1); after: seven, and 7 credits, back to 100 without it. A mock
+  worker serving all three providers keeps ui_smoke at 74/74. **Full gate, the orchestrator's run
+  through the test gate: 58/58, build, 74/74, exit 0 in 507s.** Its finding outside its files is
+  parked (Parked questions: `run-worker.sh` exports none of the worker's lines).
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
@@ -450,6 +460,15 @@ Desktop was off too, so api, web and worker were all down until restarted.
 
 ## Parked questions
 
+- **`scripts/run-worker.sh` exports none of the worker's own lines of `.env`** (found by plan (3)
+  #2, 2026-10-27): it runs `. ./.env` with no `set -a`, and exports only `API_URL`, `WORKER_TOKEN`,
+  `PROVIDER_MODE` and the paths, so `PROVIDERS`, `MIN_GAP_SECONDS`, `IMAGE_BUDGET_3H`, `COOLDOWN_*`
+  and the `__GROK` lines reach the worker only when the starting shell exported them. Measured: a
+  mock worker started through it read `min_gap_seconds 0.0` with `.env` saying 3, and 3.0 once
+  `set -a; . ./.env; set +a` ran first. This is the root of the records review's item 6 (CLAUDE.md's
+  Run line serving ChatGPT alone, HANDOFF passing `PROVIDERS` by hand) and of the minimum gap being
+  off in production since 2026-10-01. `.env.example` now says so. A fix (export what `.env` sets,
+  keep a name given on the command line winning) wants a ticket of its own, the owner's call
 - **`create_api_key` still ends its failed transaction with a bare `ROLLBACK`**
   (`api/src/routes/auth.py`, found by both reviews of plan (3) #1): if SQLite has already rolled
   back on its own, "no transaction is active" replaces the real error. `register()` now uses the
