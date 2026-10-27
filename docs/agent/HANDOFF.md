@@ -10,8 +10,17 @@ there and in each plan's Evidence; what the reviews left open moved into its pla
 open" at the end of the file; what the tests left in the accounts is in
 `docs/agent/residue-left-in-accounts.md`.
 
-Last updated: 2026-10-27, the commit on top of 3d2d02e that puts the agent layer in git, pushed to
-the private repo github.com/hainguyen-keyti/ai-platform. **The owner is handing the project to
+Last updated: 2026-10-27, at **ea6cf33**, pushed to the private repo
+github.com/hainguyen-keyti/ai-platform: c91c68d puts the agent layer in git; a04db8f configures the
+mattpocock engineering skills (issues in GitHub Issues, the five triage labels created on the repo,
+`docs/agents/`, an "Agent skills" section in `CLAUDE.md`); ea6cf33 records in `CLAUDE.md` that **a
+mattpocock skill wins over the kt layer where they disagree** (the owner, 2026-10-27), without
+widening Allowed / Ask first / Forbidden, and settles three overlaps: a new spec goes to a GitHub
+issue through `to-spec`, handoff between sessions stays in this file, `implement` commits locally.
+**The project is now worked from a Windows 11 machine** (`D:\keyti\ai-platform`, a clone of
+`origin`), measured 2026-10-27: no `storage/`, no `.env`, no `~/cloakbrowser-env`, no `docker` on
+PATH, `python` is only the Microsoft Store alias, WSL Ubuntu is installed; nothing can run there yet
+(Known traps). **The owner is handing the project to
 another person** and asked for everything on GitHub (DECISIONS 2026-10-27): `CLAUDE.md`, `.claude/`
 and the whole of `docs/agent/` are now tracked; not on GitHub, by design: `.env` (its names are in
 `.env.example`), `storage/` (the database, the media and the three logged-in browser profiles), the
@@ -227,6 +236,11 @@ account.
 
 ## Next steps
 
+**Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
+roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
+start (the skill refuses a call from the agent, `disable-model-invocation`); then
+`grill-with-docs`, and for larger work `to-spec` and `to-tickets` (GitHub issues, each asked first).
+
 **Since 2026-10-21 (the owner's "Làm cả ba theo thứ tự đó", DECISIONS 2026-10-21), three plans in
 order, each approved on its own:** (1) the safety plan, closed at 1a5e7aa except its real ChatGPT
 line (the account's storage, see Active plan); (2) the web's should-fix list, closed at 3d2d02e;
@@ -276,6 +290,13 @@ Desktop was off too, so api, web and worker were all down until restarted.
 
 ## Known traps
 
+- **On the Windows machine (2026-10-27) the kt hooks do not run**: `.claude/hooks/session-start.sh`
+  and `stop-gate.py` call `python3`, which is the Microsoft Store alias there, so the session start
+  prints no PROJECT, DECISIONS or HANDOFF section and the stop gate never checks this file. Read
+  PROJECT.md and HANDOFF.md by hand at the start. The code and these notes assume macOS
+  (`/Users/keyti/...`, `/tmp`, zsh, `pgrep` in `tests/test_session_profile.py`); `storage/`, `.env`
+  and the venv were never on GitHub by design, and a profile is never copied, so the three providers
+  most likely need a fresh login on a new machine (not tried)
 - cloakbrowser needs shm_size: '2gb' inside Docker; the worker avoids this by running on the host
 - Playwright's sync driver belongs to the thread that created it: a provider's browser must be
   created on its own runner thread, never in pool start
@@ -335,6 +356,10 @@ Desktop was off too, so api, web and worker were all down until restarted.
 
 ## Parked questions
 
+- **`tests/provider_probe.py attachment` cannot press remove** (read 2026-10-27, not run): lines
+  1014-1015 use `ATTACHMENT_PREVIEW` and `ATTACHMENT_REMOVE`, defined only in
+  `worker/src/providers/chatgpt.py:30-31` and not in the probe's import (lines 28-30), so that step
+  always raises `NameError`, which the probe reports as text. The driver itself is not affected
 - **Two English error texts remain in the web, outside the web plan's file list** (the review of
   2026-10-22): `web/src/components/MediaImage.jsx` says "could not load image" and
   `web/src/components/FileCard.jsx` shows the raw English error, in both languages. Fixing them
