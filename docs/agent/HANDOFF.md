@@ -255,8 +255,16 @@ INVITE_CODE and WORKER_TOKEN, LF line endings, git-ignored; no value was printed
 shell scripts cannot run until the line endings are settled. **Settled the same day** (the owner's
 choice): a `.gitattributes` with `* text=auto eol=lf` and the binary types marked `binary`; the
 working tree was written again from the index, 167 text files LF and the 28 PNG untouched, and
-`bash -n` passes on both tracked `.sh` files inside WSL. Next: 0-1 (Docker Desktop, the owner),
-then 0-4.
+`bash -n` passes on both tracked `.sh` files inside WSL. **0-4 done**: `python acceptance.py --keep`
+in WSL at 2ebc188, clean tree, **56/56 PASSED** in 4m41s (2026-10-27 08:38 UTC, workspace
+`/tmp/ai-platform-acceptance-d_3izlrx` inside WSL). The first run read 55/56: "the provider's error
+banner is recognised by shape" timed out after 180s because the first cloakbrowser launch on this
+machine downloads its Chromium; run alone right after, one try met a passing WSL DNS failure
+(`httpx.ConnectError: [Errno -3] Temporary failure in name resolution`) and the next read 10/10. That
+Chromium is cloakbrowser's free binary **v146**, where the macOS machine ran chromium-145.0.7632.109.2:
+the browser build the sites see changes on this machine (plan (3)'s cloakbrowser pin and
+`CLOAKBROWSER_AUTO_UPDATE`); it also warns that the Windows font set is incomplete. Next: 0-1 (Docker
+Desktop, the owner, not installed yet), then 0-5.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
