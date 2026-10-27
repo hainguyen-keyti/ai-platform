@@ -1,0 +1,9 @@
+[FAIL] a job failing while another conversation is open shows its error in its own conversation only  red errors: in bravo while alpha failed 1, back in alpha 1
+[FAIL] a job running in another conversation says so beside the disabled Send, and opens it  note shown False, Send disabled True, its button opened alpha with its bubble False
+[FAIL] the typing bubble's clock keeps counting while another conversation is open  back in alpha after 3.5s in bravo the clock reads '0s'
+[FAIL] a read of the open conversation answered after its reply landed does not take the reply away  reads held on return 1, reply landed True, still shown after the older read answered False
+[FAIL] a gallery that cannot load says so with a retry, not as an empty gallery  empty note 1, 'Gallery (0)' 1, retry offered False, pictures after the retry 0
+[FAIL] a send refused for want of credit asks the account again, so the nav's count is right  account reads before the refused send 2, after 2
+[FAIL] in Vietnamese the phase, a provider failure, no worker and no credit read in Vietnamese  phase 'đã có ảnh, đang lấy về'; failure 'Lượt này chưa thành công, lượt đã được hoàn lại. Hãy thử lại' title 'TimeoutError: Locator.inner_te'; 402 'Bạn đã dùng hết lượt hôm nay.'; no worker: notice 1 red 0
+67/74 PASSED
+exit 0

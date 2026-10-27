@@ -1,0 +1,62 @@
+
+mode: mock providers, speaking to chatgpt
+
+[PASS] api health                                                                                                          status 200
+[PASS] register (invite code)                                                                                              wrong invite 403, valid invite 201
+[PASS] login returns jwt                                                                                                   token accepted by /auth/me
+[PASS] auth rejects bad token                                                                                              garbage 401, missing 401
+[PASS] chat job completes                                                                                                  94 chars of reply
+[PASS] image job produces file                                                                                             178 bytes at mock-39266b3c72b9455d9f4a3063ab39b780.png
+[PASS] video script job returns text                                                                                       157 chars of script
+[PASS] media listing scoped to user                                                                                        owner sees 1, other user sees 0, cross fetch 404
+[PASS] thread reused within a conversation                                                                                 both turns on mock-thread-a59a8d621da4
+[PASS] threads never cross conversations                                                                                   mock-thread-a59a and mock-thread-c572
+[PASS] a conversation can be renamed and found by search                                                                   renamed, found by title and by 'opening', other user sees 0 and gets 404
+[PASS] non image deliverable is kept                                                                                       217 bytes, type file, entries ['a.txt', 'b.txt']
+[PASS] non image deliverable is kept when asked in vietnamese                                                              217 bytes, type file, entries ['a.txt', 'b.txt']
+[PASS] a video the provider makes is kept and served as a video                                                            type video, served as video/mp4, 1127 bytes starting with ftyp
+[PASS] a follow-up turn packages what the first one made                                                                   217 bytes, type file, entries ['a.txt', 'b.txt']
+[PASS] a conversation's media downloads as one zip                                                                         2 media, 2 entries ['mock-5474be1dda3545d7bb17899a5e7e8351.png', 'mock-edbb5033a577466693f1c89922347282.zip'], one message 1 entry, unknown message 404, other user 404
+[PASS] deleting a conversation removes its media files and the provider thread                                             other user 404 and nothing moved; owner 204; 2 media rows and files gone; its own thread deleted; quota unchanged
+[PASS] a turn taken away before it was sent leaves no thread, by the worker's own word                                     job cancelled by the delete, credit returned, no thread made: the worker's stop record {'sent': False, 'pressed': False, 'at': 1792648424.2} and no tombstone
+[PASS] a silent driver leaves its turn unaccounted for, whatever an older record says                                      job cancelled by the delete, credit returned, its result back and no thread: unaccounted for at 3 looks, with the older record {'sent': False, 'pressed': False, 'at': 1792648424.2} in hand
+[PASS] a driver that says unsent of a turn that made a thread is believed only once it is removed                          job cancelled by the delete, credit returned; its driver said {'sent': False, 'pressed': False, 'at': 1792648430.8} of a turn that made a thread: no answer at 4 looks while its result was out, none at 5 while the thread waited, then removed
+[PASS] deleting a conversation cancels its running job and refunds                                                         job cancelled by the delete, credit returned, no media row or file written, a thread tombstoned after its delete removed by the worker
+[PASS] the gate's rule for a turn taken away holds on its table                                                            21/21 rows on what accounts for the turn, 10/10 on what is still owed
+[PASS] a tombstone is handed out once per attempt                                                                          5/5 PASSED
+[PASS] a job settles exactly once                                                                                          stale attempt refused with 409, real result kept, charged once
+[PASS] a provider error fails the job and refunds                                                                          failed as provider_error, credit returned
+[PASS] a stranded job is reclaimed                                                                                         finished on attempt 2 after the first worker was killed
+[FAIL] a running job can be cancelled                                                                                      cancel 0 final None quota 87 -> 87 stopped at the site n/a
+[PASS] quota refills once a day up to the cap                                                                              87 -> 100 after the day changed, held at 100, 99 after one job
+[PASS] admin sees usage per user, others do not                                                                            21 jobs (14 done, 3 failed, 4 cancelled), 1 images still kept, other user 403
+[PASS] each provider gets its own runner                                                                                   3 providers, 3 runners on distinct threads ['job-runner-chatgpt', 'job-runner-gemini', 'job-runner-grok']
+[PASS] one provider's cooldown does not hold the other                                                                     chatgpt on a 45s cooldown, grok still done within 20s
+[PASS] a job nobody serves is failed and refunded                                                                          failed as no_worker while the worker served only grok, credit returned
+[PASS] the api says which providers a worker serves                                                                        chatgpt not served while the worker served only grok, grok served; anonymous 401
+[PASS] a turn nobody serves is refused at once and uncharged                                                               chat 503 in 0.0s, image 503, video 503; 404/409 still first {'missing conversation': 404, 'missing picture': 404, "another provider's conversation": 409}; quota 97 -> 97
+[PASS] a conversation keeps to one provider                                                                                grok refused on 3 entry point(s) with 409, credit untouched
+[PASS] a job queued behind a long turn is not failed as unserved                                                           a 45s turn ran while the job behind it waited and then finished
+[PASS] memory on refuses the turn and refunds                                                                              failed as provider_misconfigured, credit returned, health shows memory on
+[PASS] an account its admin must fix holds its provider out at once                                                        chatgpt not served right after the refusal, grok still served, a new turn 503 and uncharged
+[PASS] jobs waiting for a held provider fail and refund at once                                                            the job behind it failed 0.2s after the refusal, never claimed, quota 95 -> 92; grok's waiting job untouched, then done
+[PASS] a hold ends by itself                                                                                               chatgpt still held 3s after the refusal, served again after 4.1s, an ordinary turn done
+[PASS] health reports the provider's memory setting                                                                        memory off
+[PASS] health shows code version and pacing                                                                                sha 526e75c pacing ['cooldown_base_seconds', 'cooldown_max_seconds', 'holding_for_seconds', 'image_budget_3h', 'min_gap_seconds', 'per_provider']
+[PASS] the provider's error banner is recognised by shape                                                                  10/10 PASSED
+[PASS] grok settles on words or a picture, never on an empty turn                                                          17/17 PASSED
+[PASS] an api key is shown once, listed without its secret, stored as a hash, and revoked                                  made 201, listed once without it, stored as its sha256, used (404 on no request), another person's revoke 404, revoked 204, then 401, revoked again 404
+[PASS] an api key works only on /v1/images, and a login token not there                                                    a key: /v1 404 on no request, 401 on 7 web routes; a login token, none, a forged key: 401 on /v1
+[PASS] a person keeps at most ten live api keys                                                                            ten made, the eleventh 409, one revoked, then one more 201
+[PASS] a /v1 request with a prompt ends with a picture to download                                                         202 queued, then done with 1 picture(s), downloaded [178] bytes, one credit
+[PASS] a /v1 request with a prompt and a picture hands the worker exactly that picture                                     png, jpeg, webp and exactly 10 MB: each done, one credit each, the worker got its exact bytes, shown on the person's message
+[PASS] a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused uncharged, nothing kept  {'a picture alone': 422, 'a blank prompt': 422, 'text named .png': 415, 'a gif': 415, 'over 10 MB': 413, 'a png of 30000x30000': 413, 'a jpeg 20000 wide': 413, 'a webp of 60 megapixels': 413, 'a wave file': 415, 'a png with no header': 415, 'a jpeg hiding 9000x9000 behind FF 00': 415, 'a jpeg of fill bytes': 415, '12 MB with no key': 413, 'chatgpt held': 503}; credits 91 and files unchanged
+[PASS] a /v1 request refused for quota keeps no picture                                                                    402 with no credit, no file kept
+[PASS] a /v1 request and its pictures reach only their owner                                                               404 for another person, the request, another person, its picture, a picture of another request, the picture sent, not made, a result of another request, a picture made on the web, a chat turn
+[PASS] a failed /v1 request gives its credit back once                                                                     failed (mock provider showed its error banner), credits 84 -> 84 -> 84
+[PASS] the example script sends a prompt and a picture, waits, and saves the picture made                                  exit 0, saved ['de7987ba-1.png']
+[PASS] a done result with nothing in it fails and refunds                                                                  failed as empty_reply, credit returned, no answer stored
+[PASS] a running job whose worker died is failed and refunded by its owner's next poll                                     failed as no_worker 30s after the kill, credit returned, no worker up meanwhile
+==============================================================================================================================
+55/56 PASSED
+exit 1

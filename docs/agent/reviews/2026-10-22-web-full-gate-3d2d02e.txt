@@ -1,0 +1,153 @@
+
+mode: mock providers, speaking to chatgpt
+
+[PASS] api health                                                                                                          status 200
+[PASS] register (invite code)                                                                                              wrong invite 403, valid invite 201
+[PASS] login returns jwt                                                                                                   token accepted by /auth/me
+[PASS] auth rejects bad token                                                                                              garbage 401, missing 401
+[PASS] chat job completes                                                                                                  94 chars of reply
+[PASS] image job produces file                                                                                             178 bytes at mock-4bfab715874f45e8b5627b4d742702e6.png
+[PASS] video script job returns text                                                                                       157 chars of script
+[PASS] media listing scoped to user                                                                                        owner sees 1, other user sees 0, cross fetch 404
+[PASS] thread reused within a conversation                                                                                 both turns on mock-thread-96440b5190f9
+[PASS] threads never cross conversations                                                                                   mock-thread-9644 and mock-thread-79fe
+[PASS] a conversation can be renamed and found by search                                                                   renamed, found by title and by 'opening', other user sees 0 and gets 404
+[PASS] non image deliverable is kept                                                                                       217 bytes, type file, entries ['a.txt', 'b.txt']
+[PASS] non image deliverable is kept when asked in vietnamese                                                              217 bytes, type file, entries ['a.txt', 'b.txt']
+[PASS] a video the provider makes is kept and served as a video                                                            type video, served as video/mp4, 1127 bytes starting with ftyp
+[PASS] a follow-up turn packages what the first one made                                                                   217 bytes, type file, entries ['a.txt', 'b.txt']
+[PASS] a conversation's media downloads as one zip                                                                         2 media, 2 entries ['mock-0eb1d4e27c274728940e71f82901a5a7.png', 'mock-6055bc035bf44b67a2ebcf609e541389.zip'], one message 1 entry, unknown message 404, other user 404
+[PASS] deleting a conversation removes its media files and the provider thread                                             other user 404 and nothing moved; owner 204; 2 media rows and files gone; its own thread deleted; quota unchanged
+[PASS] a turn taken away before it was sent leaves no thread, by the worker's own word                                     job cancelled by the delete, credit returned, no thread made: the worker's stop record {'sent': False, 'pressed': False, 'at': 1792652243.3} and no tombstone
+[PASS] a silent driver leaves its turn unaccounted for, whatever an older record says                                      job cancelled by the delete, credit returned, its result back and no thread: unaccounted for at 3 looks, with the older record {'sent': False, 'pressed': False, 'at': 1792652243.3} in hand
+[PASS] a driver that says unsent of a turn that made a thread is believed only once it is removed                          job cancelled by the delete, credit returned; its driver said {'sent': False, 'pressed': False, 'at': 1792652250.3} of a turn that made a thread: no answer at 5 looks while its result was out, none at 5 while the thread waited, then removed
+[PASS] deleting a conversation cancels its running job and refunds                                                         job cancelled by the delete, credit returned, no media row or file written, a thread tombstoned after its delete removed by the worker
+[PASS] the gate's rule for a turn taken away holds on its table                                                            21/21 rows on what accounts for the turn, 10/10 on what is still owed
+[PASS] a tombstone is handed out once per attempt                                                                          5/5 PASSED
+[PASS] a job settles exactly once                                                                                          stale attempt refused with 409, real result kept, charged once
+[PASS] a provider error fails the job and refunds                                                                          failed as provider_error, credit returned
+[PASS] a stranded job is reclaimed                                                                                         finished on attempt 2 after the first worker was killed
+[PASS] a running job can be cancelled                                                                                      cancelled while running, credit returned
+[PASS] quota refills once a day up to the cap                                                                              87 -> 100 after the day changed, held at 100, 99 after one job
+[PASS] admin sees usage per user, others do not                                                                            22 jobs (14 done, 3 failed, 5 cancelled), 1 images still kept, other user 403
+[PASS] each provider gets its own runner                                                                                   3 providers, 3 runners on distinct threads ['job-runner-chatgpt', 'job-runner-gemini', 'job-runner-grok']
+[PASS] one provider's cooldown does not hold the other                                                                     chatgpt on a 45s cooldown, grok still done within 20s
+[PASS] a job nobody serves is failed and refunded                                                                          failed as no_worker while the worker served only grok, credit returned
+[PASS] the api says which providers a worker serves                                                                        chatgpt not served while the worker served only grok, grok served; anonymous 401
+[PASS] a turn nobody serves is refused at once and uncharged                                                               chat 503 in 0.0s, image 503, video 503; 404/409 still first {'missing conversation': 404, 'missing picture': 404, "another provider's conversation": 409}; quota 97 -> 97
+[PASS] a conversation keeps to one provider                                                                                grok refused on 3 entry point(s) with 409, credit untouched
+[PASS] a job queued behind a long turn is not failed as unserved                                                           a 45s turn ran while the job behind it waited and then finished
+[PASS] memory on refuses the turn and refunds                                                                              failed as provider_misconfigured, credit returned, health shows memory on
+[PASS] an account its admin must fix holds its provider out at once                                                        chatgpt not served right after the refusal, grok still served, a new turn 503 and uncharged
+[PASS] jobs waiting for a held provider fail and refund at once                                                            the job behind it failed 0.0s after the refusal, never claimed, quota 95 -> 92; grok's waiting job untouched, then done
+[PASS] a hold ends by itself                                                                                               chatgpt still held 3s after the refusal, served again after 4.5s, an ordinary turn done
+[PASS] health reports the provider's memory setting                                                                        memory off
+[PASS] health shows code version and pacing                                                                                sha 3d2d02e pacing ['cooldown_base_seconds', 'cooldown_max_seconds', 'holding_for_seconds', 'image_budget_3h', 'min_gap_seconds', 'per_provider']
+[PASS] the provider's error banner is recognised by shape                                                                  10/10 PASSED
+[PASS] grok settles on words or a picture, never on an empty turn                                                          17/17 PASSED
+[PASS] an api key is shown once, listed without its secret, stored as a hash, and revoked                                  made 201, listed once without it, stored as its sha256, used (404 on no request), another person's revoke 404, revoked 204, then 401, revoked again 404
+[PASS] an api key works only on /v1/images, and a login token not there                                                    a key: /v1 404 on no request, 401 on 7 web routes; a login token, none, a forged key: 401 on /v1
+[PASS] a person keeps at most ten live api keys                                                                            ten made, the eleventh 409, one revoked, then one more 201
+[PASS] a /v1 request with a prompt ends with a picture to download                                                         202 queued, then done with 1 picture(s), downloaded [178] bytes, one credit
+[PASS] a /v1 request with a prompt and a picture hands the worker exactly that picture                                     png, jpeg, webp and exactly 10 MB: each done, one credit each, the worker got its exact bytes, shown on the person's message
+[PASS] a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused uncharged, nothing kept  {'a picture alone': 422, 'a blank prompt': 422, 'text named .png': 415, 'a gif': 415, 'over 10 MB': 413, 'a png of 30000x30000': 413, 'a jpeg 20000 wide': 413, 'a webp of 60 megapixels': 413, 'a wave file': 415, 'a png with no header': 415, 'a jpeg hiding 9000x9000 behind FF 00': 415, 'a jpeg of fill bytes': 415, '12 MB with no key': 413, 'chatgpt held': 503}; credits 91 and files unchanged
+[PASS] a /v1 request refused for quota keeps no picture                                                                    402 with no credit, no file kept
+[PASS] a /v1 request and its pictures reach only their owner                                                               404 for another person, the request, another person, its picture, a picture of another request, the picture sent, not made, a result of another request, a picture made on the web, a chat turn
+[PASS] a failed /v1 request gives its credit back once                                                                     failed (mock provider showed its error banner), credits 84 -> 84 -> 84
+[PASS] the example script sends a prompt and a picture, waits, and saves the picture made                                  exit 0, saved ['780d3957-1.png']
+[PASS] a done result with nothing in it fails and refunds                                                                  failed as empty_reply, credit returned, no answer stored
+[PASS] a running job whose worker died is failed and refunded by its owner's next poll                                     failed as no_worker 30s after the kill, credit returned, no worker up meanwhile; the new worker seen by the api 0.0s after its health answered
+==============================================================================================================================
+56/56 PASSED
+
+> build
+> vite build
+
+vite v6.4.3 building for production...
+transforming...
+✓ 199 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                   0.58 kB │ gzip:  0.39 kB
+dist/assets/index-DZ5kpAW_.css   14.78 kB │ gzip:  3.78 kB
+dist/assets/index-B2fK7IWO.js   304.06 kB │ gzip: 96.46 kB
+✓ built in 1.69s
+Update available: cloakbrowser 0.5.10 -> 0.6.3. Run: pip install --upgrade cloakbrowser
+[PASS] login page renders  AI Platform
+[PASS] register and sign in  ui-smoke-1792652487@aiplatform-acceptance.com
+[PASS] the empty list's note waits for the list's first answer  requests held 1, notes while held 0, note after the answer True
+[PASS] nav shows identity and quota  100 left
+[PASS] the language switch changes the labels and back  Send became Gửi, New chat became Trò chuyện mới, and back
+[PASS] typing indicator while waiting  3 dots, elapsed reads 1s
+[PASS] chat message round trip  assistant bubble rendered
+[PASS] the provider select is named, with or without a conversation, in both languages  {'new chat, vi': 'Nhà cung cấp', 'new chat, en': 'Provider', 'open, en': 'Provider', 'open, vi': 'Nhà cung cấp'}
+[PASS] generated image renders in chat  1 image(s), [{'w': 64, 'h': 64, 'blob': True}]
+[PASS] video script from an image  script bubble rendered
+[PASS] media sits inline in the timeline  last bubble follows the image: mock 5-second script for mock-0dd87f6ed1
+[PASS] media opens large and can be saved  64x, download name mock-0dd87f6ed18f4f9c84fa754463736243.png
+[PASS] a non image arrives as a file, not a broken picture  card reads 'zipmock-c703d94106e5408b86bb4de0a7f2a7cc.zip217 BDownload', download button True
+[PASS] markdown in a reply renders, sandbox links become text  {'strong': 1, 'rawStars': False, 'rawSandbox': False, 'sandboxLinks': 0}
+[PASS] download all media as one zip  2 entries: ['mock-0dd87f6ed18f4f9c84fa754463736243.png', 'mock-c703d94106e5408b86bb4de0a7f2a7cc.zip']
+[PASS] your message shows before the reply arrives  on screen within 3s, job still running
+[PASS] reading history is not interrupted  scrollTop 2 after a reply landed while scrolled up
+[PASS] stop cancels a running job  bubble gone within 6s, 0 reply bubble(s) appeared afterwards
+[PASS] view follows new messages  0px from the bottom with 727px of overflow
+[PASS] quota in the nav tracks the jobs spent  100 -> 97 after 3 jobs
+[PASS] a reply landing while the tab is hidden badges the title  title '(1) AI Platform' while hidden, 'AI Platform' after returning
+[PASS] a video plays in the chat, and can be saved  {'found': True, 'state': 4, 'duration': 1, 'width': 64, 'blob': True, 'named': True, 'download': True}
+[PASS] gallery lists the generated media  Gallery (3), 1 thumbnail(s)
+[PASS] the gallery plays a video, and it can be saved  {'found': True, 'state': 4, 'duration': 1, 'width': 64, 'blob': True, 'named': True, 'download': True}
+[PASS] a video left the moment it shows lets go of its file without an error  console errors after leaving: []
+[PASS] a conversation can be renamed from the sidebar  new title shown in the sidebar
+[PASS] search filters the sidebar  1 hit(s) for the title, 0 for nonsense
+[PASS] an empty list and a search with no hit say so, in both languages, to a screen reader too, and never beside a conversation  empty list: en True, vi True; during the first reply {'empty before the send': True, 'rows': 1, 'notes': 0, 'status regions': 1, 'reply pending': True}; no hit {'en': True, 'announced': True, 'vi': True, 'rows back': 1, 'notes left': 0}
+[PASS] the selector greys out a provider no worker serves, with a note  {'disabled': True, 'text': 'grok (unavailable)'}
+[PASS] a conversation whose provider nobody serves says so and cannot send  notice shown True, send disabled True, video script held True
+[PASS] a send the api refuses keeps the words and shows the notice  box 'sent into a stale list', notice shown True, header errors 0
+[PASS] on a phone the chat does not scroll sideways and Send is on screen  {'screen': 390, 'page': 390, 'send': {'left': 313, 'right': 378}, 'language': {'left': 293, 'right': 322}, 'signOut': {'left': 330, 'right': 382}}
+[PASS] on a phone the list opens from its button and closes on a pick  hidden at first True, shown True, closed after the pick True
+[PASS] on a phone the gallery page does not scroll sideways and the nav fits  {'screen': 390, 'page': 390, 'send': {'left': 0, 'right': 0}, 'language': {'left': 293, 'right': 322}, 'signOut': {'left': 330, 'right': 382}}
+[PASS] on a phone the header names the conversation picked before it loads  before a pick 'New chat', after 'Renamed by the smoke test', wanted 'Renamed by the smoke test', requests held 1
+[PASS] on a phone an error from the list shows in the list  1 copy of the error in the list, visible True, reads 'The server ran into a problem. Please try again.'
+[PASS] on a phone the list works by keyboard and screen reader  closed 'false', name 'Open conversations', opened {'expanded': 'true', 'controls': True, 'heading': 'Conversations', 'focus': 'close-conversations'}, tabs into the chat 0, escape in a rename {'renaming': False, 'open': True}, escape {'open': False, 'focus': 'open-conversations', 'expanded': 'false'}
+[PASS] on a phone the list's controls are big enough to tap, and named  {'opener': {'w': 40, 'h': 40}, 'select': {'w': 95, 'h': 40}}, close reads 'Close', rows [{'pick': {'w': 288, 'h': 44}, 'rename': {'w': 37, 'h': 44}, 'remove': {'w': 33, 'h': 44}, 'names': ['Rename', 'Delete']}]
+[PASS] on a phone the fields are 16px so an iPhone does not zoom, 14px from 768px  phone {'composer': 16, 'search': 16, 'select': 16} rename 16, wide {'composer': 14, 'search': 14, 'select': 14}, chat usable after widening with the list open True, list back over the chat after narrowing again False
+[PASS] on a phone the list closes on Close and on New chat, and the phone layout ends at 768px  closed by Close True, by New chat True ('New chat'), at 767 and 768 {767: {'button': True, 'list': False}, 768: {'button': False, 'list': True}}
+[PASS] on a phone wide content in a conversation is not cut off and nothing scrolls sideways  {'screen': 390, 'page': 390, 'sendRight': 378, 'firstChar': 28, 'areaLeft': 0, 'sideways': 0, 'email': False}
+[PASS] on a phone Back closes the open list and stays in the app  after Back: at 'http://localhost:5173/', the same page True, the list open False
+[PASS] on a phone every way of closing the list leaves no step for Back  Back after each close lands on {'Close': 'about:blank#before', 'a row': 'about:blank#before', 'chat': 'about:blank#before', 'New chat': 'about:blank#before', 'Escape': 'about:blank#before', 'the gallery': 'about:blank#before', 'a wider window': 'about:blank#before'}
+[PASS] on a phone chat in the nav closes the open list  the list open after tapping chat: False
+[PASS] on a phone the nav is one row from 360px in both languages, its right side kept together  nav heights {('en', 360): 39, ('en', 390): 39, ('vi', 360): 39, ('vi', 390): 39}, right side split, page too wide or words wrapped inside an item at [] (tallest item {('en', 320): 22, ('en', 344): 22, ('en', 360): 22, ('en', 390): 22, ('vi', 320): 22, ('vi', 344): 22, ('vi', 360): 22, ('vi', 390): 22}), quota words True, brand from 640px True
+[PASS] the list's title and its button's name read right in both languages  en 'Open conversations' / 'Conversations', vi 'Mở danh sách trò chuyện' / 'Các cuộc trò chuyện'
+[PASS] the view keeps following when its own smooth scroll is slow  0px from the bottom
+[PASS] the view follows a picture that arrives after its reply  0px from the bottom
+[PASS] the view stays at the bottom when the chat area gets shorter  0px from the bottom
+[PASS] a turn its provider's account refuses shows the unavailable notice, not the admin's instruction  en {'notice': 'Sending is paused: chatgpt is unavailable right now. Try again later, or start a new chat with another provider.', 'header errors': [], 'admin text shown': False}; vi {'notice': 'Chưa gửi được: chatgpt đang tạm ngưng. Hãy thử lại sau, hoặc mở trò chuyện mới với nhà cung cấp khác.', 'header errors': [], 'admin text shown': False}
+[PASS] a reply shows its blocks without blank lines, its paragraphs still apart  {'list': 134, 'bullets': 78, 'firstParagraph': 40, 'gap': 8}
+[PASS] a file card stays inside its gallery tile on a phone and keeps its size in the chat  inside their tiles {(390, 'en'): [True, True], (320, 'vi'): [True, True]}, the chat's card 256px
+[PASS] on a phone a video in the gallery is wide enough to play, and one that cannot load says so  {(390, 'en'): {'video': 324, 'screen': 390, 'failed': 'Could not load this video.', 'shape': 1.78, 'page': 390}, (320, 'vi'): {'video': 254, 'screen': 320, 'failed': 'Không tải được video.', 'shape': 1.78, 'page': 320}}
+[PASS] leaving the chat for the gallery mid-job and coming back keeps the job, its Stop and its reply  back in the chat: typing bubble 1, Stop 1, reply landed True
+[PASS] a job finishing while another conversation is open leaves that one on screen  after the job ended: bravo shown True, alpha's answer shown False, typing bubble 0
+[PASS] a slow load of one conversation answered after the next one's leaves the next one on screen  after alpha's late answer: bravo shown True, alpha shown False
+[PASS] a job failing while another conversation is open shows its error in its own conversation only  red errors: in bravo while alpha failed 0, back in alpha 1
+[PASS] a job running in another conversation says so beside the disabled Send, and opens it with its bubble only under it  note shown True, Send disabled True, a bubble under bravo while alpha loaded 0, its button opened alpha with its bubble True
+[PASS] the typing bubble's clock keeps counting while another conversation is open  back in alpha after 5s in bravo the clock reads '5s'
+[PASS] a read of the open conversation answered after its reply landed does not take the reply away  reads held on return 1, reply landed True, still shown after the older read answered True
+[PASS] a call refused with 401 brings the sign-in page, not a red error in the shell  sign-in shown 2, nav still there 0
+[PASS] a first account read that fails on the network keeps the session and its retry brings the shell  token kept True, retry offered True, shell after the retry True
+[PASS] sign out revokes the session: its token is refused afterwards  /auth/me with the signed-out token: 401
+[PASS] a gallery delete asks first, and a dismissed question deletes nothing  asked ['Delete this file for good? It also disappears from'], deleted after dismissing [], after accepting ['g1']
+[PASS] a gallery of 137 shows 100 and a show more that brings the rest  first 100, show more offered True, then 137, button gone at the end True
+[PASS] a gallery that cannot load says so with a retry, not as an empty gallery  empty note 0, 'Gallery (0)' 0, retry offered True, pictures after the retry 2
+[PASS] a send refused for want of credit asks the account again, so the nav's count is right  account reads before the refused send 2, after 3
+[PASS] in Vietnamese the phase, a provider failure, no worker and no credit read in Vietnamese  phase 'đã có ảnh, đang lấy về'; failure 'Yêu cầu này không thành công, bạn đã được hoàn lại 1 lượt. H' title 'TimeoutError: Locator.inner_te'; 402 'Bạn đã hết lượt. Lượt được cấp lại lúc 07:00.'; no worker: notice 1 red 0
+[PASS] on a phone the API page fits, the new key wrapped inside it  {'screen': 390, 'page': 390, 'left': 37, 'right': 353, 'field': 40, 'example': 0}
+[PASS] the API page makes a key, shows it once, lists it by its prefix, and revokes it on confirm  key aip_TN..., row 'smoke key\n\naip_TN-s6DTo… · made 22 Oct 2026 · never used\n\nRe', on /v1 404, shown again False, kept on dismiss True, after revoke 401, dated True, copy said 'Copied'
+[PASS] every text and placeholder on screen meets its contrast floor  424 texts on 19 screens all measured, 0 under the floor: {}
+[PASS] deleting a conversation from the sidebar removes it and its media  sidebar empty, gallery reads 'Gallery (0)'
+[PASS] sign out returns to login  
+[PASS] no console errors  []
+==================================================
+74/74 PASSED
+screenshots in /tmp/ui_shots
+exit 0

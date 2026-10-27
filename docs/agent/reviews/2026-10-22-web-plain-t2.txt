@@ -1,0 +1,8 @@
+[FAIL] a call refused with 401 brings the sign-in page, not a red error in the shell  sign-in shown 0, nav still there 1
+[FAIL] a first account read that fails on the network keeps the session and its retry brings the shell  token kept False, retry offered False, shell after the retry False
+[FAIL] sign out revokes the session: its token is refused afterwards  /auth/me with the signed-out token: 200
+[FAIL] a gallery delete asks first, and a dismissed question deletes nothing  asked [], deleted after dismissing ['g1'], after accepting ['g1', 'g1']
+[FAIL] a gallery of 137 shows 100 and a show more that brings the rest  first 100, show more offered False, then 100, button gone at the end True
+[FAIL] in Vietnamese the phase, a provider failure, no worker and no credit read in Vietnamese  phase 'picture appeared'; failure 'TimeoutError: Locator.inner_text: Timeout 30000ms exceeded.' title ''; 402 'quota exhausted'; no worker: notice 0 red 1
+62/68 PASSED
+exit 0

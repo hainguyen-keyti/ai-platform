@@ -4,6 +4,10 @@ storage/
 # Secrets
 .env
 
+# Agent layer's per-session state
+.claude/session-start
+.claude/active-plan
+
 # Legacy scratch output from the CLI experiments
 images/
 page.html

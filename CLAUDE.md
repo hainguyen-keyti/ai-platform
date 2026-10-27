@@ -1,0 +1,62 @@
+# AI Platform
+
+Multi-model browser automation platform (ChatGPT, Grok, Gemini) with chat, image generation, and
+video script generation. MVP for team, SaaS-ready architecture.
+
+State and context live in `docs/agent/`. AT THE START OF EVERY SESSION: read `docs/agent/PROJECT.md`
+and `docs/agent/HANDOFF.md` before doing anything, restate them for the user to confirm, then start
+(or the user types /kt:load). AT THE END OF THE SESSION: update `docs/agent/HANDOFF.md` (or the user
+types /kt:save).
+
+## Standard commands
+
+```
+Install: docker compose build
+Run: docker compose up -d && ./scripts/run-worker.sh
+Stop: docker compose down
+Log in a provider: ~/cloakbrowser-env/bin/python scripts/login_provider.py chatgpt
+Quick gate: python acceptance.py
+Full gate: python acceptance.py && (cd web && npm run build) && ~/cloakbrowser-env/bin/python tests/ui_smoke.py
+Provider smoke: python acceptance.py --real
+Real journey: INVITE_CODE=... ~/cloakbrowser-env/bin/python tests/ui_journey.py
+Site probe: ~/cloakbrowser-env/bin/python tests/provider_probe.py all
+Owner's cleanup (dry run; --yes deletes, owner only): ~/cloakbrowser-env/bin/python scripts/purge_test_residue.py <list.json>
+```
+
+The gates mock the provider boundary on purpose so they can be rerun freely. `--real` drives an
+actual ChatGPT session: it takes minutes and spends account quota, so run it when the browser flow
+itself changed, not on every commit. The real journey walks the web interface as a user with the
+host worker in real mode (two turns, one picture). The site probe re-measures what the worker
+relies on (turn requests, memory switch, error banner, DOM fallback, thread deletion) and cleans
+up its own thread; `memory-toggle` only by name, with the worker stopped.
+
+`tests/ui_smoke.py` and `tests/ui_journey.py` import cloakbrowser, so they run under the venv
+python. ui_smoke needs a running stack, INVITE_CODE, and a worker started with
+`PROVIDER_MODE=mock MOCK_DELAY_SECONDS=4`. The delay is what makes the waiting state observable;
+without it the typing indicator check cannot see anything and fails.
+
+## Allowed / Ask first / Forbidden
+
+**Allowed:** read/write code, run docker, create files, run scripts, push `master` to the private
+`origin` once a plan has closed with its full gate green (the owner's standing yes, 2026-10-02)
+
+**Ask first:** any other push (another remote, a gate that is red or was not run, a force push),
+delete data, change provider credentials, add new providers
+
+**Forbidden:** commit secrets to git, delete browser sessions while in use, expose credentials in logs
+
+## Working rules
+
+The shared working rules (scope, tests, verification, parked questions, git) are injected by the kt
+plugin at the start of every session in the `=== kt rules ===` block; this file only keeps the rules
+SPECIFIC to this repo, and a repo rule wins on conflict.
+
+- All providers use cloakbrowser, not API: browser sessions are the source of truth for auth state.
+- Media files go to R2-compatible storage (local in dev, Cloudflare R2 in prod).
+- One browser session per provider at a time: a session is the profile `storage/sessions/<provider>/`
+  with its own device seed, made only by the login script, and Chromium opens it for one browser at a
+  time. Take a provider off the host worker before a gate, a probe or a login uses it; never copy a
+  profile, never delete its `device-seed` alone.
+- Name a failure's cause only from the failing run's own record: run real gates with `--keep` and
+  read the worker's error (the api's `thread_tombstones.error`, the job's error) before fixing; a
+  defect measured elsewhere is a suspect until that record names it (paid for twice, 2026-09-27).
