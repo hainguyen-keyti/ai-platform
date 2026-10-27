@@ -12,6 +12,15 @@ from src.security import (current_user, hash_api_key, hash_password, issue_token
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _rollback(conn):
+    # SQLite may already have rolled back on its own (a full disk, an I/O error); the error that
+    # matters is the one being raised, not "no transaction is active".
+    try:
+        conn.execute("ROLLBACK")
+    except Exception:
+        pass
+
+
 def _public(user: dict) -> dict:
     return {
         "id": user["id"],
@@ -30,26 +39,36 @@ def register(body: RegisterRequest):
         raise HTTPException(status_code=403, detail="invalid invite code")
 
     email = body.email.lower()
+    # The check, the count and the insert share one write transaction, so two registrations at once
+    # cannot both find the email free or both count an empty table. The hash (bcrypt, about 250 ms)
+    # is made before the transaction opens, so the lock covers only those statements, the read back
+    # and the commit.
+    password_hash, user_id = hash_password(body.password), uuid.uuid4().hex
     with db() as conn:
-        if one(conn, "SELECT id FROM users WHERE email = ?", (email,)):
-            raise HTTPException(status_code=409, detail="email already registered")
-        # The first account to exist owns the instance.
-        first = one(conn, "SELECT COUNT(*) AS n FROM users")["n"] == 0
-        user_id = uuid.uuid4().hex
-        conn.execute(
-            "INSERT INTO users (id, email, password_hash, name, role, quota_remaining, quota_daily)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                user_id,
-                email,
-                hash_password(body.password),
-                body.name,
-                "admin" if first else "user",
-                settings.default_quota,
-                settings.default_quota,
-            ),
-        )
-        user = one(conn, "SELECT * FROM users WHERE id = ?", (user_id,))
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if one(conn, "SELECT id FROM users WHERE email = ?", (email,)):
+                raise HTTPException(status_code=409, detail="email already registered")
+            # The first account to exist owns the instance.
+            first = one(conn, "SELECT COUNT(*) AS n FROM users")["n"] == 0
+            conn.execute(
+                "INSERT INTO users (id, email, password_hash, name, role, quota_remaining, quota_daily)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    email,
+                    password_hash,
+                    body.name,
+                    "admin" if first else "user",
+                    settings.default_quota,
+                    settings.default_quota,
+                ),
+            )
+            user = one(conn, "SELECT * FROM users WHERE id = ?", (user_id,))
+            conn.execute("COMMIT")
+        except Exception:
+            _rollback(conn)
+            raise
     return _public(user)
 
 

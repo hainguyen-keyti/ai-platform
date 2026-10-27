@@ -307,7 +307,21 @@ Chromium pin, #5 the records against the code, #6 stale comments and the probe's
 by #1), #7 the README and CLAUDE.md's commands (blocked by #2, #3, #4). Each issue holds its goal,
 its files, its "done when" checklist and the common rules; the orchestrator hands each to a child
 session by the `/orchestrate` skill, checks the diff and the full gate, and commits one ticket per
-commit. Not started yet.
+commit. Progress:
+- **#1 done** (plan3 ticket 01): `register()` hashes first, then checks the email, counts the users
+  and inserts inside one `BEGIN IMMEDIATE`, with a guarded `_rollback`. Two new gate checks fire
+  `RACERS = 8` registrations at once at an api of their own on an empty database ("eight
+  registrations at once ... exactly one admin"; "the same email registered eight times at once
+  ... one 201 and 409 to the rest, never 500", three rounds): red on the old code
+  (`[(201, 'admin'), (201, 'admin')]`, and a 500 from `IntegrityError: UNIQUE constraint failed:
+  users.email`). Two requests were not enough: with no transaction at all (mutant C) the two-request
+  check stayed green 1 run in 5, so the child session raised it to eight on the first review's
+  major finding. The child's mutants A, A2, B, B2, C, D were red 5/5 each; the orchestrator's own
+  measure on copies of `api/` (scratchpad `measure_mutant_c.py`, 5 rounds each): the code as it is
+  green 5/5 on both checks (one admin each round), mutant C red 5/5 on both (2 to 4 admins a
+  round). Two independent reviews, the second "Đạt". **Full gate, the orchestrator's run through
+  the test gate: quick gate 58/58, build, ui_smoke 74/74, exit 0 in 522s.** The quick gate now
+  has 58 checks. Issue #1 not ticked or closed yet (a GitHub write, asked first).
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
@@ -363,6 +377,13 @@ Desktop was off too, so api, web and worker were all down until restarted.
 
 ## Known traps
 
+- **On the Windows machine Docker Desktop does not start by itself, and when it restarts the
+  containers before the Ubuntu distro has mounted `/mnt/d`, the api's bind mount is empty**
+  (2026-10-27, twice): the api logs `Could not import module "src.main"` (once with
+  `WatchfilesRustInternalError ... /app/src: Bad address`) while compose reports it up, and the full
+  gate stops at `full-gate: api does not answer on :3000`. Start Docker Desktop first, then
+  `docker compose up -d --force-recreate` from WSL; the database sits on the `storage/db` bind
+  mount and survives
 - **On the Windows machine (2026-10-27) the kt hooks do not run**: `.claude/hooks/session-start.sh`
   and `stop-gate.py` call `python3`, which is the Microsoft Store alias there, so the session start
   prints no PROJECT, DECISIONS or HANDOFF section and the stop gate never checks this file. Read
@@ -429,6 +450,10 @@ Desktop was off too, so api, web and worker were all down until restarted.
 
 ## Parked questions
 
+- **`create_api_key` still ends its failed transaction with a bare `ROLLBACK`**
+  (`api/src/routes/auth.py`, found by both reviews of plan (3) #1): if SQLite has already rolled
+  back on its own, "no transaction is active" replaces the real error. `register()` now uses the
+  guarded `_rollback`; the same for `create_api_key` is a small ticket of its own
 - **ui_smoke's layout checks depend on the test machine's fonts** (2026-10-27, Phase 0): the web
   names no font of its own, so what the checks measure is whatever face the test browser has. In
   WSL without Windows fonts that was DejaVu Sans and the Vietnamese phone nav took two rows at 360px

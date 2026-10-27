@@ -27,6 +27,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -39,6 +40,8 @@ ROOT = Path(__file__).resolve().parent
 CHECKS = (
     "api health",
     "register (invite code)",
+    "eight registrations at once on an empty database make exactly one admin",
+    "the same email registered eight times at once answers one 201 and 409 to the rest, never 500",
     "login returns jwt",
     "auth rejects bad token",
     "chat job completes",
@@ -477,6 +480,73 @@ def tail(path, lines=15):
     return "\n".join("      | " + line for line in content[-lines:]) or "      | (empty)"
 
 
+def register_at_once(api, bodies):
+    """POST each body to /auth/register from its own thread, all released together."""
+    start = threading.Barrier(len(bodies))
+    answers = [None] * len(bodies)
+
+    def send(i):
+        try:
+            start.wait(timeout=30)
+        except threading.BrokenBarrierError:
+            answers[i] = (0, "never released with the others")
+            return
+        answers[i] = http("POST", api + "/auth/register", bodies[i])
+    threads = [threading.Thread(target=send, args=(i,)) for i in range(len(bodies))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return answers
+
+
+# Registrations sent at once. With the hash made first, a check, a count and an insert taken outside
+# one transaction sit well under a millisecond apart, and the race needs the hashes to end together.
+# Measured on a 12-core machine (2026-10-27) with register() stripped of its transaction: two
+# registrations made two admins in 4 runs of 5, eight in 30 of 30; two copies of one email answered
+# 500 in 14 runs of 15, eight copies in 14 of 15. A machine with fewer cores catches it less often.
+RACERS = 8
+
+
+def register_race_checks(c, fresh_api, invite_code, password, stamp):
+    # The gate's own api already has its first account, so the race for it runs on an api of its
+    # own over an empty database.
+    one_admin = "eight registrations at once on an empty database make exactly one admin"
+    twin = "the same email registered eight times at once answers one 201 and 409 to the rest, never 500"
+    api, why, stop_api = fresh_api("api-empty")
+    try:
+        if not api:
+            c[one_admin].failed("the api on an empty database never became healthy\n" + why)
+            c[twin].failed("the api on an empty database never became healthy")
+            return
+        answers = register_at_once(api, [
+            {"email": "race-{}-{}@aiplatform-acceptance.com".format(n, stamp), "password": password,
+             "name": "Race", "invite_code": invite_code} for n in range(RACERS)])
+        roles = sorted(str(body.get("role") if isinstance(body, dict) else body)
+                       for _, body in answers)
+        if ([status for status, _ in answers] == [201] * RACERS
+                and roles == ["admin"] + ["user"] * (RACERS - 1)):
+            c[one_admin].passed("all {} 201, one admin".format(RACERS))
+        else:
+            c[one_admin].failed("answers {}".format(
+                [(status, body.get("role") if isinstance(body, dict) else body) for status, body in answers]))
+
+        # Eight copies of one email missed the race in 1 run of 15 (RACERS above); three emails make
+        # a miss on all three unlikely.
+        for n in range(3):
+            email = "twin-{}-{}@aiplatform-acceptance.com".format(n, stamp)
+            answers = register_at_once(api, [
+                {"email": email, "password": password, "name": "Twin", "invite_code": invite_code}] * RACERS)
+            if sorted(status for status, _ in answers) != [201] + [409] * (RACERS - 1):
+                c[twin].failed("email {}: answers {}".format(n, [
+                    (status, body if status != 201 else "created") for status, body in answers]))
+                break
+        else:
+            c[twin].passed("three emails, each one 201 and {} 409".format(RACERS - 1))
+    finally:
+        stop_api()
+
+
 def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
     """API keys and /v1/images. token: the first account's login (its admin); btoken: another person's."""
     def files_now():
@@ -788,7 +858,7 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
 
 
 def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, worker_ctl,
-               python, restart_api, provider="chatgpt", *, db_path):
+               python, restart_api, provider="chatgpt", *, db_path, fresh_api):
     # Must exceed the provider's own ceiling (REPLY_TIMEOUT is 300s) plus the
     # first-use browser launch, otherwise the gate reports a timeout that only
     # the gate caused.
@@ -867,6 +937,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     else:
         c["register (invite code)"].failed("wrong invite {} valid invite {} body {}".format(bad, good, gbody))
         return checks
+
+    register_race_checks(c, fresh_api, invite_code, password, stamp)
 
     status, body = http("POST", api + "/auth/login", {"email": user_a, "password": password})
     if status == 200 and isinstance(body, dict) and body.get("token"):
@@ -2035,6 +2107,7 @@ def main():
     worker_token = "acceptance-worker-token"
 
     api_proc = api_log = worker_proc = worker_log = None
+    extra_apis = []
     checks = []
     boot_error = None
 
@@ -2157,9 +2230,25 @@ def main():
             api_proc, api_log = start_service(python, ROOT / "api", api_port, env, workspace / "api-2.log")
             return wait_healthy(api_base + "/health", 25)[0]
 
+        def fresh_api(name):
+            """A second api on its own port and its own empty database; returns its base url (None
+            if it never became healthy, with its log's tail), and the function that stops it. The
+            gate's own exit stops it too, should the gate be interrupted while it waits."""
+            port = free_port()
+            env = dict(api_env)
+            env.update({"DB_PATH": str(workspace / name / "app.db"),
+                        "MEDIA_PATH": str(workspace / name / "media")})
+            log_path = workspace / "{}.log".format(name)
+            proc, log = start_service(python, ROOT / "api", port, env, log_path)
+            extra_apis.append((proc, log))
+            base = "http://127.0.0.1:{}".format(port)
+            if wait_healthy(base + "/health", 25)[0]:
+                return base, "", lambda: stop(proc, log)
+            return None, tail(log_path), lambda: stop(proc, log)
+
         checks = run_checks(api_base, media_dir, args.real, invite_code,
                             worker_token, worker_health, worker_ctl, python, restart_api,
-                            args.provider, db_path=db_dir / "app.db")
+                            args.provider, db_path=db_dir / "app.db", fresh_api=fresh_api)
 
     except RuntimeError:
         pass
@@ -2168,6 +2257,8 @@ def main():
     finally:
         stop(worker_proc, worker_log)
         stop(api_proc, api_log)
+        for proc, log in extra_apis:
+            stop(proc, log)
 
     if not checks:
         checks = []
