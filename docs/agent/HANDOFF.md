@@ -304,7 +304,10 @@ open, labelled `ready-for-agent`, worked one at a time in this order** (each ful
 Docker stack and port 8000): #1 the first-admin race (high risk: an independent reviewer), #2 the
 api's settings and `.env.example`, #3 the web image's lockfile, #4 the cloakbrowser, playwright and
 Chromium pin, #5 the records against the code, #6 stale comments and the probe's import (blocked
-by #1), #7 the README and CLAUDE.md's commands (blocked by #2, #3, #4). Each issue holds its goal,
+by #1), #7 the README and CLAUDE.md's commands (blocked by #2, #3, #4). **Added 2026-10-28 with
+the owner's yes: #8** (T9), `scripts/run-worker.sh` passes the worker every line `.env` sets for
+it and a name given on the command line still wins, found by #2, medium risk; it blocks #7. The
+order is now #3, #4, #8, #5, #6, #7 (none of #3, #4, #8 shares a file). Each issue holds its goal,
 its files, its "done when" checklist and the common rules; the orchestrator hands each to a child
 session by the `/orchestrate` skill, checks the diff and the full gate, and commits one ticket per
 commit. Progress:
@@ -332,6 +335,17 @@ commit. Progress:
   worker serving all three providers keeps ui_smoke at 74/74. **Full gate, the orchestrator's run
   through the test gate: 58/58, build, 74/74, exit 0 in 507s.** Its finding outside its files is
   parked (Parked questions: `run-worker.sh` exports none of the worker's lines).
+- **#3 done** (plan3 ticket 03): `web/Dockerfile` copies `package.json` and `package-lock.json` and
+  runs `npm ci`. Before: the old Dockerfile rebuilt with no cache installed vite 6.4.5, postcss
+  8.5.32 and autoprefixer 10.6.2, the newest in their `^` ranges, where the lockfile says 6.4.3,
+  8.5.28 and 10.6.1; after, measured by the orchestrator in the running container: 6.4.3, 8.5.28,
+  10.6.1, react-markdown 10.1.0, the lockfile's. A rebuilt image reaches the container only with
+  `docker compose up -d --renew-anon-volumes web` (`-V`): plain `up -d` keeps the old
+  `node_modules` in the anonymous volume (Known traps). **Full gate, the orchestrator's run through
+  the test gate: 58/58, build, 74/74, exit 0 in 518s.** The child's review passed; low risk, so no
+  second independent review. The child left an image `ai-platform-web:plan3-03-old` and a dangling
+  volume behind; removing them is the owner's call. `npm ci` reports "3 vulnerabilities (1
+  moderate, 2 high)" in the lockfile, not looked into.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
@@ -437,8 +451,12 @@ Desktop was off too, so api, web and worker were all down until restarted.
 - One browser per profile: Chromium refuses a second one. A worker killed while its browser is
   open leaves stale `Singleton*` files in the profile; the next launch opens all the same
 - After a worker stops, the api still counts its providers as served for about 310 seconds
-- The web container keeps its own node_modules volume: after adding a dependency run
-  `docker compose exec web npm install`
+- The web container keeps its own node_modules in an anonymous volume: since plan (3) #3 the image
+  installs with `npm ci` from the lockfile, so after a dependency or lockfile change run
+  `docker compose build web && docker compose up -d --renew-anon-volumes web`; plain `up -d` keeps
+  the old `node_modules` (measured 2026-10-27), and `npm install` inside the container rewrites the
+  host's lockfile through the bind mount. `scripts/full-gate.sh` runs plain `up -d`, so on a machine
+  with an old volume its ui_smoke can run on packages the lockfile does not name
 - Docker Desktop being off looks exactly like a broken platform: the host worker still answers on
   8000 while web and api are silent
 - A stale host worker has twice been mistaken for a broken feature: compare the process start time
@@ -467,8 +485,8 @@ Desktop was off too, so api, web and worker were all down until restarted.
   mock worker started through it read `min_gap_seconds 0.0` with `.env` saying 3, and 3.0 once
   `set -a; . ./.env; set +a` ran first. This is the root of the records review's item 6 (CLAUDE.md's
   Run line serving ChatGPT alone, HANDOFF passing `PROVIDERS` by hand) and of the minimum gap being
-  off in production since 2026-10-01. `.env.example` now says so. A fix (export what `.env` sets,
-  keep a name given on the command line winning) wants a ticket of its own, the owner's call
+  off in production since 2026-10-01. `.env.example` now says so. The fix is issue #8 (2026-10-28,
+  the owner's yes), worked after #4 and before #7
 - **`create_api_key` still ends its failed transaction with a bare `ROLLBACK`**
   (`api/src/routes/auth.py`, found by both reviews of plan (3) #1): if SQLite has already rolled
   back on its own, "no transaction is active" replaces the real error. `register()` now uses the
