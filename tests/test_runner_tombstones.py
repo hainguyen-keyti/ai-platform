@@ -70,7 +70,8 @@ def asked_for_tombstone(hold, cooling):
     runner.start()
     time.sleep(0.5)
     seen = list(Client.paths)
-    # No join(): Runner names its Event _stop, which shadows Thread._stop.
+    # stop() wakes the runner's wait at once; the short sleep lets it leave
+    # before the next case resets Client.paths.
     runner.stop()
     time.sleep(0.3)
     return "/internal/tombstones/claim" in seen, seen

@@ -4,8 +4,16 @@
 One command, own ports, own temp database and media directory, PASS/FAIL table,
 non-zero exit on failure, cleans up after itself.
 
-    python acceptance.py           mock providers, ~10s, safe to rerun
-    python acceptance.py --real    drives the real ChatGPT browser session
+    python acceptance.py                         mock providers, about 5 minutes, safe to rerun
+    python acceptance.py --real                  drives the real ChatGPT browser session
+    python acceptance.py --real --provider grok  the same, against grok (or gemini)
+    python acceptance.py --keep                  keeps the temp workspace and prints its path
+
+--provider (chatgpt by default) picks which provider the job checks speak to.
+Mock mode serves all three either way. --real drives only that one, runs far
+longer than mock (real replies, paced turns) and spends the account's quota;
+it skips, each with its reason printed, the checks a real run cannot or should
+not make.
 
 Only the provider boundary is faked in mock mode. The API, the database, the job
 queue, the worker poll loop and media storage all run for real either way.

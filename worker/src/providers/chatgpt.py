@@ -265,9 +265,13 @@ SNAPSHOT_DOWNLOADS = """
 class ChatGPTProvider(BaseProvider):
     """Drives a logged-in chatgpt.com session through cloakbrowser.
 
-    Every job starts a brand new chat. The browser session is shared by all
-    platform users, so reusing one thread would leak one user's context into
-    another's reply; a fresh chat plus our own history is what keeps them apart.
+    Each platform conversation keeps one ChatGPT thread: a turn with no stored
+    thread yet opens a new chat, and a turn with one goes back to the thread the
+    api stored, opening a new chat instead only when the server says it is gone.
+    Our own history is replayed only into a chat turn that has no thread yet.
+    The browser session is shared by all platform users; what keeps them
+    apart is that a conversation belongs to exactly one user and that the
+    account's memory is off, so a turn is refused while memory reads on.
     """
 
     name = "chatgpt"

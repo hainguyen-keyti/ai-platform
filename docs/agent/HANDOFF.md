@@ -414,6 +414,23 @@ commit. Progress:
   Compose deployment") and `ACCESS.md`'s "Local Docker | docker compose up" still leave the host
   worker out; DECISIONS section 3's "Cloudflare deployment, Q4 2026" is due and contradicts the
   FastAPI row (the owner's call).
+- **#6 done** (plan3 ticket 06, comments and one import): `ChatGPTProvider`'s docstring now says a
+  conversation keeps one thread (a new chat only with no stored thread or a 404, history replayed
+  only into a turn with no thread, users kept apart by one owner per conversation and memory off);
+  `test_runner_tombstones.py`'s comment no longer names `_stop`; `acceptance.py`'s docstring says
+  mock takes about 5 minutes (4m19s measured), `--real` drives one provider picked by
+  `--provider`, and `--keep`. `tests/provider_probe.py` imports `ATTACHMENT_PREVIEW` and
+  `ATTACHMENT_REMOVE`: unbound before (the remove step's `NameError` was caught and printed, so the
+  step was never measured), both resolve after; the probe was not run. The three other files are
+  the same code with docstrings removed (`ast.dump` compared, the child's run and the
+  orchestrator's own); five mutants red. Two child reviews, the second "Đạt".
+  `test_runner_tombstones.py` 3/3. **Full gate, the orchestrator's run through the test gate:
+  58/58, build, 74/74, exit 0.** Left open by it: `acceptance.py:2160` still says mock serves two
+  providers (it serves three); `V1_REAL_SKIP` (`:117`) says "chatgpt turns" under any
+  `--provider`; the tombstone test could `join()` the runner now instead of sleeping; and a
+  suspect, read in code by the review, not run: when a stored thread answers 404, `_open` opens a
+  new chat but `chat()` replays no history because `thread_url` was given (`chatgpt.py:983`), so
+  that turn starts without its conversation's context.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can

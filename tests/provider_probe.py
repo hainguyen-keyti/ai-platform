@@ -26,7 +26,8 @@ FIXTURES = ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(ROOT / "worker"))
 
 from src.providers.chatgpt import (  # noqa: E402
-    ASSISTANT_TURN, MEMORY_KEYS, SESSION_TOKEN, STOP_BUTTON, ChatGPTProvider,
+    ASSISTANT_TURN, ATTACHMENT_PREVIEW, ATTACHMENT_REMOVE, MEMORY_KEYS, SESSION_TOKEN,
+    STOP_BUTTON, ChatGPTProvider,
 )
 
 PROMPT = "Reply with the single word: ok"
