@@ -10,23 +10,29 @@ types /kt:save).
 
 ## Standard commands
 
+Setting up a new machine (`.env`, the venv, node, Docker, on Windows WSL and its fonts): `README.md`.
+On Windows every command below runs inside WSL, from the project folder.
+
 ```
 Install: docker compose build
-Run: docker compose up -d && ./scripts/run-worker.sh
+Run (the providers in .env's PROVIDERS, chatgpt,grok,gemini): docker compose up -d && ./scripts/run-worker.sh
 Stop: docker compose down
-Log in a provider: ~/cloakbrowser-env/bin/python scripts/login_provider.py chatgpt
-Quick gate: python acceptance.py
-Full gate: python acceptance.py && (cd web && npm run build) && ~/cloakbrowser-env/bin/python tests/ui_smoke.py
-Provider smoke: python acceptance.py --real
+Log in a provider: ~/cloakbrowser-env/bin/python scripts/login_provider.py <chatgpt|grok|gemini>
+Quick gate: python3 acceptance.py
+Full gate: ./scripts/full-gate.sh
+Provider smoke: python3 acceptance.py --real --keep --provider <chatgpt|grok|gemini>
 Real journey: INVITE_CODE=... ~/cloakbrowser-env/bin/python tests/ui_journey.py
 Site probe: ~/cloakbrowser-env/bin/python tests/provider_probe.py all
 Owner's cleanup (dry run; --yes deletes, owner only): ~/cloakbrowser-env/bin/python scripts/purge_test_residue.py <list.json>
 ```
 
-The gates mock the provider boundary on purpose so they can be rerun freely. `--real` drives an
-actual ChatGPT session: it takes minutes and spends account quota, so run it when the browser flow
-itself changed, not on every commit. The real journey walks the web interface as a user with the
-host worker in real mode (two turns, one picture). The site probe re-measures what the worker
+The full gate is the quick gate, `npm run build` in `web/`, then `tests/ui_smoke.py` against the
+compose stack and a mock worker that `scripts/full-gate.sh` starts itself when nothing answers on
+:8000. The gates mock the provider boundary on purpose so they can be rerun freely. `--real` drives
+the actual browser session of the provider `--provider` names (chatgpt by default): it takes minutes
+and spends account quota, so run it when the browser flow itself changed, not on every commit. The
+real journey walks the web interface as a user with the host worker in real mode (two turns, one
+picture). The site probe re-measures what the worker
 relies on (turn requests, memory switch, error banner, DOM fallback, thread deletion) and cleans
 up its own thread; `memory-toggle` only by name, with the worker stopped.
 
@@ -52,7 +58,7 @@ plugin at the start of every session in the `=== kt rules ===` block; this file 
 SPECIFIC to this repo, and a repo rule wins on conflict.
 
 - All providers use cloakbrowser, not API: browser sessions are the source of truth for auth state.
-- Media files go to R2-compatible storage (local in dev, Cloudflare R2 in prod).
+- Media files live on local disk (`storage/media`); Cloudflare R2 is deferred (DECISIONS section 3).
 - One browser session per provider at a time: a session is the profile `storage/sessions/<provider>/`
   with its own device seed, made only by the login script, and Chromium opens it for one browser at a
   time. Take a provider off the host worker before a gate, a probe or a login uses it; never copy a

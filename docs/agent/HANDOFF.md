@@ -431,6 +431,27 @@ commit. Progress:
   suspect, read in code by the review, not run: when a stored thread answers 404, `_open` opens a
   new chat but `chat()` replays no history because `thread_url` was given (`chatgpt.py:983`), so
   that turn starts without its conversation's context.
+- **#7 done** (plan3 ticket 07, the last of plan (3)): `README.md` (new) takes a fresh clone to a
+  green full gate on Windows 11 with WSL2: prerequisites (on WSL the three apt packages Chromium
+  needs, `libnss3 libnspr4 libasound2t64`, found by the child's reviews in this machine's apt log
+  and `ldd`), the LF checkout and its repair, `.env`, the venv (`uv venv --seed --python 3.11`, both
+  requirements files, `CLOAKBROWSER_VENV`), the Windows fonts and why, `npm ci`, Docker with WSL
+  integration, registering one's own account before the full gate (the first account is the
+  admin), the gates and `.claude/test-command.txt`, logging in, and the `src.main` restart. macOS
+  is not walked. `CLAUDE.md`: a line pointing at the README, Run serving `.env`'s `PROVIDERS`,
+  `Full gate: ./scripts/full-gate.sh`, `Provider smoke: python3 acceptance.py --real --keep
+  --provider <name>`, the login line for any of the three, the R2 rule as D6 decided. `python3`
+  where the issue said `python`: WSL's Ubuntu has no `python` (measured). Walked twice from a
+  fresh clone in `~/.cache/plan3-07-walk*` (own venv, own `.env`, no compose up there): quick gate
+  58/58 both times; every command of the block checked (`--help`, usage errors, `sh -n`, `docker
+  compose config -q`). Two child reviews (3 majors, all fixed). **Full gate, the orchestrator's run
+  through the test gate: 58/58, build, 74/74, exit 0.** Left behind for the owner to remove:
+  `~/.cache/plan3-07-walk/`, `~/.cache/plan3-07-walk2/` and their two logs. Left open: the docstrings
+  of `acceptance.py` and `tests/ui_smoke.py`, `.env.example`'s login line and this file's Phase 0
+  note still say `python`; compose's `NO_WORKER_SECONDS` default is 180 where `.env.example` says
+  310; a truly new WSL distro (no apt packages, no Chromium, no uv or node) is not walked.
+
+**Plan (3) closed on 2026-10-28** with #7: all nine issues done and closed, the full gate green.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
