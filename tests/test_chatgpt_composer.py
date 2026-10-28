@@ -12,7 +12,10 @@ Measured 2026-10-01 in the owner's acceptance walk: a turn stopped 2.5s after Se
 ChatGPT; the driver typed a turn its job had already lost and left a running reply unstopped.
 Measured 2026-10-02: a real picture is on the page 22 seconds after the send, and the server never
 closes that turn with an assistant node, so the driver waited out its whole ceiling for every one.
-Prints N/37 PASSED.
+Measured 2026-10-28 (issue #10): ChatGPT now closes a picture turn with an empty answer, sometimes
+at the picture's own second and before the page paints it, sometimes followed by a reasoning_recap
+node, and names the picture's sandbox copy, which is the same file.
+Prints N/N PASSED.
 """
 
 import re
@@ -323,6 +326,8 @@ class DrawingPage(Page):
 
     THREAD = "https://chatgpt.com/c/6abf0000-1111-83ec-9df4-aa8e1fc863a8"
     PICTURE = "blob:https://chatgpt.com/picture-1"
+    PICTURE_DATA = "data:image/png;base64,iVBORw0KGgo="
+    COPY = "/mnt/data/a_small_blue_square_1.png"
     WORDS = "Here it is."
 
     def __init__(self, clock, tool_after=None, tool_kind="multimodal_text", writes=None,
@@ -347,7 +352,13 @@ class DrawingPage(Page):
         self.first_read, self.reads, self.made_at = more.get("first_read", 200), 0, clock.now
         self.unreadable, self.early_reads, self.read_at = more.get("unreadable", 1), 0, []
         self.token_gone, self.bounced = more.get("token_gone", False), more.get("bounced", False)
-        self.memory_at = None
+        # Measured 2026-10-28: words_text, what the closing words' node says ("" for a picture turn
+        # ChatGPT closes with an empty answer); recap_after, when an assistant reasoning_recap node
+        # without end_turn lands, after the closing words; saved_copy, a tool node naming the
+        # picture's sandbox copy at /mnt/data, which the server hands back byte for byte.
+        self.words_text = more.get("words_text", self.WORDS)
+        self.recap_after, self.saved_copy = more.get("recap_after"), more.get("saved_copy", False)
+        self.memory_at, self.sandbox_reads = None, []
         super().__init__(clock, has={PROSEMIRROR})
 
     def since(self):
@@ -382,7 +393,7 @@ class DrawingPage(Page):
 
     def locator(self, selector):
         if selector == chatgpt.ASSISTANT_TURN:
-            return Words(self.WORDS if self.reached(self.words_after) else "")
+            return Words(self.words_text if self.reached(self.words_after) else "")
         return super().locator(selector)
 
     def nodes(self):
@@ -417,10 +428,16 @@ class DrawingPage(Page):
             nodes.append(node("t2", "tool", self.tool_kind, self.sent_at + self.second_after))
         if self.reached(self.words_after):
             nodes.append(node("a2", "assistant", "text", self.sent_at + (self.words_from or self.words_after),
-                              end_turn=True, text=self.WORDS))
+                              end_turn=True, text=self.words_text))
+            if self.saved_copy:
+                nodes.append(node("t3", "tool", "text", self.sent_at + self.words_after,
+                                  text="Generated images were saved at:\n- " + self.COPY))
         elif self.reached(self.words_from):
             nodes.append(node("a2", "assistant", "text", self.sent_at + self.words_from,
                               status="in_progress", text=self.WORDS[:4]))
+        if self.reached(self.recap_after):
+            nodes.append(node("a3", "assistant", "reasoning_recap", self.sent_at + self.recap_after,
+                              end_turn=False))
         return nodes
 
     def evaluate(self, script, *args):
@@ -430,7 +447,11 @@ class DrawingPage(Page):
             return ([self.PICTURE] if self.reached(self.paints_after) else []) + (
                 [self.PICTURE + "-2"] if self.reached(self.second_after) else [])
         if script == chatgpt.FETCH_AS_DATA_URL:
-            return "data:image/png;base64,iVBORw0KGgo="
+            return self.PICTURE_DATA
+        if script == chatgpt.FETCH_INTERPRETER_FILE:
+            self.sandbox_reads.append(args[0][2])
+            data = self.PICTURE_DATA if self.saved_copy != "another" else "data:image/png;base64,aW5mbw=="
+            return {"status": 200, "data": data, "name": self.COPY.rsplit("/", 1)[-1], "mime": "image/png"}
         if script == chatgpt.FETCH_THREAD:
             self.reads += 1
             self.read_at.append(self.clock.now)
@@ -771,6 +792,36 @@ def main():
     record("words that start after the picture, with no stop button, are not cut",
            said == "success" and pictures == 1 and text == DrawingPage.WORDS and took >= 50,
            "{} with {} picture(s), words {!r}, after {:.0f}s".format(said, pictures, text, took))
+
+    # Measured 2026-10-28 (issue #10): the picture at +48s, an empty closing answer at +53s and a
+    # reasoning_recap without end_turn at +55s; the driver ran to its ceiling (5m24s). The page
+    # works until the recap is written, so the server is read only once the recap is the newest.
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=48, writes=(48, 57), words_after=53,
+                                                     words_text="", recap_after=55))
+    record("a reasoning recap after the closing answer does not hide that the turn is over",
+           said == "success" and pictures == 1 and took < 90,
+           "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
+
+    # The same day, a second turn: the picture's node and an empty closing answer at +35s, the page
+    # still painting; the driver collected nothing and failed the turn as returning nothing.
+    said, pictures, text, took = draw_on(DrawingPage(clock, tool_after=35, words_after=35, words_text="",
+                                                     paints_after=45))
+    record("a turn closed by its answer at the picture's second waits for the picture to paint",
+           said == "success" and pictures == 1 and took >= 45,
+           "{} with {} picture(s) after {:.0f}s".format(said, pictures, took))
+
+    # The first turn's two pictures were one file, the page's and its sandbox copy.
+    page = DrawingPage(clock, tool_after=22, words_after=27, words_text="", saved_copy=True)
+    said, pictures, text, took = draw_on(page)
+    record("a picture's sandbox copy, byte for byte the page's, is stored once",
+           said == "success" and pictures == 1 and page.sandbox_reads == [DrawingPage.COPY],
+           "{} with {} picture(s), sandbox reads {}".format(said, pictures, page.sandbox_reads))
+
+    page = DrawingPage(clock, tool_after=22, words_after=27, words_text="", saved_copy="another")
+    said, pictures, text, took = draw_on(page)
+    record("a sandbox file that is not the page's picture is still stored",
+           said == "success" and pictures == 2,
+           "{} with {} file(s)".format(said, pictures))
 
     # A picture from an earlier turn of the thread never ends this one, whether or not the read
     # of the thread before the send went through.

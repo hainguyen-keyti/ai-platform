@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import re
 import time
 import uuid
@@ -64,6 +65,10 @@ PICTURE_QUIET_SECONDS = 10
 PICTURE_CLOCK_SLACK = 5
 # The node can be there before the page has painted the picture.
 PICTURE_PAINT_SECONDS = 30
+# Assistant nodes that are the model's bookkeeping, not its reply. Measured 2026-10-28: a picture
+# turn's empty closing answer was followed two seconds later by a reasoning_recap without end_turn,
+# which, taken for the newest node, hid that the turn was over until the ceiling.
+NOT_THE_REPLY = ("reasoning_recap", "model_editable_context")
 # After a cancel, how long to wait for a freshly sent turn's thread address so
 # the thread can be reported; the address normally shows within seconds.
 CANCEL_THREAD_WAIT = 15
@@ -635,14 +640,15 @@ class ChatGPTProvider(BaseProvider):
                 (n for n in data["nodes"] if n["role"] != "user" and n["id"] not in baseline_ids),
                 key=lambda n: n["create_time"],
             )
-            answers = [n for n in fresh if n["role"] == "assistant"]
+            work = [n for n in fresh if n["content_type"] not in NOT_THE_REPLY]
+            answers = [n for n in work if n["role"] == "assistant"]
             if not answers:
                 continue
             if not announced:
                 self._phase("reply started")
                 announced = True
             last = answers[-1]
-            newest = fresh[-1]
+            newest = work[-1]
             picture = self._drew(newest) and newest["create_time"] >= started - PICTURE_CLOCK_SLACK
             if not picture or not drawn or drawn[0] != newest["id"]:
                 drawn = (newest["id"], time.time()) if picture else None
@@ -809,6 +815,23 @@ class ChatGPTProvider(BaseProvider):
             )
         return artifacts
 
+    def _not_copies(self, files, pictures):
+        """The sandbox files that are not byte for byte a picture already taken from the page.
+
+        Measured 2026-10-28: a picture turn's tool output names the picture's sandbox copy, and the
+        server hands back the very file the page showed, so the person got it twice. A copy is
+        removed from disk, never stored.
+        """
+        taken = {hashlib.sha256((self.media_path / p.filename).read_bytes()).hexdigest() for p in pictures}
+        kept = []
+        for artifact in files:
+            path = self.media_path / artifact.filename
+            if hashlib.sha256(path.read_bytes()).hexdigest() in taken:
+                path.unlink()
+            else:
+                kept.append(artifact)
+        return kept
+
     def _stopped(self, sent: bool, pressed: bool):
         self.last_stop = {"sent": sent, "pressed": pressed, "at": round(time.time(), 1)}
 
@@ -916,8 +939,11 @@ class ChatGPTProvider(BaseProvider):
                 # from the server. The button click stays only as a fallback.
                 page.wait_for_timeout(1500)
                 sources = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
+                # A turn that drew waits for the paint whatever node closed it: measured 2026-10-28,
+                # an empty closing answer can land in the picture's own second, before the paint.
+                drew = any(self._drew(n) for n in fresh)
                 waited = 0
-                while not sources and fresh and self._drew(fresh[-1]) and waited < PICTURE_PAINT_SECONDS:
+                while not sources and drew and waited < PICTURE_PAINT_SECONDS:
                     page.wait_for_timeout(1000)
                     self._check_stop()
                     waited += 1
@@ -925,7 +951,8 @@ class ChatGPTProvider(BaseProvider):
                 media = self._download(page, sources, prompt)
                 files = self._fetch_sandbox_files(
                     page, self._thread_id(page) or "", fresh, prompt, {upload} if upload else set())
-                media += files or self._save_files(page, seen_downloads, prompt)
+                media += self._not_copies(files, media) if files else self._save_files(
+                    page, seen_downloads, prompt)
         except JobCancelled:
             # Left alone the site writes or draws the turn out for nobody; measured 2026-10-01, its stop
             # button ends a text where it is and a picture before it arrives.

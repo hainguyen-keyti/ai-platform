@@ -453,6 +453,30 @@ commit. Progress:
 
 **Plan (3) closed on 2026-10-28** with #7: all nine issues done and closed, the full gate green.
 
+**After plan (3), 2026-10-28, this machine runs for real.** The owner logged the three providers
+in from WSL (WSLg shows the window); a read-only check with the login script's own proofs read all
+three signed in. The owner brought `.env` up to `.env.example` (`PROVIDERS=chatgpt,grok,gemini`,
+`NO_WORKER_SECONDS=310`, `TOKEN_TTL_HOURS=24`, Grok's 150 and 600); the api container and the
+worker read them back. The ChatGPT account's memory was ON (the first turn was refused, as
+designed); the owner turned it off, and the drivers' own readers then read all three accounts
+`off`. The real worker runs in the desktop app's Terminal panel ("host worker (real)"). **WSL
+restarted by itself twice that morning (about 06:26 and 06:54 UTC), cause not looked into**: each
+time the worker ended with it and the api needed `docker compose up -d --force-recreate`.
+- **Issue #10 done** (ChatGPT picture turns): the owner's first picture came back after 5m24s with
+  the same file twice. The thread's own server record: the picture at +48s, an empty closing answer
+  (`end_turn`) at +53s, a `reasoning_recap` without `end_turn` at +55s that the driver took for the
+  newest node, so it ran to its 300s ceiling; the tool's "saved at /mnt/data/…" copy was fetched as
+  a file too (same sha256). A probe turn found a third shape: the closing answer in the picture's
+  own second, the page not painted yet, so the turn failed as returning nothing. The driver now
+  leaves `reasoning_recap` and `model_editable_context` out of "the reply" and "the newest node",
+  waits for the paint whenever the turn drew, and drops a sandbox file byte for byte a picture
+  taken from the page. `tests/test_chatgpt_composer.py` plays the three measured shapes (red on the
+  old driver: 303s, 0 pictures at 38s, 2 pictures) and a sandbox file that is not a copy: 60/60;
+  four mutants each red on their own check. Full gate through the test gate: 58/58, build, 74/74,
+  exit 0. One real picture turn through the fixed driver (the probe, thread deleted): the same
+  shape as the owner's (answer +24s, recap +25s), back in 63s with one picture. The probe and the
+  mutant runner are in the session's scratchpad, not in the repo.
+
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can
 start (the skill refuses a call from the agent, `disable-model-invocation`); then
