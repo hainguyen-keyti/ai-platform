@@ -99,8 +99,11 @@ class FollowPage:
     answer takes tens of seconds. A fresh page has no thread until the send."""
 
     def __init__(self, clock, before=(200,), settled_after=20.0, fresh=False, empty_first=False,
-                 raises_first=None, raises_always=None):
+                 raises_first=None, raises_always=None, never_lands=False, after_status=200):
         self.clock, self.before, self.settled_after, self.fresh = clock, list(before), settled_after, fresh
+        # never_lands: the server never lists this turn, its question nor an answer (measured
+        # 2026-10-28, issue #13); after_status: what every read after the send answers.
+        self.never_lands, self.after_status = never_lands, after_status
         # empty_first: the first read answers 200 with no response at all, as no thread with an
         # answer in it ever does. raises_first: the first read raises instead of answering (a
         # rejected fetch); raises_always: every read raises (a browser that closed).
@@ -128,6 +131,10 @@ class FollowPage:
                 if self.empty_first and self.reads == 1:
                     return {"status": 200, "body": json.dumps({"responses": []})}
                 return {"status": 200, "body": json.dumps({"responses": earlier})}
+            if self.after_status != 200:
+                return {"status": self.after_status, "body": ""}
+            if self.never_lands:
+                return {"status": 200, "body": json.dumps({"responses": earlier})}
             rows = earlier + [THIS_HUMAN]
             if self.clock.now - self.sent_at >= self.settled_after:
                 rows.append(THIS)
@@ -137,13 +144,16 @@ class FollowPage:
         return {"status": 404, "body": ""}
 
 
-def follow_up(clock, page, stop=None):
-    """(what happened, the words, turns sent, seconds) of one turn on the stub page."""
+def follow_up(clock, page, stop=None, keep=None):
+    """(what happened, the words, turns sent, seconds) of one turn on the stub page. `keep`, a dict,
+    holds the driver from one call to the next, as the worker keeps one for every job."""
     from src.providers import grok as grok_module
     from src.providers.base import JobCancelled, ProviderError
     grok_module.time = clock
     scratch = Path(tempfile.mkdtemp(prefix="grok-settle-"))
-    provider = GrokProvider(scratch, scratch)
+    provider = (keep or {}).get("driver") or GrokProvider(scratch, scratch)
+    if keep is not None:
+        keep["driver"] = provider
     provider._open = lambda thread_url=None: (page, "composer")
 
     def send(_page, _composer, prompt):
@@ -220,6 +230,30 @@ def follow_up_cases():
     record("a new conversation sends without reading a thread",
            what == "success" and text == THIS["message"] and sent == 1 and page.reads == 0,
            "{} {!r} sent {} reads {} after {:.0f}s".format(what, text, sent, page.reads, took))
+
+    # Issue #13 (2026-10-28): a follow-up the server never listed was waited on for 321s. Measured the
+    # same day, a turn's question is listed at the first read after Enter (4-6s).
+    what, text, sent, took = follow_up(clock, FollowPage(clock, never_lands=True))
+    record("a follow-up the server never lists is said not received within a minute",
+           what.startswith("refused as provider_error") and "never received" in what and took < 60,
+           "{} after {:.0f}s".format(what, took))
+
+    kept = {}
+    follow_up(clock, FollowPage(clock), keep=kept)
+    what, text, sent, took = follow_up(clock, FollowPage(clock, never_lands=True), keep=kept)
+    record("the turn before, heard, does not make the next one heard on the same driver",
+           what.startswith("refused as provider_error") and "never received" in what and took < 60,
+           "{} after {:.0f}s".format(what, took))
+
+    what, text, sent, took = follow_up(clock, FollowPage(clock, settled_after=150.0))
+    record("a turn whose question is listed and whose answer takes minutes is still waited on",
+           what == "success" and text == THIS["message"] and took >= 150,
+           "{} {!r} after {:.0f}s".format(what, text, took))
+
+    what, text, sent, took = follow_up(clock, FollowPage(clock, after_status=500))
+    record("a thread that cannot be read after the send is not said unsent: waited to the ceiling",
+           what.startswith("failed as provider_timeout") and took >= 300,
+           "{} after {:.0f}s".format(what, took))
 
 
 def main():

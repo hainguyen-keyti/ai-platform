@@ -505,6 +505,19 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   in the browser; 1 button before, 0 after). A drift mutant (grok given `video_script` in the api)
   turns both gate checks red. **The quick gate has 60 checks and ui_smoke 75.** Full gate through
   the test gate: 60/60, build, 75/75, exit 0.
+- **Issue #13 done** (a Grok turn the server never got): a follow-up ("hình người thật đi", job
+  `cd058655`) failed after 321s as returning nothing; the server's record of the thread had no
+  question of that turn, and the same words sent again passed in 28s (why the first send never
+  landed, network or page, was not measured). Measured on three real turns (thread deleted): the
+  question is listed at the driver's first read after Enter, 4.3-6.3s (written on the issue before
+  the number was chosen). The driver now refuses a turn as "grok never received this turn" when a
+  read that went through still lists no question of it 30s after Enter (`HEARD_WAIT`); a failed
+  read keeps the wait. `tests/test_grok_settle.py`, 21/21: the measured shape red before (300s,
+  `provider_timeout`), 32s after; a long answer whose question is listed is still waited on; an
+  unreadable thread still waits to the ceiling; the flag resets between turns on one driver; four
+  mutants each red on their own check. Full gate through the test gate: 60/60, build, 75/75, exit 0;
+  two real Grok turns through the fixed driver (a new chat and a follow-up, deleted) passed in 13s
+  and 10s.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can

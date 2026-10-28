@@ -26,6 +26,10 @@ CHALLENGE_TEXT = ("security verification", "just a moment", "verify you are huma
 
 REPLY_TIMEOUT = 300
 THREAD_WAIT = 45
+# A thread that can be read and still lists no question of this turn this long after Enter never
+# received it. Measured 2026-10-28 (issue #13): the question is listed at the first read, 4-6s after
+# Enter; a turn the server never got was waited on to the ceiling, 321s.
+HEARD_WAIT = 30
 SERVER_POLL_SECONDS = 2
 # A turn that reads finished while it is still empty has not started. Grok
 # creates the assistant row before the words arrive, and inflightResponses can
@@ -109,6 +113,8 @@ class GrokProvider(BaseProvider):
     # Chat and image for now. A video script uploads a reference picture, and
     # grok's upload flow is a different shape that has not been measured.
     supported_features = (FeatureType.CHAT, FeatureType.IMAGE)
+    # Whether the server lists the running turn's question yet; reset by _run before each send.
+    heard = False
 
     def __init__(self, media_path, sessions_path):
         super().__init__(media_path, sessions_path)
@@ -347,6 +353,9 @@ class GrokProvider(BaseProvider):
             body = json.loads(raw)
         except ValueError:
             return None, "working", status
+        # Whether the server has this turn's question at all, read by _run (issue #13).
+        self.heard = self.heard or any(r.get("sender") == "human" and r.get("responseId") not in baseline_ids
+                                       for r in (body.get("responses") or []))
         answers = [r for r in (body.get("responses") or [])
                    if r.get("sender") == "assistant" and r.get("responseId") not in baseline_ids]
         if not answers:
@@ -475,6 +484,7 @@ class GrokProvider(BaseProvider):
 
         cid = self.thread_id(page.url)
         baseline_ids = self._baseline_ids(page, cid)
+        self.heard = False
         started = time.time()
         self._phase("waiting")
         try:
@@ -499,6 +509,12 @@ class GrokProvider(BaseProvider):
                 if status in (401, 403):
                     raise ProviderError(
                         "grok refused to report the turn (status {})".format(status))
+                # Only a read that went through proves the question is missing; one that failed
+                # proves nothing and the wait goes on.
+                if status == 200 and not self.heard and time.time() - started > HEARD_WAIT:
+                    raise ProviderError(
+                        "grok never received this turn: its thread lists no question of it {:.0f}s "
+                        "after the send".format(time.time() - started))
                 if turn and not announced:
                     self._phase("reply started")
                     announced = True
