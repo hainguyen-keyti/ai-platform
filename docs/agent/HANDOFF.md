@@ -476,6 +476,22 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   exit 0. One real picture turn through the fixed driver (the probe, thread deleted): the same
   shape as the owner's (answer +24s, recap +25s), back in 63s with one picture. The probe and the
   mutant runner are in the session's scratchpad, not in the repo.
+- **Issue #11 done** (Grok's composer): the owner's second Grok turn, on a thread opened again,
+  failed after 4 minutes as "the turn never reached grok's composer", nothing sent. A probe through
+  the driver on that thread (typed, read back, cleared, never sent): `_open` had taken
+  `textarea[aria-label="Ask Grok anything"]`, the only composer there at the open; the click timed
+  out, it was gone; 12s after load the composer is a `tiptap ProseMirror` in
+  `[data-testid="chat-input"]`. `_send` now looks for the composer again before each try.
+  `tests/test_grok_composer.py` (new, in no gate): the measured shape red on the old driver
+  (refused, nothing sent), 3/3 after; two mutants red; `test_grok_settle.py` 17/17,
+  `test_grok_memory.py` 20/20. Full gate through the test gate: 58/58, build, 74/74, exit 0. Two
+  real turns through the fixed driver (a new chat, then a follow-up on it opened again; thread
+  deleted): both answered in 11-13s, but the editor was already mounted at both opens, so the real
+  run did not meet the placeholder again (it depends on timing). **This Grok account looks like a
+  personal one in use** (pinned bots and chats the platform did not make in its sidebar), where
+  DECISIONS recorded a brand-new account for the platform: the owner's call. Grok's cookie dialog
+  stays open (its "Reject All" has no id the driver knows); it does not cover where the driver
+  clicks.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can

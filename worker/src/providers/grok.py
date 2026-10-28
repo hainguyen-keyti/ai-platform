@@ -298,6 +298,11 @@ class GrokProvider(BaseProvider):
             if attempt:
                 self._clear_composer(page, composer)
             self._dismiss_overlays(page)
+            # The composer is looked for again at every try. Measured 2026-10-28: a thread opened
+            # again first shows a textarea labelled like the composer, the only one there at the
+            # open, and mounts the real editor seconds later; the textarea is then gone, and three
+            # tries typed into it reached nothing.
+            composer = self._composer(page, 10) or composer
             box = page.locator(composer).first
             try:
                 box.scroll_into_view_if_needed(timeout=5000)
