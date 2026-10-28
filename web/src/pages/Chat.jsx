@@ -39,17 +39,19 @@ function ReplyText({ text }) {
 
 function MediaCard({ item, busy, onOpen, onScript, label }) {
   // Whatever came back is shown as what it is. Only a picture can be previewed
-  // or turned into a video script.
+  // or turned into a video script, and only where its provider writes them (no onScript).
   if (item.type === 'video') return <MediaVideo item={item} className="w-full max-w-sm rounded border bg-white p-2" />
   if (item.type !== 'image') return <FileCard item={item} />
 
   return (
     <div className="w-64 rounded border bg-white p-2">
       <MediaImage id={item.id} className="w-full" onOpen={(url) => onOpen(url, item)} />
-      <button onClick={() => onScript(item.id)} disabled={busy}
-        className="mt-2 w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
-        {label}
-      </button>
+      {onScript && (
+        <button onClick={() => onScript(item.id)} disabled={busy}
+          className="mt-2 w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
+          {label}
+        </button>
+      )}
     </div>
   )
 }
@@ -89,6 +91,10 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
   // held back (the api refuses a turn nobody serves anyway).
   const [served, setServed] = useState({})
   const unserved = served[provider] === false
+  // What each provider offers, from the same answer. A picture offers a video script unless its
+  // provider is known not to write them (grok, 2026-10-28): unknown keeps the button, the api refuses.
+  const [offered, setOffered] = useState({})
+  const scriptable = !Array.isArray(offered[provider]) || offered[provider].includes('video_script')
   const anotherServed = PROVIDERS.some((p) => p !== provider && served[p] === true)
   // Only a provider nobody chose is ever moved on its own; a person's own choice is never swapped.
   const picked = useRef(false)
@@ -185,7 +191,9 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
     async function ask() {
       try {
         const data = await api.providers()
-        if (live) setServed(Object.fromEntries((data?.providers || []).map((p) => [p.name, p.served])))
+        if (!live) return
+        setServed(Object.fromEntries((data?.providers || []).map((p) => [p.name, p.served])))
+        setOffered(Object.fromEntries((data?.providers || []).map((p) => [p.name, p.features])))
       } catch { /* keep the last answer */ }
     }
     ask()
@@ -548,7 +556,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
               entry.kind === 'media' ? (
                 <div key={entry.id} className="flex flex-col items-start gap-2">
                   <MediaCard item={entry.media} busy={!!status || unserved} label={t.videoScript}
-                    onOpen={open} onScript={requestScript} />
+                    onOpen={open} onScript={scriptable ? requestScript : null} />
                 </div>
               ) : (
                 <div key={entry.id} className={`flex flex-col gap-2 ${
@@ -565,7 +573,7 @@ export default function Chat({ onQuotaSpent, chatTaps, visible = true }) {
                   )}
                   {entry.message.media?.map((item) => (
                     <MediaCard key={item.id} item={item} busy={!!status || unserved} label={t.videoScript}
-                      onOpen={open} onScript={requestScript} />
+                      onOpen={open} onScript={scriptable ? requestScript : null} />
                   ))}
                   {(entry.message.media?.length || 0) >= 2 && (
                     <button type="button" data-testid="download-message" disabled={packing}

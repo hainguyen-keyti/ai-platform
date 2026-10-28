@@ -492,6 +492,19 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   DECISIONS recorded a brand-new account for the platform: the owner's call. Grok's cookie dialog
   stays open (its "Reject All" has no id the driver knows); it does not cover where the driver
   clicks.
+- **Issue #12 done** (what each provider offers): the owner pressed "Video script" under a Grok
+  picture; the api took it (202) and the worker failed the job a second later ("provider grok does
+  not support video_script"), refunded. `api/src/models.py` now holds `FEATURES` per provider, the
+  drivers' `supported_features`; `create_job` refuses a feature the provider does not offer with 400
+  after the 404 and 409 checks, before anything is written or charged; `GET /providers` gives each
+  provider's `features`; the web shows "Video script" only where the conversation's provider
+  offers it, and while that is unknown. New checks, red before: the quick gate's "a feature its
+  provider does not offer is refused at once and uncharged" (was 202) and "the api says what each
+  provider offers, as its driver does" (the api said nothing; it reads the drivers with `ast`), and
+  ui_smoke's "a picture offers a video script only where its provider writes them" (the list played
+  in the browser; 1 button before, 0 after). A drift mutant (grok given `video_script` in the api)
+  turns both gate checks red. **The quick gate has 60 checks and ui_smoke 75.** Full gate through
+  the test gate: 60/60, build, 75/75, exit 0.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can

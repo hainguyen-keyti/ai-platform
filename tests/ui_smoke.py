@@ -397,6 +397,40 @@ def main():
         shot(page, "07-video-script")
         record("video script from an image", True, "script bubble rendered")
 
+        # Issue #12 (2026-10-28): "Video script" shows under a picture only where the conversation's
+        # provider writes them. The provider list is played in the browser, chatgpt offering none,
+        # then the api's own list comes back and the button with it.
+        offering = {"providers": [{"name": n, "served": True,
+                                   "features": ["chat", "image"] if n == "chatgpt" else ["chat", "image", "video_script"]}
+                                  for n in ("chatgpt", "grok", "gemini")]}
+
+        def answer_offering(route):
+            if route.request.method != "GET":
+                route.continue_()
+                return
+            real = route.fetch()
+            headers = {k: v for k, v in real.headers.items() if k.lower() != "content-length"}
+            headers["content-type"] = "application/json"
+            route.fulfill(status=200, headers=headers, body=json.dumps(offering))
+
+        def scripts_after_a_visit():
+            page.click("nav button:has-text('gallery')")
+            page.wait_for_selector("text=/Gallery \\(\\d+\\)/", timeout=20000)
+            page.click("nav button:has-text('chat')")
+            page.wait_for_selector("[data-testid=message-scroll]", timeout=10000)
+            page.wait_for_timeout(1500)
+            return page.locator("button:has-text('Video script')").count()
+
+        page.route("**/providers", answer_offering)
+        try:
+            without = scripts_after_a_visit()
+        finally:
+            page.unroute("**/providers")
+        again = scripts_after_a_visit()
+        record("a picture offers a video script only where its provider writes them",
+               without == 0 and again > 0,
+               "{} button(s) while chatgpt offers none, {} with the api's own list".format(without, again))
+
         # Document order, not coordinates: the picture must sit where it was
         # produced, with the later reply below it, rather than in a strip
         # dumped at the end of the thread.

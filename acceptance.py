@@ -23,6 +23,7 @@ launched with the cloakbrowser venv.
 """
 
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -55,6 +56,8 @@ CHECKS = (
     "chat job completes",
     "image job produces file",
     "video script job returns text",
+    "a feature its provider does not offer is refused at once and uncharged",
+    "the api says what each provider offers, as its driver does",
     "media listing scoped to user",
     "thread reused within a conversation",
     "threads never cross conversations",
@@ -283,6 +286,18 @@ class Check:
         self.ok = False
         self.skipped = True
         self.detail = detail
+
+
+def driver_features():
+    """What each real driver offers, read from its `supported_features` without importing it."""
+    offered = {}
+    for name in ("chatgpt", "grok", "gemini"):
+        tree = ast.parse((ROOT / "worker" / "src" / "providers" / "{}.py".format(name)).read_text())
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "supported_features"
+                                                     for t in node.targets)):
+                offered[name] = [element.attr.lower() for element in node.value.elts]
+    return offered
 
 
 def http(method, url, body=None, token=None, timeout=30, headers=None):
@@ -1018,6 +1033,40 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             c["video script job returns text"].failed("status {} body {}".format(status, body))
     elif wanted("video script job returns text"):
         c["video script job returns text"].failed("skipped, no media id from the image check")
+
+    # Issue #12 (2026-10-28): a video script asked of grok was taken (202) and failed a second later
+    # in the worker. What a provider does not offer is refused before anything is made or charged.
+    lacking = [name for name, offered in driver_features().items() if "video_script" not in offered]
+    if media_id and lacking:
+        def me():
+            return (http("GET", api + "/auth/me", token=token)[1] or {}).get("quota_remaining")
+
+        def conversations():
+            return len((http("GET", api + "/conversations?limit=200", token=token)[1] or {}).get("items") or [])
+
+        q0, conversations0 = me(), conversations()
+        status, body = http("POST", api + "/video/script", {"provider": lacking[0], "media_id": media_id},
+                            token=token)
+        if status == 400 and me() == q0 and conversations() == conversations0:
+            c["a feature its provider does not offer is refused at once and uncharged"].passed(
+                "{} video script: 400 {!r}, credit and conversations untouched".format(
+                    lacking[0], (body or {}).get("detail")))
+        else:
+            c["a feature its provider does not offer is refused at once and uncharged"].failed(
+                "{} video script: status {} body {}, quota {} -> {}, conversations {} -> {}".format(
+                    lacking[0], status, body, q0, me(), conversations0, conversations()))
+    else:
+        c["a feature its provider does not offer is refused at once and uncharged"].failed(
+            "no media id ({}) or every driver writes video scripts ({})".format(media_id, lacking))
+
+    pstatus, plist = http("GET", api + "/providers", token=token)
+    said = {p.get("name"): sorted(p.get("features") or []) for p in (plist or {}).get("providers") or []}
+    drivers = {name: sorted(offered) for name, offered in driver_features().items()}
+    if pstatus == 200 and said == drivers:
+        c["the api says what each provider offers, as its driver does"].passed(repr(said))
+    else:
+        c["the api says what each provider offers, as its driver does"].failed(
+            "status {}: the api says {}, the drivers {}".format(pstatus, said, drivers))
 
     status, mine = http("GET", api + "/media", token=token)
     mine_total = (mine or {}).get("total") if status == 200 else None

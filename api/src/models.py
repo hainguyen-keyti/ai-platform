@@ -3,6 +3,13 @@ from typing import Any, Optional
 from pydantic import BaseModel, EmailStr, Field
 
 PROVIDERS = ("chatgpt", "grok", "gemini")
+# What each provider's driver offers, its `supported_features`; the gate reads both and fails when
+# they differ. Grok writes no video script (DECISIONS 2026-09-25).
+FEATURES = {
+    "chatgpt": ("chat", "image", "video_script"),
+    "grok": ("chat", "image"),
+    "gemini": ("chat", "image", "video_script"),
+}
 
 
 class RegisterRequest(BaseModel):

@@ -5,7 +5,7 @@ from fastapi import HTTPException
 
 from src.config import settings
 from src.db.client import db, many, one
-from src.models import PROVIDERS
+from src.models import FEATURES, PROVIDERS
 from src.tombstones import leave_tombstone
 
 HISTORY_LIMIT = 10
@@ -108,6 +108,15 @@ def create_job(user, provider, feature, payload, conversation_id=None,
                     conn, user["id"], reference_media_id)["filename"]
             if media_id:
                 payload["filename"] = _resolve_media(conn, user["id"], media_id)["filename"]
+
+            # A feature the provider does not offer would only fail in the worker a second later
+            # (2026-10-28: a video script asked of grok); refused here, after the 404 and 409.
+            if feature not in FEATURES[provider]:
+                raise HTTPException(
+                    status_code=400,
+                    detail="{} does not offer {}; use {}".format(
+                        provider, feature, " or ".join(p for p in PROVIDERS if feature in FEATURES[p])),
+                )
 
             # After every check that already refuses (404, 409, a missing picture), before
             # anything is written or charged: a turn that would only fail is refused now, one
@@ -252,9 +261,10 @@ def _served(conn, provider):
 
 
 def provider_status():
-    """Every provider, and whether a worker serves it right now."""
+    """Every provider, whether a worker serves it right now, and what it offers."""
     with db() as conn:
-        return {"providers": [{"name": name, "served": _served(conn, name)} for name in PROVIDERS]}
+        return {"providers": [{"name": name, "served": _served(conn, name), "features": list(FEATURES[name])}
+                              for name in PROVIDERS]}
 
 
 def _sweep_unserved(conn, job_id=None):
