@@ -12,14 +12,14 @@ user with a recommendation; labels [BLOCKS MERGE] / [NON-BLOCKING] give urgency,
 |------|----------|--------|
 | 2026-09-23 | All providers use cloakbrowser (no API keys) | User has subscriptions, not API access |
 | 2026-09-23 | Platform credentials model | Team shares accounts, users get quota |
-| 2026-09-23 | Hybrid architecture: Cloudflare (web/API) + VPS (browser workers) | Browser automation needs persistent process |
+| 2026-09-23 | Hybrid architecture: Cloudflare (web/API) + VPS (browser workers). **Superseded** by the 2026-09-23 row "API written in Python (FastAPI), not TypeScript" (Cloudflare Workers portability given up) and, for where each part runs, by the 2026-09-23 row "Worker runs on the host, API and web in Docker"; where production runs is still deferred (section 3) and open (section 4, 1) | Browser automation needs persistent process |
 | 2026-09-23 | Docker Compose for deployment | Easy local dev, portable to any server |
 | 2026-09-23 | SQLite + local storage for MVP | D1/R2 compatible, swap later |
 | 2026-09-23 | Monolith + plugin mindset | Ship fast, but design for future separation |
 | 2026-09-23 | API written in Python (FastAPI), not TypeScript | One language with the worker: one toolchain, one set of models, no duplicated types at the boundary. Cloudflare Workers portability was the only argument for TS, and the browser worker cannot run there anyway |
 | 2026-09-23 | Worker runs on the host, API and web in Docker | cloakbrowser on Linux in a container is unproven and manual login needs a headed browser; the host venv is the path already proven to work |
 | 2026-09-23 | Worker holds no database handle, it polls the API and posts results back | Keeps the Docker/host split clean and lets the worker move to a VPS by changing one URL |
-| 2026-09-23 | Every job starts a fresh ChatGPT chat, our own history is replayed into the prompt | One browser session is shared by all platform users, so reusing its thread would leak one user's context into another's reply |
+| 2026-09-23 | Every job starts a fresh ChatGPT chat, our own history is replayed into the prompt. **Superseded** by the 2026-09-23 row "One ChatGPT thread per platform conversation, replacing one fresh chat per job"; history is replayed only into a chat turn with no stored thread | One browser session is shared by all platform users, so reusing its thread would leak one user's context into another's reply |
 | 2026-09-23 | Acceptance fakes only the provider boundary | API, database, queue, worker loop and media storage stay real in both modes, so the gate can be rerun freely without burning ChatGPT quota |
 | 2026-09-23 | Quota is refunded when a job fails | A job that produced nothing must not cost the user a credit |
 | 2026-09-23 | The full gate includes a real-browser UI test, not only API checks | The API-level checks were all green while three UI defects were live: a stale quota, an unaddressable submit button and a missing favicon |

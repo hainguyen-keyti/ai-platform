@@ -398,6 +398,22 @@ commit. Progress:
   (`JWT_SECRET`, `INVITE_CODE`) in the worker's environment (no path prints it); the new test is in
   no gate. **From now on a real worker paces as `.env` says** (3s between turns, Grok 150s once the
   owner's `.env` carries those lines).
+- **#5 done** (plan3 ticket 05, docs only): `PROJECT.md`'s one-screen architecture shows the api as
+  FastAPI (Python) in Docker and the worker on the host in WSL polling `/internal/*`, media on local
+  disk (no R2); its Local row says compose plus the host worker, from WSL Ubuntu on the Windows 11
+  machine. The 2026-09-23 spec opens with a "superseded by the code" line. `ACCESS.md`: "Tôi tên
+  gì?" answered "Bạn tên là Keyti." (2026-10-02 02:06), the old state files are the three in the
+  old macOS machine's Trash, "Where secrets live" adds `INVITE_CODE`, `WORKER_TOKEN`, login JWTs (the
+  token itself in `sessions`), personal API keys (SHA-256 and a 12-character prefix only) and
+  passwords (bcrypt), and the WSL paths of the repo, `storage/` and the venv. DECISIONS' 2026-09-23
+  rows "Hybrid architecture" and "Every job starts a fresh ChatGPT chat" keep their words and name
+  the rows that replaced them (D5). `git grep Hono` finds only the spec's body and the two 2026-10-21
+  reviews. The child's review passed (3 minors, 5 nits, fixed but one); the orchestrator checked
+  the new lines against `security.py`, `auth.py` and `v1.py`. **Full gate, the orchestrator's run
+  through the test gate: 58/58, build, 74/74, exit 0.** Left open by it: `PROJECT.md:7` ("Docker
+  Compose deployment") and `ACCESS.md`'s "Local Docker | docker compose up" still leave the host
+  worker out; DECISIONS section 3's "Cloudflare deployment, Q4 2026" is due and contradicts the
+  FastAPI row (the owner's call).
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can

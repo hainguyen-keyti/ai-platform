@@ -1,3 +1,5 @@
+> **Superseded by the code, see `docs/agent/PROJECT.md`.** Kept as the design approved on 2026-09-23; where it and the code differ, the code is right.
+
 # AI Platform - Multi-Model Browser Automation
 
 **Date:** 2026-09-23  

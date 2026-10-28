@@ -49,8 +49,20 @@ sentence on the page, which the worker quotes when it refuses.
 | Name | Location | Used for | Least privilege |
 |------|----------|----------|-----------------|
 | JWT_SECRET | .env | API auth tokens | Local only |
+| INVITE_CODE | .env | Registering an account: the api refuses a registration with a wrong one (403) | Checked by the api; the host worker receives it in its environment (`run-worker.sh` exports every line of `.env`) without using it; the UI tests read it to register |
+| WORKER_TOKEN | .env | The worker's `X-Worker-Token` on the api's `/internal/*` routes | Checked by the api, sent by the host worker |
+| Login JWTs | the `sessions` table of `storage/db/app.db`: the token itself, one row per login, valid `TOKEN_TTL_HOURS` (24) | Signing in to the web and the api | The row is deleted at logout; anyone with the database file holds every live login |
+| Personal API keys | the `api_keys` table of `storage/db/app.db`: only the key's SHA-256 and its first 12 characters; the key itself is shown once, when it is made | Programs calling `/v1/images` (a key works on `/v1` only) | Made, listed and revoked by its owner on the web's API page; never expires |
+| Passwords | the `users` table of `storage/db/app.db`, bcrypt hashes only | Signing in | Checked at login, never returned by any route |
 | Browser sessions | storage/sessions/<provider>/ (a browser profile, git-ignored with all of storage/) | Provider auth | Opened by the worker, the login script, a probe or a gate, one at a time |
-| Old state files | storage/sessions/<provider>.json | Nothing since 2026-10-01; Grok's still holds a live login | Deleting them is the owner's call |
+| Old state files | `ai-platform-old-session-<provider>-20261001.json`, the three files that were `storage/sessions/<provider>.json`, in the old macOS machine's Trash since 2026-10-01 23:00 (never in git) | Nothing: no longer read since 2026-10-01; they still hold credentials (the old Grok account's login is live in its file) | Emptying the Trash is the owner's (`residue-left-in-accounts.md`, "On this machine") |
+
+Paths on the Windows 11 machine, all inside WSL Ubuntu: the repo is `/mnt/d/keyti/ai-platform`
+(`D:\keyti\ai-platform`), `.env` sits at its root, and `storage/` is
+`/mnt/d/keyti/ai-platform/storage/` (`db/app.db`, `media/`, `sessions/<provider>/`; git-ignored, as
+is `.env`). The venv is `~/cloakbrowser-env` (`/home/keyti/cloakbrowser-env`, made by uv with
+`uv venv --seed`, Python 3.11): it holds no secret, but it is the only python with cloakbrowser, so
+the worker, the login script, the probes and the gate's own worker all run from it.
 
 ## Provider account settings that must stay as they are
 
@@ -59,7 +71,7 @@ sentence on the page, which the worker quotes when it refuses.
 | ChatGPT, Personalization, Enable memory | OFF | Measured on 2026-09-23: with it on, a fact from one platform conversation was recalled in another, which across users is one person reading another's data |
 | ChatGPT, Personalization, Reference record history | OFF | Same leak by a second route |
 | Grok, Settings, Data Controls, "Personalize Grok with your conversation history" (`enableMemory` in `GET /rest/user-settings`) | OFF | Measured 2026-09-27: it was ON ("Allow Grok to remember details from your previous conversations"). Turned off by the agent with the owner's permission, that switch only: the page sent `POST /rest/user-settings {"enableMemory": false}` and a read back said `false`. Since 7555b93 the driver reads it before every turn and refuses while it is on (provider_misconfigured, refunded). With it off, a word told in one conversation came back "Unknown" in a new one. On in the same section and left alone (not the owner's question): "Improve the Model" and "Allow chat link sharing" |
-| ChatGPT, the account logged in on 2026-10-01 20:14 (a new account, the owner's word) | memory OFF | The driver read `off` before its first turn on that account (16:35, the gate's worker) and before every turn since (`settings.m3m`, `sunshine`, `moonshine`, none true). Still to ask it: "Tôi tên gì?" (the old account answered "Keyti") |
+| ChatGPT, the account logged in on 2026-10-01 20:14 (a new account, the owner's word) | memory OFF | The driver read `off` before its first turn on that account (16:35, the gate's worker) and before every turn since (`settings.m3m`, `sunshine`, `moonshine`, none true). Asked "Tôi tên gì?" on 2026-10-02 at 02:06 (one turn through the platform as a throwaway user, memory read `off`), it answered "Bạn tên là Keyti.", as the old account did: the shared account's own name reaches every platform user; what to do about it is the owner's call (HANDOFF, Parked questions) |
 | Grok, the account logged in on 2026-10-01 20:13 (through Google sign-in) | `enableMemory` OFF | The driver read it ON at 20:27 and refused the turn (the provider was held out, as designed). The owner allowed the agent to turn it off; at 21:07 `GET /rest/user-settings` already read `false`, so the agent changed nothing (who turned it off is not on record). Read beside it, left alone: `allowXPersonalization` false, `excludeFromTraining` true, `allowAutoShare` true, `allowShareIndexing` false |
 | Gemini, personal context (`gemini.google.com/personalization-settings`) | OFF | Measured 2026-09-25: it was ON, and the page says in its own words that Gemini learns from earlier conversations. Turned off with the owner's permission, proven by a reload reading `aria-checked="false"`. With it off, a word told in one conversation came back "Unknown" in a new one while the same thread still recalled it. The driver reads it before every turn since the Gemini plan (bbeb471) and refuses while it is on |
 | Gemini, account `ke***2@gmail.com` (logged in again on 2026-10-01 20:16, into its profile; plan PRO) | personal context OFF | Read ON at 15:21, turned off at 15:49 with the owner's permission; it held through that day's sign-out and the new login (read `false` at 20:25; the worker reads `off` before every turn) |
