@@ -96,8 +96,14 @@ ANSWER_AFTER_QUERY = """
 
 REPLY_TIMEOUT = 300
 THREAD_WAIT = 30
-# A reopened thread paints its earlier turns a moment after the composer shows.
-HISTORY_WAIT = 20
+# A reopened thread paints its earlier turns after the composer shows: a moment on 2026-09-27, about
+# 35s on Gemini's new web app (2026-10-28, issue #14), where deleting with 20s refused every thread.
+HISTORY_WAIT = 60
+# Gemini's new web app (2026-10-28, issue #14) sends no StreamGenerate: the turn shows this button in
+# the input area from the send until it is over (gone at 30.3s and 33.3s), and its words can paint
+# long after the button goes (76.7s after the send), so they are waited for this long.
+STOP_BUTTON = 'button[aria-label="Stop response"]'
+ANSWER_WAIT = 90
 # So does the conversation list its rows (0.3 to 2.4s, measured 2026-09-27).
 LIST_WAIT = 15
 OPEN_ATTEMPTS = 2
@@ -466,13 +472,20 @@ class GeminiProvider(BaseProvider):
         self._phase("waiting")
         try:
             self._send(page, prompt)
-            announced = False
+            announced = stopping_seen = False
             while "how" not in ended and time.time() - started < REPLY_TIMEOUT:
                 page.wait_for_timeout(1000)
                 self._check_stop()
-                if streams and not announced:
+                stopping = page.locator(STOP_BUTTON).count() > 0
+                if (streams or stopping) and not announced:
                     self._phase("reply started")
                     announced = True
+                # A StreamGenerate that ends still ends the turn; without one, the button it showed
+                # going away does.
+                if stopping:
+                    stopping_seen = True
+                elif stopping_seen:
+                    ended.setdefault("how", "page")
             # Let the events that queued while the stream ran be delivered.
             page.wait_for_timeout(2000)
             waited = 0
@@ -502,20 +515,36 @@ class GeminiProvider(BaseProvider):
             self.last_settle = "timeout"
             return GenerationResult(success=False, thread_url=landed, error_kind="provider_timeout",
                                     error="gemini did not finish within {}s".format(REPLY_TIMEOUT))
-        self.last_settle = "server"
-        if ended["how"] != "finished":
+        self.last_settle = "page" if ended["how"] == "page" else "server"
+        if ended["how"] not in ("finished", "page"):
             raise ProviderError("gemini's stream broke off: {}".format(ended["how"]))
-        response = next((s for s in streams if s.request is ended["request"]),
-                        streams[0] if streams else None)
-        status = response.status if response is not None else None
-        if status != 200:
-            raise ProviderError("gemini refused the turn: its stream answered {}".format(status))
+        if ended["how"] == "finished":
+            response = next((s for s in streams if s.request is ended["request"]),
+                            streams[0] if streams else None)
+            status = response.status if response is not None else None
+            if status != 200:
+                raise ProviderError("gemini refused the turn: its stream answered {}".format(status))
 
         # The server says the turn is over; the words are the answer the page painted after THIS
         # turn's own question, once they hold still for a second. Earlier turns sit above that
         # question however late they paint, so none of them can pass for this turn's answer.
         words = query_words(prompt)
         text, last, found = "", None, {}
+        if ended["how"] == "page":
+            # Ended by the button alone: its words may paint long after it (ANSWER_WAIT), so
+            # nothing is read before they, a picture or a note show.
+            painted_by = time.time() + ANSWER_WAIT
+            while time.time() < painted_by:
+                try:
+                    found = page.evaluate(ANSWER_AFTER_QUERY, [words, before]) or {}
+                except Exception as exc:
+                    raise ProviderError("gemini's page went away while the answer was read: {}".format(
+                        type(exc).__name__))
+                if ((found.get("text") or "").strip() or (found.get("note") or "").strip()
+                        or any(is_generated_picture(e["url"], e["type"], 1) for e in candidates)):
+                    break
+                page.wait_for_timeout(1000)
+                self._check_stop()
         for _ in range(10):
             try:
                 found = page.evaluate(ANSWER_AFTER_QUERY, [words, before]) or {}

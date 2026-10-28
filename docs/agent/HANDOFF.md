@@ -518,6 +518,29 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   mutants each red on their own check. Full gate through the test gate: 60/60, build, 75/75, exit 0;
   two real Grok turns through the fixed driver (a new chat and a follow-up, deleted) passed in 13s
   and 10s.
+- **The owner's acceptance walk, 2026-10-28, done by the agent in the browser pane** (as 123@test.com,
+  6 credits): ChatGPT chat and a follow-up in context, a picture (two different pictures, ChatGPT's own
+  choice, 2m18s, ChatGPT's page still working all that time), a video script from it (the upload went
+  through, so the library may no longer be full); Grok chat and a picture in the same conversation
+  (32s after its 150s gap), no Video script under it; the gallery (9 pictures) and the language
+  switch. **Gemini failed** as "did not finish within 300s"; its thread on the account holds the
+  right answer.
+- **Issue #14 (Gemini's new web app), code done, open for the real check**: measured through the
+  driver's own open, guard and send: no `StreamGenerate` any more (two short
+  `geminiweb-pa.clients6.google.com/v1/processSession` posts; the words over `batchexecute`, painted
+  as late as 76.7s); a "Stop response" button from the send until the turn is over (gone at 30.3s
+  and 33.3s); pictures still from `lh3.googleusercontent.com/rd-gg-dl/`; a thread's page paints its
+  turns about 35s after the load, past `HISTORY_WAIT`, so every deletion refused. The driver now
+  ends a turn when the Stop response button it saw goes (a StreamGenerate that ends still does),
+  waits up to `ANSWER_WAIT` (90s) for this turn's words, a picture or a note, and waits
+  `HISTORY_WAIT` 60s. `tests/test_gemini_driver.py` 147/147 (four measured shapes red before),
+  four mutants red; full gate 60/60, build, 75/75, exit 0. **Google's unusual-traffic check
+  (`www.google.com/sorry`) came on during the fourth probe**: probing stopped, the worker runs with
+  `PROVIDERS=chatgpt,grok` on its command line (`.env` untouched), and the real Gemini chat and
+  picture turns wait for the check to lift. Left on the Gemini account: "Red Apple on Wood" (a
+  probe's) and "Màu của bầu trời lúc trưa" (the acceptance turn's); the probe threads "kappa" and
+  "1b74d62d" were deleted. The label "Stop response" is the English interface's; another language
+  is not measured. The Gemini account shows "Tomy Tom, Pro", where HANDOFF recorded `ke***2@gmail.com`.
 
 **Since 2026-10-27 the owner adopts the mattpocock skills** (precedence in `CLAUDE.md`): the
 roadmap's first step is `/mattpocock-skills:improve-codebase-architecture`, which only the owner can

@@ -298,6 +298,10 @@ class Page:
         self.upload_label, self.upload_place, self.upload_opens_after, self.pressed_at = None, True, 0, None
         self.upload_ready_after, self.upload_ready_at, self.placeholder_pressed = None, None, 0
         self.video = None
+        # Measured 2026-10-28 on Gemini's new web app (issue #14): no StreamGenerate request; a
+        # "Stop response" button shows from the send for `stops_after` seconds (None: no button),
+        # and the answer paints `answer_after` seconds after the send (0: at once).
+        self.stops_after, self.answer_after, self.pending = None, 0, None
 
     def video_ready(self, video):
         return video["after"] is not None and self.clock.now - video["sent"] >= video["after"]
@@ -342,7 +346,9 @@ class Page:
             self.dom = [(kind, text) for kind, text in self.dom]
         if self.paint_query:
             self.dom.append(("query", "Bạn đã nói " + self.display(self.sent[-1])))
-        if self.answer is not None:
+        if self.answer is not None and self.answer_after:
+            self.pending = ("answer", self.answer)
+        elif self.answer is not None:
             self.dom.append(("answer", self.answer))
         if self.video is not None:
             self.dom.append(("video", dict(self.video, sent=self.clock.now)))
@@ -400,14 +406,24 @@ class Page:
         if self.thread_after and self.sent_at is not None \
                 and self.clock.now - self.sent_at >= self.thread_after:
             self.url = self.thread
+        if self.pending and self.clock.now - self.sent_at >= self.answer_after:
+            self.dom.append(self.pending)
+            self.pending = None
         if self.schedule and self.went_at is not None:
             for after, url in self.schedule:
                 if self.clock.now - self.went_at >= after:
                     self.url = url
 
+    def stopping(self):
+        """Whether the Stop response button shows now."""
+        return (self.stops_after is not None and self.sent_at is not None
+                and self.clock.now - self.sent_at < self.stops_after)
+
     def locator(self, selector):
         if "message-content" in selector:
             return Bubbles(self)
+        if "Stop response" in selector:
+            return Box(self, self.stopping())
         if 'input[type="file"]' in selector:
             return Box(self, self.file_input or self.upload_open())
         if self.upload_label is not None and ("aria-label" in selector or "simplified-input-menu" in selector):
@@ -1132,6 +1148,40 @@ def main():
            result.success and result.text == "a plain reply"
            and (result.thread_url or "").endswith("/app/0123456789abcdef"),
            "success {} text {!r} thread {}".format(result.success, result.text, result.thread_url))
+
+    # Issue #14, measured 2026-10-28 on Gemini's new web app: no StreamGenerate, two short
+    # processSession posts, a Stop response button from the send until the turn is over (gone at
+    # 30.3s and 33.3s), words painted as late as 76.7s, the picture still from /rd-gg-dl/.
+    session = Response("https://geminiweb-pa.clients6.google.com/v1/processSession", body=b"s" * 54)
+
+    def timed(page, prompt):
+        began = clock.now
+        result = provider_on(page, off())._run(prompt)
+        return result, clock.now - began
+
+    page = Page(clock)
+    page.answer, page.replies, page.stops_after = "Màu xanh da trời.", [session], 30
+    result, took = timed(page, "Trả lời ngắn: màu của bầu trời lúc trưa là gì?")
+    record("a turn with no StreamGenerate ends when its Stop response button goes",
+           result.success and result.text == "Màu xanh da trời." and took < 60,
+           "success {} text {!r} error {!r} after {:.0f}s".format(result.success, result.text, result.error, took))
+
+    page = Page(clock)
+    page.answer, page.replies, page.stops_after, page.answer_after = "kappa", [session], 22, 77
+    result, took = timed(page, "Reply with the single word: kappa")
+    record("words painted well after the Stop response button goes are still read",
+           result.success and result.text == "kappa" and took >= 77,
+           "success {} text {!r} error {!r} after {:.0f}s".format(result.success, result.text, result.error, took))
+
+    page = Page(clock)
+    page.answer, page.stops_after = "", 33
+    page.replies = [session, Response("https://lh3.googleusercontent.com/rd-gg-dl/generated", body=b"G" * 12623,
+                                      ctype="image/jpeg", method="GET")]
+    result, took = timed(page, "Generate an image: a red apple on a wooden table")
+    sizes = [m.metadata.get("size") for m in result.media]
+    record("a picture turn ended by its Stop response button keeps the generated picture",
+           result.success and sizes == [12623] and took < 60,
+           "success {} sizes {} error {!r} after {:.0f}s".format(result.success, sizes, result.error, took))
 
     # Job b55dcf5d, 2026-10-01: a video script turn came back as this sentence, stored and charged.
     # Measured 2026-10-08 in its thread: its markup and Gemini's stored record are an ordinary
@@ -1905,6 +1955,13 @@ def main():
     page = ListPage(clock, cid, rows_after=3.0, hidden=False)
     what = delete_on(page)
     record("a thread whose row paints after the composer is still deleted",
+           what == "returned True" and page.deleted, "{} deleted {}".format(what, page.deleted))
+
+    # Issue #14, measured 2026-10-28: on Gemini's new web app a thread's page paints its turns about
+    # 35s after the load, and delete_thread refused it as neither opened nor gone.
+    page = ListPage(clock, cid, hidden=False, turns_after=35)
+    what = delete_on(page)
+    record("a thread whose turns paint 35s after the load is still deleted",
            what == "returned True" and page.deleted, "{} deleted {}".format(what, page.deleted))
 
     # The second real gate kept its database: one thread was deleted yet reported "still opens
