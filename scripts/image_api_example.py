@@ -5,9 +5,12 @@
     python3 scripts/image_api_example.py --prompt "a red fox in the snow"
     python3 scripts/image_api_example.py --prompt "the same fox at night" --image fox.png --out pictures
     python3 scripts/image_api_example.py --provider grok --prompt "a lighthouse at sunset"
+    python3 scripts/image_api_example.py --account
+    python3 scripts/image_api_example.py --cancel 5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a
 
 Standard library only. Sends the request, asks for its status every few seconds until it ends, then
-saves each picture made into --out. The calls are described in docs/api-v1-images.md.
+saves each picture made into --out. --account prints the credits left today; --cancel cancels a
+request sent earlier. The calls are described in docs/api-v1-images.md.
 """
 
 import argparse
@@ -63,7 +66,9 @@ def main():
     parser = argparse.ArgumentParser(description="Make a picture with ChatGPT, Grok or Gemini through /v1/images.")
     parser.add_argument("--api", default=os.environ.get("AIP_API_URL", "http://localhost:3000"),
                         help="the platform's api address (default: $AIP_API_URL or http://localhost:3000)")
-    parser.add_argument("--prompt", required=True, help="what to make; required")
+    parser.add_argument("--prompt", help="what to make; required unless --account or --cancel")
+    parser.add_argument("--account", action="store_true", help="print the credits left today, and stop")
+    parser.add_argument("--cancel", metavar="REQUEST_ID", help="cancel a request sent earlier, and stop")
     parser.add_argument("--provider", choices=("chatgpt", "grok", "gemini"),
                         help="who makes it (default: the api's, chatgpt); grok takes no --image")
     parser.add_argument("--image", type=Path, help="a PNG, JPEG or WEBP picture to use as the reference")
@@ -75,6 +80,23 @@ def main():
     if not key:
         sys.exit("set AIP_API_KEY to a key made on the web's API page")
     api = args.api.rstrip("/")
+
+    if args.account:
+        status, raw = call("GET", api + "/v1/account", key)
+        if status != 200:
+            sys.exit("could not read the account ({}): {}".format(status, detail(raw)))
+        account = json.loads(raw)
+        print("{} of {} credits left today; they come back at {}".format(
+            account["credits_left"], account["credits_daily"], account["refills_at"]))
+        return
+    if args.cancel:
+        status, raw = call("POST", "{}/v1/images/{}/cancel".format(api, args.cancel), key)
+        if status != 200:
+            sys.exit("could not cancel {} ({}): {}".format(args.cancel, status, detail(raw)))
+        print("request {} is {}".format(args.cancel, json.loads(raw)["status"]))
+        return
+    if not args.prompt:
+        parser.error("--prompt is required unless --account or --cancel")
 
     body, content_type = form(args.prompt, args.image, args.provider)
     status, raw = call("POST", api + "/v1/images", key, body, content_type)

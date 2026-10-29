@@ -1,6 +1,7 @@
 import json
 import struct
 import uuid
+from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -8,8 +9,9 @@ from fastapi.responses import FileResponse
 
 from src.config import settings
 from src.db.client import db, many, one
-from src.jobs import create_job, get_job, provider_status
+from src.jobs import cancel_job, create_job, get_job, provider_status
 from src.models import FEATURES, PROVIDERS, TAKES_REFERENCE
+from src.quota import today
 from src.routes.media import CONTENT_TYPES, _safe_path
 from src.security import api_key_user
 
@@ -129,6 +131,14 @@ def providers(user: dict = Depends(api_key_user)):
                            "takes_reference": name in TAKES_REFERENCE} for name in PROVIDERS]}
 
 
+@router.get("/account")
+def account(user: dict = Depends(api_key_user)):
+    """The credits left today and when they come back (issue #20). api_key_user has already done the
+    day's refill, so the first read of a new day shows the refilled balance, not yesterday's leftover."""
+    return {"credits_left": user["quota_remaining"], "credits_daily": user.get("quota_daily"),
+            "refills_at": "{}T00:00:00Z".format((date.fromisoformat(today()) + timedelta(days=1)).isoformat())}
+
+
 @router.post("/images", status_code=202)
 def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile] = File(default=None),
                  provider: str = Form(default="chatgpt", max_length=40), user: dict = Depends(api_key_user)):
@@ -204,6 +214,15 @@ def image_status(request_id: str, user: dict = Depends(api_key_user)):
         "created_at": job["created_at"],
         "finished_at": job["finished_at"],
     }
+
+
+@router.post("/images/{request_id}/cancel")
+def cancel_image(request_id: str, user: dict = Depends(api_key_user)):
+    """Cancel a request made through /v1, queued or running, and give its credit back once; one
+    already over is left as it ended (issue #20). The web's own jobs stay out of reach, as on reads."""
+    _image_request(user["id"], request_id)
+    cancel_job(user["id"], request_id)
+    return image_status(request_id, user)
 
 
 @router.get("/images/{request_id}/files/{media_id}")

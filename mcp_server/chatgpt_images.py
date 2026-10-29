@@ -8,9 +8,11 @@ it over stdio. It calls the platform with the person's own API key, made on the 
     AIP_API_URL   the platform's api (default http://localhost:3000)
     AIP_SAVE_DIR  where pictures are saved when a call names no folder (default: <temp>/aip-pictures)
 
-Three tools. generate_image sends a prompt (and optionally a reference picture), waits for ChatGPT,
+Five tools. generate_image sends a prompt (and optionally a reference picture), waits for ChatGPT,
 saves every picture it made and answers with their paths; generate_images does the same for a set of
-prompts sent at once; get_image collects a request already sent, for a host that stopped waiting.
+prompts sent at once; get_image collects a request already sent, for a host that stopped waiting;
+account_status says the credits left and whether ChatGPT is served; cancel_image cancels a request
+sent by mistake, its credit given back (issue #20).
 A picture is saved under its prompt's name with a record of it beside it, and the answer carries a
 small preview of it for the agent to look at, and its facts as structured content (issue #19).
 Under WSL a Windows path the agent gives is read where WSL sees it, and every saved picture is also
@@ -67,7 +69,8 @@ mcp = MCPServer("aip-chatgpt-images", instructions=(
     "reference picture's path when the picture should follow one, or generate_images with a list of "
     "prompts for a set; each answers with the saved files' paths and a small preview of each picture. "
     "A picture takes about a minute, and ChatGPT makes one at a time. If a request is still running, "
-    "call get_image with its request id later."))
+    "call get_image with its request id later. account_status says the credits left before a set; "
+    "cancel_image cancels a request sent by mistake."))
 
 
 class Picture(TypedDict):
@@ -100,6 +103,22 @@ class SetRequest(TypedDict):
 class SetAnswer(TypedDict):
     """Every prompt of a set, in the order given."""
     requests: List[SetRequest]
+    message: str
+
+
+class Account(TypedDict):
+    """The credits left today, when they come back (UTC), and whether a worker serves ChatGPT now."""
+    credits_left: int
+    credits_daily: Optional[int]
+    refills_at: str
+    chatgpt_served: bool
+    message: str
+
+
+class Cancelled(TypedDict):
+    """A request after cancel_image: cancelled, or as it already ended (done, failed, cancelled)."""
+    request_id: str
+    status: str
     message: str
 
 
@@ -380,6 +399,42 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
     done = sum(1 for item in items if item["status"] == "done")
     message = "{} of {} prompts done ({} sent).\n{}".format(done, len(items), len(sent), "\n".join(lines))
     return answered(message, SetAnswer(requests=items, message=message), shown)
+
+
+@mcp.tool()
+async def account_status() -> Annotated[CallToolResult, Account]:
+    """How many credits are left today and when they come back, and whether ChatGPT is served right now.
+    Worth asking before a set: each request takes one credit, and none is sent while nobody serves ChatGPT."""
+    needs_key()
+    status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/account")
+    if status != 200:
+        raise ToolError("the account could not be read ({}): {}".format(status, detail(raw)))
+    account = json.loads(raw)
+    status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/providers")
+    if status != 200:
+        raise ToolError("the providers could not be read ({}): {}".format(status, detail(raw)))
+    served = any(p.get("name") == "chatgpt" and p.get("served") for p in json.loads(raw).get("providers") or [])
+    message = "{} of {} credits left today; they come back at {} (UTC). ChatGPT is {}.".format(
+        account["credits_left"], account.get("credits_daily"), account["refills_at"],
+        "served right now" if served else "not served right now, so a request would be refused (503) until it is")
+    return answered(message, Account(credits_left=account["credits_left"], credits_daily=account.get("credits_daily"),
+                                     refills_at=account["refills_at"], chatgpt_served=served, message=message), [])
+
+
+@mcp.tool()
+async def cancel_image(request_id: str) -> Annotated[CallToolResult, Cancelled]:
+    """Cancel a request generate_image or generate_images sent, queued or running, and get its credit
+    back. A request already over is left as it ended."""
+    needs_key()
+    status, raw = await anyio.to_thread.run_sync(call, "POST", "/v1/images/{}/cancel".format(request_id))
+    if status != 200:
+        raise ToolError("request {} could not be cancelled ({}): {}".format(request_id, status, detail(raw)))
+    state = json.loads(raw)
+    if state.get("status") == "cancelled":
+        message = "Request {} is cancelled; its credit was given back.".format(request_id)
+    else:
+        message = "Request {} had already ended as {}; nothing changed.".format(request_id, state.get("status"))
+    return answered(message, Cancelled(request_id=request_id, status=state.get("status") or "", message=message), [])
 
 
 @mcp.tool()

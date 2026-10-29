@@ -24,6 +24,7 @@ launched with the cloakbrowser venv.
 
 import argparse
 import ast
+import datetime
 import hashlib
 import io
 import json
@@ -106,8 +107,10 @@ CHECKS = (
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
     "a reference picture sent to a provider that takes none is refused uncharged, nothing kept",
     "with a key, /v1/providers says which providers are served and what each takes",
+    "with a key, /v1/account says the credits left today, after the day's refill",
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
+    "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a done result with nothing in it fails and refunds",
     "a running job whose worker died is failed and refunded by its owner's next poll",
@@ -119,6 +122,7 @@ V1_JOB_CHECKS = (
     "a /v1 request with a prompt and a picture hands the worker exactly that picture",
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
+    "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
 )
@@ -574,7 +578,7 @@ def register_race_checks(c, fresh_api, invite_code, password, stamp):
         stop_api()
 
 
-def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
+def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, restart_worker):
     """API keys and /v1/images. token: the first account's login (its admin); btoken: another person's."""
     def files_now():
         return set(os.listdir(media_dir))
@@ -776,6 +780,44 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
         c["with a key, /v1/providers says which providers are served and what each takes"].failed(
             "status {}: {}; others {}".format(pstatus, said or plist, others))
 
+    # Issue #20: a program asks with its key how many credits are left before it sends a set. The
+    # other person's balance is put back to nothing on a day long gone, so their next read is the
+    # first of a new day and must show the refilled balance, not yesterday's leftover.
+    account = "with a key, /v1/account says the credits left today, after the day's refill"
+    me_b = http("GET", api + "/auth/me", token=btoken)[1] or {}
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("UPDATE users SET quota_remaining = 0, last_refill_day = '2000-01-01' WHERE id = ?",
+                         (me_b.get("id"),))
+        astatus, first_read = http("GET", api + "/v1/account", token=bkey)
+        second_read = http("GET", api + "/v1/account", token=bkey)[1]
+        with sqlite3.connect("file:{}?mode=ro".format(db_path), uri=True) as conn:
+            day = (conn.execute("SELECT last_refill_day FROM users WHERE id = ?", (me_b.get("id"),)).fetchone()
+                   or [None])[0]
+    except sqlite3.Error as exc:
+        astatus, first_read, second_read, day = 0, "db: {}".format(exc), None, None
+    next_day = ("{}T00:00:00Z".format((datetime.date.fromisoformat(day) + datetime.timedelta(days=1)).isoformat())
+                if day and day != "2000-01-01" else None)
+    wanted_read = {"credits_left": me_b.get("quota_daily"), "credits_daily": me_b.get("quota_daily"),
+                   "refills_at": next_day}
+    others = {"nothing": http("GET", api + "/v1/account")[0],
+              "a login token": http("GET", api + "/v1/account", token=btoken)[0]}
+    try:
+        ran = subprocess.run([sys.executable, str(ROOT / "scripts" / "image_api_example.py"), "--api", api,
+                              "--account"], capture_output=True, text=True, timeout=60,
+                             env=dict(os.environ, AIP_API_KEY=bkey))
+        script = (ran.returncode, (ran.stdout or "") + (ran.stderr or ""))
+    except Exception as exc:
+        script = (-1, "{}: {}".format(type(exc).__name__, exc))
+    if (astatus == 200 and me_b.get("quota_daily") and next_day and first_read == wanted_read
+            and second_read == wanted_read and all(v == 401 for v in others.values())
+            and script[0] == 0 and str(me_b.get("quota_daily")) in script[1] and bkey not in script[1]):
+        c[account].passed("{} on the first read of a new day, the same on the next; without a key and with a "
+                          "login token 401; the example's --account printed it".format(first_read))
+    else:
+        c[account].failed("status {}: {} then {}, wanted {}; others {}; --account {}".format(
+            astatus, first_read, second_read, wanted_read, others, script))
+
     if real:
         return
 
@@ -918,6 +960,76 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
         c["a failed /v1 request gives its credit back once"].failed(
             "sent {}, then {} {}, credits {} -> {} -> {}".format(
                 fstatus, ended.get("status"), ended.get("error"), q0, q1, q2))
+
+    # Issue #20: a request sent by mistake is cancelled through /v1. The worker is made slow so one
+    # request is caught running and the next waiting behind it, with a web picture queued after
+    # both, which /v1 must not reach.
+    cancelling = "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner"
+
+    def sent_id(prompt):
+        sstatus, sbody = http_form(api + "/v1/images", {"prompt": prompt}, token=akey)
+        return sbody.get("id") if sstatus == 202 and isinstance(sbody, dict) else None
+
+    def v1_state(request_id):
+        return (http("GET", "{}/v1/images/{}".format(api, request_id), token=akey)[1] or {}) if request_id else {}
+
+    def cancel(request_id, key):
+        return http("POST", "{}/v1/images/{}/cancel".format(api, request_id), token=key)
+
+    slowed = restart_worker({"MOCK_DELAY_SECONDS": "8"})
+    q0 = quota_of(token)
+    running_id, queued_id = sent_id("a square to cancel while it runs"), sent_id("a square to cancel while it waits")
+    deadline = time.time() + 20
+    while time.time() < deadline and v1_state(running_id).get("status") != "running":
+        time.sleep(0.2)
+    wstatus, web_live = http("POST", api + "/image/generate",
+                             {"provider": "chatgpt", "prompt": "a web picture /v1 may not cancel"}, token=token)
+    web_id = (web_live or {}).get("job_id") if wstatus == 202 else None
+    refused = {"another person": cancel(running_id, bkey)[0],
+               "a login token": cancel(running_id, token)[0],
+               "nothing": http("POST", "{}/v1/images/{}/cancel".format(api, running_id))[0],
+               "an unknown request": cancel("not-a-request", akey)[0],
+               "a web picture": cancel(web_id, akey)[0] if web_id else "not made: {}".format(wstatus)}
+    before = (v1_state(running_id).get("status"), v1_state(queued_id).get("status"),
+              (http("GET", "{}/jobs/{}".format(api, web_id), token=token)[1] or {}).get("status") if web_id else None)
+    q_sent = quota_of(token)
+    answers = {"waiting": cancel(queued_id, akey), "running": cancel(running_id, akey),
+               "waiting, again": cancel(queued_id, akey), "already done": cancel(rid, akey)}
+    q_back = quota_of(token)
+    time.sleep(1.5)
+    after = (v1_state(running_id), v1_state(queued_id))
+    web_after = (http("GET", "{}/jobs/{}".format(api, web_id), token=token)[1] or {}).get("status") if web_id else None
+    q_later = quota_of(token)
+    try:
+        ran = subprocess.run([sys.executable, str(ROOT / "scripts" / "image_api_example.py"), "--api", api,
+                              "--cancel", rid or "none"], capture_output=True, text=True, timeout=60,
+                             env=dict(os.environ, AIP_API_KEY=akey))
+        script = (ran.returncode, (ran.stdout or "") + (ran.stderr or ""))
+    except Exception as exc:
+        script = (-1, "{}: {}".format(type(exc).__name__, exc))
+    if web_id:
+        http("POST", "{}/jobs/{}/cancel".format(api, web_id), token=token)
+    restored = restart_worker()
+    said = {name: (s, (b or {}).get("status") if isinstance(b, dict) else b) for name, (s, b) in answers.items()}
+    no_key = ("a login token", "nothing")
+    if (slowed and restored and running_id and queued_id and web_id
+            and all(v == 404 for k, v in refused.items() if k not in no_key)
+            and all(refused[k] == 401 for k in no_key) and before == ("running", "queued", "pending")
+            and said == {"waiting": (200, "cancelled"), "running": (200, "cancelled"),
+                         "waiting, again": (200, "cancelled"), "already done": (200, "done")}
+            and q_sent == q0 - 3 and q_back == q0 - 1 and q_later == q0 - 1
+            and all(a.get("status") == "cancelled" and not a.get("images") for a in after)
+            and web_after not in ("cancelled", None) and script[0] == 0 and "done" in script[1]):
+        c[cancelling].passed("cancelled waiting and running, 200 each, again unchanged, a done one left done; "
+                             "credits {} -> {} -> {} and held; 404 for {}, 401 with a login token or no key; the "
+                             "web picture stayed {}".format(q0, q_sent, q_back,
+                                                            ", ".join(k for k in refused if k not in no_key),
+                                                            web_after))
+    else:
+        c[cancelling].failed("worker slowed {} restored {}; refused {}; before {}; answers {}; credits {} -> {} -> "
+                             "{} -> {}; after {}; web {}; --cancel {}".format(
+                                 slowed, restored, refused, before, said, q0, q_sent, q_back, q_later,
+                                 [(a.get("status"), len(a.get("images") or [])) for a in after], web_after, script))
 
     # The documented example, run as a person would: the key in the environment, never on the line.
     example = "the example script sends a prompt and a picture, waits, and saves the picture made"
@@ -2169,7 +2281,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                 "held at 3s {}, served again {} after {:.1f}s, then a turn {} {}".format(
                     still_held, back, back_in, after_final.get("status"), after_final.get("error")))
 
-    v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real)
+    v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, restart_worker)
 
     if not real:
         # A served turn afterwards, so the reading below is of a provider that

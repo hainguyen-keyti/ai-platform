@@ -221,6 +221,10 @@ calls the platform's image API (`docs/api-v1-images.md`) with your own API key. 
   refusal when sending (no credit left, say) stops sending the rest, and the answer says which
   prompts were not sent.
 - `get_image(request_id, save_dir=None, preview=True)`: collects such a request later.
+- `account_status()`: the credits left today, when they come back, and whether ChatGPT is served
+  right now; worth asking before a set.
+- `cancel_image(request_id)`: cancels a request sent by mistake, queued or running, and gives its
+  credit back.
 
 Every answer carries a preview of each picture (a JPEG, at most 512 px a side) for the agent to look
 at, and the same facts as structured content (the request, its status, each file). `preview=False`

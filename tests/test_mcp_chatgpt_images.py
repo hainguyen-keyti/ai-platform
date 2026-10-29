@@ -50,11 +50,14 @@ def record(name, ok, detail=""):
 
 class FakeV1:
     """/v1/images as the platform answers it. A prompt names its fate: "refuse" answers 402, "fail"
-    ends failed, "slow" stays running until `finish` is called, "broken" ends done with a picture no
-    decoder can read, anything else ends done with one picture after one running read."""
+    ends failed, "slow" stays running until `finish` is called (or until it is cancelled), "broken"
+    ends done with a picture no decoder can read, anything else ends done with one picture after one
+    running read. /v1/account answers ACCOUNT, and /v1/providers serves chatgpt while `served`."""
+
+    ACCOUNT = {"credits_left": 7, "credits_daily": 100, "refills_at": "2026-10-30T00:00:00Z"}
 
     def __init__(self):
-        self.posts, self.requests = [], {}
+        self.posts, self.requests, self.served = [], {}, True
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -76,6 +79,14 @@ class FakeV1:
                     name = part.get_param("name", header="content-disposition")
                     fields[name] = part.get_payload(decode=True)
                 fake.posts.append({"path": self.path, "auth": self.headers.get("Authorization"), "fields": fields})
+                parts = self.path.strip("/").split("/")
+                if len(parts) == 4 and parts[:2] == ["v1", "images"] and parts[3] == "cancel":
+                    state = fake.requests.get(parts[2])
+                    if not state:
+                        return self.answer(404, {"detail": "image request not found"})
+                    if "slow" in state["prompt"] and not state["finished"]:
+                        state["cancelled"] = True
+                    return self.answer(200, fake.status(parts[2], read=False))
                 if self.path != "/v1/images":
                     return self.answer(404, {"detail": "Not Found"})
                 prompt = (fields.get("prompt") or b"").decode()
@@ -89,26 +100,19 @@ class FakeV1:
                 if self.headers.get("Authorization") != "Bearer " + KEY:
                     return self.answer(401, {"detail": "invalid api key"})
                 parts = self.path.strip("/").split("/")
+                if self.path == "/v1/account":
+                    return self.answer(200, FakeV1.ACCOUNT)
+                if self.path == "/v1/providers":
+                    return self.answer(200, {"providers": [
+                        {"name": "chatgpt", "served": fake.served, "makes_pictures": True, "takes_reference": True},
+                        {"name": "grok", "served": True, "makes_pictures": True, "takes_reference": False}]})
                 if len(parts) == 5 and parts[3] == "files":
                     shown = fake.requests.get(parts[2], {}).get("prompt", "")
                     return self.answer(200, BROKEN if "broken" in shown else PICTURE, ctype="image/png")
                 rid = parts[2] if len(parts) == 3 else None
-                state = fake.requests.get(rid)
-                if not state:
+                if rid not in fake.requests:
                     return self.answer(404, {"detail": "image request not found"})
-                state["reads"] += 1
-                body = {"id": rid, "provider": "chatgpt", "text": "", "error": None, "images": [],
-                        "created_at": "2026-10-29 10:00:00", "finished_at": None}
-                if "fail" in state["prompt"]:
-                    body.update(status="failed", error="chatgpt returned nothing after 300s",
-                                finished_at="2026-10-29 10:05:00")
-                elif ("slow" in state["prompt"] and not state["finished"]) or state["reads"] < 2:
-                    body["status"] = "running"
-                else:
-                    body.update(status="done", text="Here it is.", finished_at="2026-10-29 10:01:04", images=[{
-                        "id": "m1", "url": "/v1/images/{}/files/m1".format(rid), "content_type": "image/png",
-                        "bytes": len(PICTURE)}])
-                self.answer(200, body)
+                self.answer(200, fake.status(rid))
 
             def log_message(self, *args):
                 pass
@@ -116,6 +120,25 @@ class FakeV1:
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.url = "http://127.0.0.1:{}".format(self.server.server_address[1])
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def status(self, rid, read=True):
+        """GET /v1/images/{rid}'s answer; a read counts toward a plain request's end."""
+        state = self.requests[rid]
+        state["reads"] += 1 if read else 0
+        body = {"id": rid, "provider": "chatgpt", "text": "", "error": None, "images": [],
+                "created_at": "2026-10-29 10:00:00", "finished_at": None}
+        if state.get("cancelled"):
+            body.update(status="cancelled", error="cancelled by the user", finished_at="2026-10-29 10:00:30")
+        elif "fail" in state["prompt"]:
+            body.update(status="failed", error="chatgpt returned nothing after 300s",
+                        finished_at="2026-10-29 10:05:00")
+        elif ("slow" in state["prompt"] and not state["finished"]) or state["reads"] < 2:
+            body["status"] = "running"
+        else:
+            body.update(status="done", text="Here it is.", finished_at="2026-10-29 10:01:04", images=[{
+                "id": "m1", "url": "/v1/images/{}/files/m1".format(rid), "content_type": "image/png",
+                "bytes": len(PICTURE)}])
+        return body
 
     def rid(self, prompt):
         return next((r for r, s in self.requests.items() if s["prompt"] == prompt), None)
@@ -159,8 +182,9 @@ def server_params(api, key=KEY):
 async def run(fake, work):
     async with Client(server_params(fake.url)) as client:
         listed = {tool.name: tool for tool in (await client.list_tools()).tools}
-        record("the server offers generate_image, generate_images and get_image, and nothing else",
-               sorted(listed) == ["generate_image", "generate_images", "get_image"], repr(sorted(listed)))
+        record("the server offers account_status, cancel_image, generate_image, generate_images and get_image",
+               sorted(listed) == ["account_status", "cancel_image", "generate_image", "generate_images", "get_image"],
+               repr(sorted(listed)))
         schemas = {name: (tool.output_schema or {}).get("properties", {}) for name, tool in listed.items()}
         record("each tool publishes the shape of its answer as its output schema",
                all("request_id" in schemas.get(n, {}) and "pictures" in schemas.get(n, {})
@@ -330,13 +354,48 @@ async def run(fake, work):
                refused == [True, True, True] and len(fake.posts) == before,
                "errors {} posts {}".format(refused, len(fake.posts) - before))
 
+        result = await client.call_tool("account_status", {}, read_timeout_seconds=30)
+        answer = result.structured_content or {}
+        record("account_status says the credits left, when they come back, and that ChatGPT is served",
+               not result.is_error and answer.get("credits_left") == 7 and answer.get("credits_daily") == 100
+               and answer.get("refills_at") == "2026-10-30T00:00:00Z" and answer.get("chatgpt_served") is True
+               and all(part in said(result) for part in ("7", "100", "2026-10-30")),
+               "error {} answer {}".format(result.is_error, answer))
+        fake.served = False
+        result = await client.call_tool("account_status", {}, read_timeout_seconds=30)
+        fake.served = True
+        record("account_status says so when no worker serves ChatGPT",
+               not result.is_error and (result.structured_content or {}).get("chatgpt_served") is False
+               and "not served" in said(result), "said {!r}".format(said(result)[:200]))
+
+        result = await client.call_tool("generate_image", {"prompt": "a slow one to cancel", "wait_seconds": 1,
+                                                           "save_dir": str(work / "cancel")}, read_timeout_seconds=30)
+        rid = fake.rid("a slow one to cancel")
+        result = await client.call_tool("cancel_image", {"request_id": rid or "none"}, read_timeout_seconds=30)
+        answer = result.structured_content or {}
+        record("cancel_image cancels a request still running, and says its credit was given back",
+               not result.is_error and rid and answer.get("request_id") == rid and answer.get("status") == "cancelled"
+               and "credit" in said(result) and (fake.posts[-1].get("path") == "/v1/images/{}/cancel".format(rid)),
+               "error {} answer {} said {!r}".format(result.is_error, answer, said(result)[:200]))
+        done_rid = fake.rid("a plain blue square")
+        result = await client.call_tool("cancel_image", {"request_id": done_rid or "none"}, read_timeout_seconds=30)
+        record("cancel_image on a request already over says so and changes nothing",
+               not result.is_error and (result.structured_content or {}).get("status") == "done"
+               and "already" in said(result), "said {!r}".format(said(result)[:200]))
+        result = await client.call_tool("cancel_image", {"request_id": "not-a-request"}, read_timeout_seconds=30)
+        record("cancel_image on an unknown request is a tool error with the platform's reason",
+               result.is_error and "404" in said(result) and "image request not found" in said(result),
+               "said {!r}".format(said(result)[:200]))
+
     before = len(fake.posts)
     async with Client(server_params(fake.url, key=None)) as client:
         result = await client.call_tool("generate_image", {"prompt": "no key"}, read_timeout_seconds=30)
         again = await client.call_tool("generate_images", {"prompts": ["no key"]}, read_timeout_seconds=30)
+        others = [await client.call_tool(name, arguments, read_timeout_seconds=30)
+                  for name, arguments in (("account_status", {}), ("cancel_image", {"request_id": "x"}))]
     record("without AIP_API_KEY the tools say how to set it and send nothing",
            result.is_error and "AIP_API_KEY" in said(result) and again.is_error and "AIP_API_KEY" in said(again)
-           and len(fake.posts) == before,
+           and all(o.is_error and "AIP_API_KEY" in said(o) for o in others) and len(fake.posts) == before,
            "error {} said {!r}".format(result.is_error, said(result)[:160]))
 
 
