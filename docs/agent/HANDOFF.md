@@ -540,7 +540,12 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   through the fixed driver's own `chat()` and `generate_image()`: "lambda" in 81s and one picture in
   53s, both settled by the button, both threads deleted (45s, 24s)**; #14 closed, and the worker
   serves `chatgpt,grok,gemini` again from `.env`. A Gemini chat turn takes over a minute now
-  because its words paint late. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
+  because its words paint late. **Reopened the same night**: the agent's acceptance turn through the
+  web (job `09c44615`, 00:46) failed after 4m31s as "carried neither words nor a picture", with
+  memory read `unknown` and no conversation made on the account. It did not come back: the same
+  question through `chat()` at 01:01 passed in 23s (button 1.3s to 9.9s), and a web turn at 01:25
+  in 33s. Likely Gemini itself not taking turns then; not proven, since nothing of that page was
+  kept. #14 stays open on the owner's word. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
   found in the list 15s after the load, so not deleted) and "Màu của bầu trời lúc trưa" (the
   acceptance turn's); the probe threads "kappa" and "1b74d62d" were deleted. The label "Stop response" is the English interface's; another language
   is not measured. The Gemini account shows "Tomy Tom, Pro", where HANDOFF recorded `ke***2@gmail.com`.
