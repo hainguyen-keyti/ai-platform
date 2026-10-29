@@ -3,3 +3,6 @@
 # 2026-10-02), repository github.com/modelcontextprotocol/python-sdk. Pinned: v2 renamed FastMCP to
 # MCPServer, so another major version is another API.
 mcp==2.3.0
+# The previews a done picture's answer carries (issue #19), checked 2026-10-29: pillow on PyPI,
+# 13.0.0 (released 2026-10-16), repository github.com/python-pillow/Pillow, Python >= 3.11.
+pillow==13.0.0

@@ -210,18 +210,31 @@ Ctrl-C on the worker.
 pictures with ChatGPT on this platform as a tool. Its host starts it as a subprocess over stdio; it
 calls the platform's image API (`docs/api-v1-images.md`) with your own API key. Two tools:
 
-- `generate_image(prompt, reference_path=None, save_dir=None, wait_seconds=420)`: sends the prompt
-  (and a PNG, JPEG or WEBP reference picture, if given), waits for ChatGPT (about a minute), saves
-  every picture it made and answers with the files' paths. A request still running when the wait
-  ends answers with its id.
-- `get_image(request_id, save_dir=None)`: collects such a request later.
+- `generate_image(prompt, reference_path=None, save_dir=None, wait_seconds=420, preview=True)`:
+  sends the prompt (and a PNG, JPEG or WEBP reference picture, if given), waits for ChatGPT (about a
+  minute), saves every picture it made and answers with the files' paths. A request still running
+  when the wait ends answers with its id.
+- `generate_images(prompts, reference_path=None, save_dir=None, wait_seconds=1800, preview=True)`:
+  a set of 1 to 20 prompts, sent at once, made one after another (ChatGPT makes one picture at a
+  time), with the same reference picture for each when one is given. It reports "k of n done" as
+  it goes and answers each prompt's files, failure reason, or request id if it is still running. A
+  refusal when sending (no credit left, say) stops sending the rest, and the answer says which
+  prompts were not sent.
+- `get_image(request_id, save_dir=None, preview=True)`: collects such a request later.
+
+Every answer carries a preview of each picture (a JPEG, at most 512 px a side) for the agent to look
+at, and the same facts as structured content (the request, its status, each file). `preview=False`
+leaves the preview out. A picture is saved as `<prompt slug>-<request>-<n>.png`, for example
+`meo-cam-ben-cua-so-b5f940d8-1.png`, and a `.json` of the same name beside it records the prompt,
+the request, the reference picture and the times.
 
 Each request costs one credit, as on the web, and a failed one gives it back. Pictures go to
 `save_dir`, or `AIP_SAVE_DIR`, or `<temp>/aip-pictures`. Under WSL a Windows path you give
 (`D:\...`) is read as `/mnt/d/...`, and every saved file is also named by its Windows path
 (`\\wsl.localhost\...`).
 
-Install it in a venv of its own (it needs only the `mcp` SDK, pinned in its requirements):
+Install it in a venv of its own (the `mcp` SDK and Pillow for the previews, pinned in its
+requirements):
 
 ```bash
 uv venv --python 3.11 ~/.venvs/aip-mcp
@@ -257,7 +270,10 @@ the server's environment, never on its command line:
 
   (on Windows, `"command": "wsl"` with the WSL line's arguments and its `WSLENV` in `env`).
 
-In Claude Code, `/mcp` shows whether it connected. Then ask the agent for a picture. Its own test:
+In Claude Code, `/mcp` shows whether it connected. Then ask the agent for a picture, or for a set:
+"make these five pictures with ChatGPT and save them in `D:\pictures\fox`: …". A call still running
+after two minutes moves to a background task in Claude Code, and its answer arrives when it ends.
+Its own test:
 `~/.venvs/aip-mcp/bin/python tests/test_mcp_chatgpt_images.py` (a fake `/v1`, no account).
 
 ## Troubleshooting
