@@ -1,0 +1,5 @@
+# The MCP server for making pictures with ChatGPT (mcp_server/chatgpt_images.py), in a venv of its
+# own, not the worker's. The official SDK, checked 2026-10-29: mcp on PyPI, 2.3.0 (released
+# 2026-10-02), repository github.com/modelcontextprotocol/python-sdk. Pinned: v2 renamed FastMCP to
+# MCPServer, so another major version is another API.
+mcp==2.3.0

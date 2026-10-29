@@ -204,6 +204,62 @@ The worker serves the providers in `PROVIDERS`, in real mode (`PROVIDER_MODE=moc
 replies). Open http://localhost:5173 and sign in (step 7). Stop with `docker compose down` and
 Ctrl-C on the worker.
 
+## 11. MCP server for ChatGPT pictures
+
+`mcp_server/chatgpt_images.py` lets an agent (Claude Code, Claude Desktop, any MCP client) make
+pictures with ChatGPT on this platform as a tool. Its host starts it as a subprocess over stdio; it
+calls the platform's image API (`docs/api-v1-images.md`) with your own API key. Two tools:
+
+- `generate_image(prompt, reference_path=None, save_dir=None, wait_seconds=420)`: sends the prompt
+  (and a PNG, JPEG or WEBP reference picture, if given), waits for ChatGPT (about a minute), saves
+  every picture it made and answers with the files' paths. A request still running when the wait
+  ends answers with its id.
+- `get_image(request_id, save_dir=None)`: collects such a request later.
+
+Each request costs one credit, as on the web, and a failed one gives it back. Pictures go to
+`save_dir`, or `AIP_SAVE_DIR`, or `<temp>/aip-pictures`. Under WSL a Windows path you give
+(`D:\...`) is read as `/mnt/d/...`, and every saved file is also named by its Windows path
+(`\\wsl.localhost\...`).
+
+Install it in a venv of its own (it needs only the `mcp` SDK, pinned in its requirements):
+
+```bash
+uv venv --python 3.11 ~/.venvs/aip-mcp
+VIRTUAL_ENV=~/.venvs/aip-mcp uv pip install -r mcp_server/requirements.txt
+```
+
+Make a key on the web's **API** page (step 7's account), then register the server. The key goes in
+the server's environment, never on its command line:
+
+- **Claude Code on Windows, the server in WSL** (this machine): Windows variables reach WSL only when
+  `WSLENV` names them (`/u`: when WSL is started from Windows). From PowerShell:
+
+  ```
+  claude mcp add --env AIP_API_KEY=aip_... AIP_API_URL=http://localhost:3000 WSLENV=AIP_API_KEY/u:AIP_API_URL/u --transport stdio aip-chatgpt-images -- wsl -d Ubuntu --exec /home/<you>/.venvs/aip-mcp/bin/python /mnt/d/keyti/ai-platform/mcp_server/chatgpt_images.py
+  ```
+
+- **Claude Code on Linux or macOS** (or inside WSL):
+
+  ```bash
+  claude mcp add --env AIP_API_KEY=aip_... --transport stdio aip-chatgpt-images -- ~/.venvs/aip-mcp/bin/python "$PWD/mcp_server/chatgpt_images.py"
+  ```
+
+- **Claude Desktop**: in `claude_desktop_config.json`, under `mcpServers`:
+
+  ```json
+  "aip-chatgpt-images": {
+    "type": "stdio",
+    "command": "/home/<you>/.venvs/aip-mcp/bin/python",
+    "args": ["/path/to/ai-platform/mcp_server/chatgpt_images.py"],
+    "env": {"AIP_API_KEY": "aip_...", "AIP_API_URL": "http://localhost:3000"}
+  }
+  ```
+
+  (on Windows, `"command": "wsl"` with the WSL line's arguments and its `WSLENV` in `env`).
+
+In Claude Code, `/mcp` shows whether it connected. Then ask the agent for a picture. Its own test:
+`~/.venvs/aip-mcp/bin/python tests/test_mcp_chatgpt_images.py` (a fake `/v1`, no account).
+
 ## Troubleshooting
 
 - **The api logs `Could not import module "src.main"`** (or the full gate stops at

@@ -578,7 +578,21 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   as states and as whole turns, red before: "done" and "empty"); three mutants red; full gate 63/63,
   build, 75/75, exit 0. No real Grok picture turn was sent while the allowance is spent; one picture
   turn once it is back closes #18 (and Grok's part of #16). Whether to hold Grok out of picture
-  requests while it is spent is the owner's call. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
+  requests while it is spent is the owner's call.
+- **Issue #17 done, ChatGPT only** (the owner's word, 2026-10-29: an MCP server just for ChatGPT
+  pictures): `mcp_server/chatgpt_images.py`, the official SDK `mcp==2.3.0` (`MCPServer`, v2) in a
+  venv of its own, `~/.venvs/aip-mcp` (made with uv; `mcp_server/requirements.txt`). Tools
+  `generate_image(prompt, reference_path, save_dir, wait_seconds)` (sends `provider=chatgpt`, waits
+  with progress, saves the pictures, answers their paths) and `get_image(request_id, save_dir)`;
+  `AIP_API_KEY`/`AIP_API_URL`/`AIP_SAVE_DIR` from its environment, the key never printed; under WSL
+  a Windows path given is read as `/mnt/<d>/...` and each saved file is also named by its Windows
+  path. `tests/test_mcp_chatgpt_images.py` (in no gate; the server's venv): the server over stdio
+  with the SDK's `Client` against a fake `/v1`, 12/12; five mutants red. Real, through the server
+  over stdio, a throwaway account and key (revoked): an apple in 68s, then the same apple sliced in
+  89s with the first as its reference, both PNGs as asked. From Windows, `wsl` with `WSLENV`
+  (checked on Microsoft's WSL docs and on this machine) starts it and lists both tools. README step
+  11 says how to install and register it (Claude Code's `claude mcp add` and Claude Desktop's config,
+  both checked against Claude Code's docs); it is **not registered** in any Claude config here. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
   found in the list 15s after the load, so not deleted) and "Màu của bầu trời lúc trưa" (the
   acceptance turn's); the probe threads "kappa" and "1b74d62d" were deleted. The label "Stop response" is the English interface's; another language
   is not measured. The Gemini account shows "Tomy Tom, Pro", where HANDOFF recorded `ke***2@gmail.com`.
