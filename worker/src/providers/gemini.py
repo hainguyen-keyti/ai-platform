@@ -1,7 +1,9 @@
+import json
 import re
 import time
 import unicodedata
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -103,6 +105,21 @@ HISTORY_WAIT = 60
 # the input area from the send until it is over (gone at 30.3s and 33.3s), and its words can paint
 # long after the button goes (76.7s after the send), so they are waited for this long.
 STOP_BUTTON = 'button[aria-label="Stop response"]'
+# What a failed turn's page showed (issue #15): where it was, what it counted, the Stop response
+# button, and any text it put up as an alert or a status, which is where an error would be said.
+PAGE_FACTS = """
+() => ({
+    url: location.href,
+    questions: document.querySelectorAll('user-query').length,
+    answers: document.querySelectorAll('model-response').length,
+    messageContents: document.querySelectorAll('message-content').length,
+    'Stop response': document.querySelectorAll('button[aria-label="Stop response"]').length,
+    lastAnswer: ([...document.querySelectorAll('model-response')].pop() || {}).innerText || '',
+    alerts: [...document.querySelectorAll('[role="alert"], [role="status"], snack-bar-container, '
+                                          + 'mat-snack-bar-container')]
+        .map((e) => (e.innerText || '').trim()).filter(Boolean).slice(0, 5),
+})
+"""
 ANSWER_WAIT = 90
 # So does the conversation list its rows (0.3 to 2.4s, measured 2026-09-27).
 LIST_WAIT = 15
@@ -184,6 +201,10 @@ class GeminiProvider(BaseProvider):
         self.last_stream = None
         self.last_pictures = []
         self.memory = None
+        # A failed turn's page is kept here, beside the media (storage/failures, git-ignored with
+        # storage/), so its cause can be named from its own record (issue #15).
+        self.failures_path = self.media_path.parent / "failures"
+        self._sent_on = None
 
     def start(self) -> None:
         if not saved(self.sessions_path, self.name):
@@ -415,6 +436,36 @@ class GeminiProvider(BaseProvider):
             (self._thread_id(page) or "?")[:8]))
 
     def _run(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
+        """The turn; one that fails once it was sent keeps its page and says where (issue #15)."""
+        self._sent_on = None
+        try:
+            result = self._turn(prompt, upload=upload, thread_url=thread_url)
+        except ProviderError as exc:
+            if self._sent_on is None:
+                raise
+            raise ProviderError("{} ({})".format(exc, self._keep_failure(self._sent_on)), kind=exc.kind) from exc
+        if not result.success and self._sent_on is not None:
+            result.error = "{} ({})".format(result.error, self._keep_failure(self._sent_on))
+        return result
+
+    def _keep_failure(self, page) -> str:
+        """A picture of the page and what it counted, under failures_path, named by the time and the
+        thread; what to append to the failure's message. Keeping it never changes the failure."""
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        try:
+            # The random tail keeps two failures of one thread in the same second apart.
+            name = "gemini-{}-{}-{}".format(stamp, self._thread_id(page) or "new", uuid.uuid4().hex[:6])
+            self.failures_path.mkdir(parents=True, exist_ok=True)
+            facts = page.evaluate(PAGE_FACTS)
+            page.screenshot(path=str(self.failures_path / (name + ".png")))
+            (self.failures_path / (name + ".txt")).write_text(
+                json.dumps(facts, ensure_ascii=False, indent=1) if facts else "the page could not be read\n",
+                encoding="utf-8")
+        except Exception as exc:
+            return "page not kept: {}: {}".format(type(exc).__name__, str(exc).splitlines()[0][:80] if str(exc) else "")
+        return "page kept as {}".format(name)
+
+    def _turn(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
         self.last_cancelled_thread = None
         page = self._open(thread_url)
         self._guard()
@@ -472,6 +523,7 @@ class GeminiProvider(BaseProvider):
         self._phase("waiting")
         try:
             self._send(page, prompt)
+            self._sent_on = page
             announced = stopping_seen = False
             while "how" not in ended and time.time() - started < REPLY_TIMEOUT:
                 page.wait_for_timeout(1000)

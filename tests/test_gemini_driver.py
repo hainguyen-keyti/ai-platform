@@ -18,7 +18,9 @@ Prints N/N PASSED.
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import unicodedata
 from pathlib import Path
 
@@ -302,6 +304,8 @@ class Page:
         # "Stop response" button shows from the send for `stops_after` seconds (None: no button),
         # and the answer paints `answer_after` seconds after the send (0: at once).
         self.stops_after, self.answer_after, self.pending = None, 0, None
+        # Issue #15: the picture of the page cannot be taken.
+        self.shot_fails = False
 
     def video_ready(self, video):
         return video["after"] is not None and self.clock.now - video["sent"] >= video["after"]
@@ -443,6 +447,12 @@ class Page:
         # The driver's two page scripts, answered from the document order: marking the questions
         # already on the page, then reading the answer after the newest, unmarked question that
         # holds this turn's words. The scripts themselves run for real in markup_cases below.
+        if 'role="alert"' in script:
+            # What a failed turn's page showed (issue #15), as the page holds it now.
+            items = self.items()
+            return {"url": self.url, "questions": sum(1 for k, _ in items if k == "query"),
+                    "answers": sum(1 for k, _ in items if k in ("answer", "video")),
+                    "Stop response": 1 if self.stopping() else 0, "alerts": []}
         if "user-query" in script and "setAttribute" in script:
             # The marked elements themselves are kept, so a rebuilt one never shares their id.
             queries = [item for item in self.items() if item[0] == "query"]
@@ -479,6 +489,13 @@ class Page:
         self.open = False
         if self.close_fails:
             raise RuntimeError("Target page, context or browser has been closed")
+
+    def screenshot(self, path=None, **kwargs):
+        if self.shot_fails:
+            raise RuntimeError("Target page, context or browser has been closed")
+        if path:
+            Path(path).write_bytes(b"\x89PNG fake page")
+        return b"\x89PNG fake page"
 
     def __getattr__(self, name):
         return lambda *args, **kwargs: None
@@ -996,11 +1013,15 @@ def main():
     clock = Clock()
     gemini.time = clock
 
+    # Where a failed turn's page is kept (issue #15): a folder of this run's own, never storage/.
+    kept = Path(tempfile.mkdtemp(prefix="gemini-failures-"))
+
     def provider_on(page, settings=None):
         p = gemini.GeminiProvider(Path("/tmp/gemini-driver-test"), ROOT / "storage" / "sessions")
         p._page = page
         p._ensure_page = lambda: page
         p._context = Context(settings)
+        p.failures_path = kept
         return p
 
     page = Page(clock)
@@ -1182,6 +1203,58 @@ def main():
     record("a picture turn ended by its Stop response button keeps the generated picture",
            result.success and sizes == [12623] and took < 60,
            "success {} sizes {} error {!r} after {:.0f}s".format(result.success, sizes, result.error, took))
+
+    # Issue #15, 2026-10-29: job 09c44615 failed after its send and nothing of its page was kept, so
+    # its cause could not be named. A failed turn keeps a picture of its page and what it counted.
+    def records():
+        return sorted(p.name for p in kept.iterdir())
+
+    page = Page(clock)
+    page.answer, page.replies = "", [session]
+    before_kept = records()
+    result, took = timed(page, "Trả lời ngắn gọn: thủ đô của Pháp là gì?")
+    new = [n for n in records() if n not in before_kept]
+    note = next((n for n in new if n.endswith(".txt")), None)
+    said = (kept / note).read_text() if note else ""
+    record("a turn that fails after its send keeps a picture of its page and what it counted",
+           not result.success and "page kept as gemini-" in (result.error or "")
+           and any(n.endswith(".png") for n in new) and "url" in said and "Stop response" in said,
+           "error {!r}, new records {}".format(result.error, new))
+
+    page = Page(clock)
+    page.answer, page.replies = "a plain reply", [stream_ok]
+    before_kept = records()
+    result, took = timed(page, "hello")
+    record("a turn that succeeds keeps nothing",
+           result.success and records() == before_kept, "success {}, new records {}".format(
+               result.success, [n for n in records() if n not in before_kept]))
+
+    page = Page(clock)
+    page.replies = [Response(stream_ok.url, status=500)]
+    try:
+        provider_on(page, off())._run("hello")
+        said = "returned"
+    except ProviderError as exc:
+        said = "{}: {}".format(exc.kind, exc)
+    record("a turn refused after its send says where its page was kept",
+           said.startswith("provider_error: gemini refused the turn") and "page kept as gemini-" in said, said)
+
+    page = Page(clock)
+    page.answer, page.replies, page.shot_fails = "", [session], True
+    result, took = timed(page, "Trả lời ngắn gọn: thủ đô của Ý là gì?")
+    record("a page that cannot be kept never changes how the turn failed",
+           not result.success and result.error_kind == "provider_timeout"
+           and "page not kept" in (result.error or ""),
+           "kind {} error {!r}".format(result.error_kind, result.error))
+
+    page = Page(clock, composer=False)
+    try:
+        provider_on(page, off())._run("hello")
+        said = "returned"
+    except ProviderError as exc:
+        said = str(exc)
+    record("a turn refused before anything is sent keeps no page",
+           "page kept" not in said and "page not kept" not in said, said[:80])
 
     # Job b55dcf5d, 2026-10-01: a video script turn came back as this sentence, stored and charged.
     # Measured 2026-10-08 in its thread: its markup and Gemini's stored record are an ordinary
@@ -2030,6 +2103,7 @@ def main():
         record("thread id of {}".format(url.rsplit("/", 1)[-1]), got == expected,
                "got {!r}, expected {!r}".format(got, expected))
 
+    shutil.rmtree(kept, ignore_errors=True)
     return finish()
 
 

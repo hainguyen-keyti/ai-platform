@@ -545,7 +545,15 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   memory read `unknown` and no conversation made on the account. It did not come back: the same
   question through `chat()` at 01:01 passed in 23s (button 1.3s to 9.9s), and a web turn at 01:25
   in 33s. Likely Gemini itself not taking turns then; not proven, since nothing of that page was
-  kept. #14 stays open on the owner's word. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
+  kept. #14 closed again on the owner's word.
+- **Issue #15 done** (a failed Gemini turn's page is kept): a turn that fails once it was sent,
+  returned or raised, keeps a screenshot and a short JSON (address, questions, answers, the Stop
+  response button, the last answer's text, any alert or status text) in `storage/failures/`
+  (`gemini-<UTC time>-<thread or new>-<6 hex>.png/.txt`, git-ignored with `storage/`), and its
+  message ends "(page kept as …)"; a record that cannot be kept says "(page not kept: …)" and never
+  changes the failure; a turn refused before its send keeps nothing. `tests/test_gemini_driver.py`
+  152/152 (three red before), four mutants red; tried on the real page once, no turn (a 236 KB
+  picture and the JSON). Full gate 60/60, build, 75/75, exit 0. Old records are not cleaned up. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
   found in the list 15s after the load, so not deleted) and "Màu của bầu trời lúc trưa" (the
   acceptance turn's); the probe threads "kappa" and "1b74d62d" were deleted. The label "Stop response" is the English interface's; another language
   is not measured. The Gemini account shows "Tomy Tom, Pro", where HANDOFF recorded `ke***2@gmail.com`.
