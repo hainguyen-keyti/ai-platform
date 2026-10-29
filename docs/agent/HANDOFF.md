@@ -10,7 +10,41 @@ there and in each plan's Evidence; what the reviews left open moved into its pla
 open" at the end of the file; what the tests left in the accounts is in
 `docs/agent/residue-left-in-accounts.md`.
 
-Last updated: 2026-10-27, at **ea6cf33**, pushed to the private repo
+## Current state (2026-10-30, at 7e553d2, pushed)
+
+- **Machine**: Windows 11, the repo at `D:\keyti\ai-platform`, everything run inside WSL Ubuntu from
+  `/mnt/d/keyti/ai-platform` (README.md). Docker Desktop does not start with Windows; after a WSL
+  restart run `docker compose up -d --force-recreate`.
+- **Running**: the api and the web in Docker. The real host worker runs in the desktop app's Terminal
+  panel ("host worker (real, no gemini)") with `PROVIDERS=chatgpt,grok`, its output appended to
+  `~/.cache/ai-platform/host-worker-real.log` in WSL. It ends with the tab or the app. Gemini is left
+  off because Google's unusual-traffic check came on twice (#14, #16); try it again thinly.
+- **Gates**: quick gate **65 checks**, ui_smoke **75**; the full gate is `./scripts/full-gate.sh`
+  (`.claude/test-command.txt`). It needs :8000 free: stop the real worker first, start it again after.
+- **Plan (3)** closed 2026-10-28 (#1-#9). **Closed since**: #10-#15 (found in the owner's acceptance
+  walk), #17, #19, #20 (the MCP server, below).
+- **Open issues**: #16 (`/v1` picks its provider; code done, every item but the real pictures met,
+  checklist not ticked yet) and #18 (Grok's refusal reason; code done). Both wait on outside things:
+  Grok's free image allowance is spent, and Gemini's bot check. A real Grok picture closes #18 and
+  Grok's part of #16; a real Gemini picture through `/v1` closes the rest of #16.
+- **The MCP server for ChatGPT pictures** (`mcp_server/chatgpt_images.py`, venv `~/.venvs/aip-mcp`,
+  `mcp==2.3.0` and `pillow==13.0.0`) is **registered in Claude Code at user scope** as
+  `aip-chatgpt-images` (`claude mcp get aip-chatgpt-images`), started through `wsl` with `WSLENV`
+  passing `AIP_API_KEY` (the owner's own key, kept) and `AIP_API_URL`. Five tools: `generate_image`,
+  `generate_images` (1 to 20 prompts at once), `get_image`, `account_status`, `cancel_image`. Every
+  answer carries a 512px JPEG preview of each picture and structured content; files are named
+  `<prompt slug>-<request>-<n>.png` with a `.json` record beside them. A Claude Code session started
+  before a change to the server or its key keeps the old process: open a new session.
+  `tests/test_mcp_chatgpt_images.py` 30/30 (in no gate; run it with the server's venv).
+- **Left open by #19 and #20**: the worker's health read `thread_deletions_failed 1` after the real
+  cancel of #20 (not looked into); the cancelled real turn ("a blue teapot …") may have left its
+  conversation on the ChatGPT account; `storage/failures/` and `storage/diagnostics/` are never
+  cleaned; real check pictures sit in `storage/mcp-check*/` (git-ignored).
+
+The paragraphs below this section are older and kept for their history; where they disagree with
+this section, this section is right.
+
+Earlier state, last updated 2026-10-27, at **ea6cf33**, pushed to the private repo
 github.com/hainguyen-keyti/ai-platform: c91c68d puts the agent layer in git; a04db8f configures the
 mattpocock engineering skills (issues in GitHub Issues, the five triage labels created on the repo,
 `docs/agents/`, an "Agent skills" section in `CLAUDE.md`); ea6cf33 records in `CLAUDE.md` that **a
@@ -592,7 +626,16 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   89s with the first as its reference, both PNGs as asked. From Windows, `wsl` with `WSLENV`
   (checked on Microsoft's WSL docs and on this machine) starts it and lists both tools. README step
   11 says how to install and register it (Claude Code's `claude mcp add` and Claude Desktop's config,
-  both checked against Claude Code's docs); it is **not registered** in any Claude config here. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
+  both checked against Claude Code's docs); registered in Claude Code at user scope on 2026-10-29 and
+used from a fresh Claude Code session (a cat picture). **Issue #19 done** (f5e0eb1): previews,
+structured content, `generate_images`, files named by their prompt with a `.json` record; 25 checks,
+eight mutants red, full gate 63/63, build, 75/75; real from Claude Code: a lighthouse in 91s and a set
+of three, each described by the agent from its preview. **Issue #20 done** (7e553d2): `GET
+/v1/account` (credits after the day's refill, `refills_at`), `POST /v1/images/{id}/cancel` (queued or
+running, refunded once, `/v1` requests of their owner only), MCP tools `account_status` and
+`cancel_image`, the example script's `--account` and `--cancel`; quick gate 65/65, seven mutants red,
+full gate 65/65, build, 75/75; real: one request cancelled queued (never sent) and one running (the
+worker pressed ChatGPT's Stop 3s after, no picture kept), credits unchanged at 84 of 100. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
   found in the list 15s after the load, so not deleted) and "Màu của bầu trời lúc trưa" (the
   acceptance turn's); the probe threads "kappa" and "1b74d62d" were deleted. The label "Stop response" is the English interface's; another language
   is not measured. The Gemini account shows "Tomy Tom, Pro", where HANDOFF recorded `ke***2@gmail.com`.
