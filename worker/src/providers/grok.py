@@ -370,10 +370,20 @@ class GrokProvider(BaseProvider):
             inflight = None
         if inflight != []:
             return last, "working", status
+        # Grok's own word that it refused the turn, whatever words or card came with it (issue #18,
+        # 2026-10-29: "You've used up your media generation credits." on a spent image allowance).
+        if self._stream_errors(last):
+            return last, "refused", status
         text, assets = self._turn_content(last)
         # Finished and empty is not finished: either the words are a moment
         # behind, or the provider refused. The caller waits a little, then says so.
         return last, ("done" if (text or assets) else "empty"), status
+
+    @staticmethod
+    def _stream_errors(turn) -> list:
+        """The messages of the stream errors Grok recorded on a turn; none on an ordinary answer."""
+        return [error["message"] for error in ((turn or {}).get("streamErrors") or [])
+                if isinstance(error, dict) and error.get("message")]
 
     def _baseline_ids(self, page, cid):
         """The ids of every response the thread holds before the send; none for a new conversation.
@@ -518,6 +528,8 @@ class GrokProvider(BaseProvider):
                 if turn and not announced:
                     self._phase("reply started")
                     announced = True
+                if state == "refused":
+                    raise ProviderError("grok refused the turn: {}".format(" ".join(self._stream_errors(turn))))
                 if state == "empty":
                     empty_since = empty_since or time.time()
                     if time.time() - empty_since > EMPTY_GRACE:

@@ -566,8 +566,19 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   picture ("Here's a simple generated image…", 16s), then, retried, "answered with nothing" after
   111s; **Gemini** answered "I don't seem to have access to that content" (22s), then **Google's
   unusual-traffic check came on again**: the worker runs with `PROVIDERS=chatgpt,grok` until it
-  lifts. The routing is right (each job ran on the provider asked); the missing pictures are the
-  providers' turns, not looked into yet. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
+  lifts. The routing is right (each job ran on the provider asked). **Grok's, looked into (issue
+  #18)**: Grok's own record of both threads holds `streamErrors` "You've used up your media
+  generation credits." (`usagePoolExhausted`) and a card with `systemErrCode` 1009 and no picture:
+  **the free account's image allowance is spent**; the driver read no `streamErrors`, so one turn
+  came back done with words and no picture (charged) and the other "answered with nothing" with the
+  cookie dialog's text as its reason. Gemini's not looked into.
+- **Issue #18, code done, open for the real check**: `_server_turn` reads a finished turn's
+  `streamErrors` first and calls it `refused`; `_run` fails it as a provider error "grok refused the
+  turn: <Grok's own words>", refunded. `tests/test_grok_settle.py` 25/25 (the two measured responses
+  as states and as whole turns, red before: "done" and "empty"); three mutants red; full gate 63/63,
+  build, 75/75, exit 0. No real Grok picture turn was sent while the allowance is spent; one picture
+  turn once it is back closes #18 (and Grok's part of #16). Whether to hold Grok out of picture
+  requests while it is spent is the owner's call. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
   found in the list 15s after the load, so not deleted) and "Màu của bầu trời lúc trưa" (the
   acceptance turn's); the probe threads "kappa" and "1b74d62d" were deleted. The label "Stop response" is the English interface's; another language
   is not measured. The Gemini account shows "Tomy Tom, Pro", where HANDOFF recorded `ke***2@gmail.com`.

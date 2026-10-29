@@ -58,6 +58,23 @@ PICTURE = {"responseId": "a1", "sender": "assistant", "partial": False,
            "message": '<grok:render card_id="x" card_type="generated_image_card"></grok:render>',
            "fileAttachmentsMetadata": [{"fileMetadataId": "asset-1", "fileMimeType": "image/jpeg"}]}
 NOTHING = {"responseId": "a1", "sender": "assistant", "message": "", "partial": False}
+# Measured 2026-10-29 (issue #18), Grok's own record of two picture turns on an account whose image
+# allowance was spent: a card with no picture (systemErrCode 1009) and Grok's own stream error, with
+# words before it in one thread and none in the other.
+SPENT_ERROR = [{"message": "You've used up your media generation credits.", "usagePoolExhausted": {},
+                "severity": "STREAM_ERROR_SEVERITY_NORMAL"}]
+SPENT_CARD = ['{"id":"uIlUJ","type":"render_generated_image","cardType":"generated_image_card","prompt":null,'
+              '"image_chunk":{"imageUuid":"1a5e5c08-ef93-4d6e-9672-aee7e50a615c","seq":0,"progress":100,'
+              '"imageReferences":[],"systemErrCode":1009}}']
+SPENT_WORDS = {"responseId": "a1", "sender": "assistant", "partial": False,
+               "message": "Here's a simple generated image of a small orange circle on a white background:\n\n"
+                          '<grok:render card_id="uIlUJ" card_type="generated_image_card" '
+                          'type="render_generated_image"></grok:render>',
+               "cardAttachmentsJson": SPENT_CARD, "streamErrors": SPENT_ERROR}
+SPENT_ALONE = {"responseId": "a1", "sender": "assistant", "partial": False,
+               "message": '<grok:render card_id="QeZ0R" card_type="generated_image_card" '
+                          'type="render_generated_image"></grok:render>',
+               "cardAttachmentsJson": SPENT_CARD, "streamErrors": SPENT_ERROR}
 
 CASES = (
     ("a streaming turn is still working", [HUMAN, STREAMING], [], "working"),
@@ -66,6 +83,9 @@ CASES = (
     ("a picture alone finishes a turn", [HUMAN, PICTURE], [], "done"),
     ("a finished turn carrying nothing is a refusal", [HUMAN, NOTHING], [], "empty"),
     ("no assistant turn yet is still working", [HUMAN], [], "working"),
+    ("a finished turn with Grok's own stream error is refused, words or not", [HUMAN, SPENT_WORDS], [], "refused"),
+    ("a finished turn with Grok's stream error and no words is refused, not empty", [HUMAN, SPENT_ALONE], [],
+     "refused"),
 )
 
 
@@ -99,8 +119,10 @@ class FollowPage:
     answer takes tens of seconds. A fresh page has no thread until the send."""
 
     def __init__(self, clock, before=(200,), settled_after=20.0, fresh=False, empty_first=False,
-                 raises_first=None, raises_always=None, never_lands=False, after_status=200):
+                 raises_first=None, raises_always=None, never_lands=False, after_status=200, answer=None):
         self.clock, self.before, self.settled_after, self.fresh = clock, list(before), settled_after, fresh
+        # answer: this turn's response as Grok records it (THIS unless said; issue #18 plays its own).
+        self.answer = answer or THIS
         # never_lands: the server never lists this turn, its question nor an answer (measured
         # 2026-10-28, issue #13); after_status: what every read after the send answers.
         self.never_lands, self.after_status = never_lands, after_status
@@ -137,7 +159,7 @@ class FollowPage:
                 return {"status": 200, "body": json.dumps({"responses": earlier})}
             rows = earlier + [THIS_HUMAN]
             if self.clock.now - self.sent_at >= self.settled_after:
-                rows.append(THIS)
+                rows.append(self.answer)
             return {"status": 200, "body": json.dumps({"responses": rows})}
         if "/response-node" in path:
             return {"status": 200, "body": json.dumps({"responseNodes": [], "inflightResponses": []})}
@@ -237,6 +259,16 @@ def follow_up_cases():
     record("a follow-up the server never lists is said not received within a minute",
            what.startswith("refused as provider_error") and "never received" in what and took < 60,
            "{} after {:.0f}s".format(what, took))
+
+    # Issue #18: the two measured turns of a spent image allowance, through _run. One ended done with
+    # its words and no picture, the other "answered with nothing: Cookies Settings Reject All ...".
+    for label, answer in (("with words before the card", SPENT_WORDS), ("with the card alone", SPENT_ALONE)):
+        what, text, sent, took = follow_up(clock, FollowPage(clock, answer=answer))
+        record("a turn Grok refused {} fails with Grok's own reason".format(label),
+               # follow_up keeps the first 60 characters of the reason.
+               what.startswith("refused as provider_error: grok refused the turn: You've used up your media")
+               and "Cookies" not in what,
+               "{} {!r} after {:.0f}s".format(what, text, took))
 
     kept = {}
     follow_up(clock, FollowPage(clock), keep=kept)
