@@ -103,6 +103,9 @@ CHECKS = (
     "a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused "
     "uncharged, nothing kept",
     "a /v1 request refused for quota keeps no picture",
+    "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
+    "a reference picture sent to a provider that takes none is refused uncharged, nothing kept",
+    "with a key, /v1/providers says which providers are served and what each takes",
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
@@ -117,6 +120,7 @@ V1_JOB_CHECKS = (
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
+    "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
 )
 V1_REAL_SKIP = "spends real chatgpt turns; proven by the plan's real requests through /v1 with a key"
 
@@ -741,6 +745,37 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
             "key {}, emptied {}, sent {}, files added {}, credits {}, restored {}".format(
                 bool(bkey), emptied, broke, sorted(files_after - files_before)[:3], still_none, restored))
 
+    # Issue #16: Grok's driver takes no reference picture (worker/src/providers/grok.py), so the api
+    # refuses one sent to grok before it keeps the file or takes a credit.
+    files_before, q0 = files_now(), quota_of(token)
+    graw = http_form(api + "/v1/images", {"prompt": "the same subject at night", "provider": "grok"},
+                     {"image": ("ref.png", "image/png", png)}, token=akey)
+    files_after, q1 = files_now(), quota_of(token)
+    if graw[0] == 400 and files_after == files_before and q1 == q0:
+        c["a reference picture sent to a provider that takes none is refused uncharged, nothing kept"].passed(
+            "grok with a picture: 400 {!r}; credits and files unchanged".format((graw[1] or {}).get("detail")))
+    else:
+        c["a reference picture sent to a provider that takes none is refused uncharged, nothing kept"].failed(
+            "grok with a picture: {} {}, credits {} -> {}, files added {}".format(
+                graw[0], graw[1], q0, q1, sorted(files_after - files_before)[:3]))
+
+    # Issue #16: a program asks with its key which providers are there and what each takes.
+    pstatus, plist = http("GET", api + "/v1/providers", token=akey)
+    said = {p.get("name"): (p.get("served"), p.get("makes_pictures"), p.get("takes_reference"))
+            for p in (plist or {}).get("providers") or []} if isinstance(plist, dict) else {}
+    others = {"nothing": http("GET", api + "/v1/providers")[0],
+              "a login token": http("GET", api + "/v1/providers", token=token)[0]}
+    takes = {name: entry[2] for name, entry in said.items()}
+    if (pstatus == 200 and set(said) == {"chatgpt", "grok", "gemini"}
+            and all(isinstance(entry[0], bool) and entry[1] is True for entry in said.values())
+            and takes == {"chatgpt": True, "grok": False, "gemini": True}
+            and all(v == 401 for v in others.values())):
+        c["with a key, /v1/providers says which providers are served and what each takes"].passed(
+            "{}; without a key and with a login token 401".format(said))
+    else:
+        c["with a key, /v1/providers says which providers are served and what each takes"].failed(
+            "status {}: {}; others {}".format(pstatus, said or plist, others))
+
     if real:
         return
 
@@ -767,6 +802,33 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real):
         c["a /v1 request with a prompt ends with a picture to download"].failed(
             "sent {} {}, then {} {}, downloads {}, credits {} -> {}".format(
                 status, sent_one, final.get("status"), final.get("error"), downloads, q0, q1))
+
+    # Issue #16: the request names its provider; one that names none stays on chatgpt.
+    def provider_of(request_id):
+        return (http("GET", "{}/jobs/{}".format(api, request_id), token=token)[1] or {}).get("provider") \
+            if request_id else None
+
+    made = {"named none": (rid, final.get("status"), len(images), provider_of(rid))}
+    for name in ("grok", "gemini", "chatgpt"):
+        nstatus, nsent = http_form(api + "/v1/images", {"prompt": "a plain green square", "provider": name},
+                                   token=akey)
+        nrid = (nsent or {}).get("id") if isinstance(nsent, dict) else None
+        ndone = poll_v1(nrid, akey) if nrid else {}
+        made[name] = (nrid if nstatus == 202 else nstatus, ndone.get("status"), len(ndone.get("images") or []),
+                      provider_of(nrid))
+    q0 = quota_of(token)
+    unknown = http_form(api + "/v1/images", {"prompt": "a square", "provider": "claude"}, token=akey)
+    q1 = quota_of(token)
+    wanted = {"named none": "chatgpt", "grok": "grok", "gemini": "gemini", "chatgpt": "chatgpt"}
+    if (all(m[1] == "done" and m[2] >= 1 and m[3] == wanted[k] for k, m in made.items())
+            and unknown[0] == 400 and q1 == q0):
+        c["a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused "
+          "uncharged"].passed("each done with a picture on its provider {}; 'claude' 400 {!r}, credits {}".format(
+              {k: m[3] for k, m in made.items()}, (unknown[1] or {}).get("detail"), q1))
+    else:
+        c["a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused "
+          "uncharged"].failed("(id, status, pictures, provider) {}; unknown {} {}, credits {} -> {}".format(
+              made, unknown[0], unknown[1], q0, q1))
 
     # A prompt and a picture of each kind: the worker gets exactly those bytes, and the web shows the
     # picture on the person's own message.

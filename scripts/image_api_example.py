@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Make a picture with ChatGPT through the platform's image API, the way a program would.
+"""Make a picture with ChatGPT, Grok or Gemini through the platform's image API, the way a program would.
 
     export AIP_API_KEY=aip_...     # made on the web, page "API"; shown once
     python3 scripts/image_api_example.py --prompt "a red fox in the snow"
     python3 scripts/image_api_example.py --prompt "the same fox at night" --image fox.png --out pictures
+    python3 scripts/image_api_example.py --provider grok --prompt "a lighthouse at sunset"
 
 Standard library only. Sends the request, asks for its status every few seconds until it ends, then
 saves each picture made into --out. The calls are described in docs/api-v1-images.md.
@@ -42,11 +43,14 @@ def detail(raw):
         return raw.decode(errors="replace")
 
 
-def form(prompt, image):
-    """A multipart/form-data body with the prompt and, if given, the picture as a file."""
+def form(prompt, image, provider=None):
+    """A multipart/form-data body with the prompt, the provider if named, and the picture as a file if given."""
     boundary = uuid.uuid4().hex
     body = ('--{}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n'.format(boundary).encode()
             + prompt.encode() + b"\r\n")
+    if provider:
+        body += ('--{}\r\nContent-Disposition: form-data; name="provider"\r\n\r\n'.format(boundary).encode()
+                 + provider.encode() + b"\r\n")
     if image:
         body += ('--{}\r\nContent-Disposition: form-data; name="image"; filename="{}"\r\n'
                  'Content-Type: {}\r\n\r\n'.format(
@@ -56,10 +60,12 @@ def form(prompt, image):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Make a picture with ChatGPT through /v1/images.")
+    parser = argparse.ArgumentParser(description="Make a picture with ChatGPT, Grok or Gemini through /v1/images.")
     parser.add_argument("--api", default=os.environ.get("AIP_API_URL", "http://localhost:3000"),
                         help="the platform's api address (default: $AIP_API_URL or http://localhost:3000)")
     parser.add_argument("--prompt", required=True, help="what to make; required")
+    parser.add_argument("--provider", choices=("chatgpt", "grok", "gemini"),
+                        help="who makes it (default: the api's, chatgpt); grok takes no --image")
     parser.add_argument("--image", type=Path, help="a PNG, JPEG or WEBP picture to use as the reference")
     parser.add_argument("--out", type=Path, default=Path("."), help="where to save the pictures (default: here)")
     parser.add_argument("--wait", type=int, default=600, help="seconds to keep asking before giving up")
@@ -70,7 +76,7 @@ def main():
         sys.exit("set AIP_API_KEY to a key made on the web's API page")
     api = args.api.rstrip("/")
 
-    body, content_type = form(args.prompt, args.image)
+    body, content_type = form(args.prompt, args.image, args.provider)
     status, raw = call("POST", api + "/v1/images", key, body, content_type)
     if status != 202:
         sys.exit("refused ({}): {}".format(status, detail(raw)))

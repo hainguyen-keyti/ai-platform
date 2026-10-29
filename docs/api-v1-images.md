@@ -1,8 +1,9 @@
 # Image API (`/v1/images`)
 
-Make pictures with ChatGPT from a program. You send a prompt, and optionally one picture to use as
-the reference; the call answers at once with a request id; you ask for the request's status until
-it is done; then you download each picture it made.
+Make pictures with ChatGPT, Grok or Gemini from a program. You send a prompt, the provider you want
+(ChatGPT unless you name another), and optionally one picture to use as the reference; the call
+answers at once with a request id; you ask for the request's status until it is done; then you
+download each picture it made. `GET /v1/providers` says which providers are there right now.
 
 A picture usually takes about a minute, sometimes up to five. Each request costs one credit, the
 same as on the web, and a request that fails gives its credit back. Requests and their pictures
@@ -20,8 +21,27 @@ Send the key on every call:
 Authorization: Bearer aip_...
 ```
 
-A key works only on `/v1/images`. It does not sign in to the web, and the web's login does not work
+A key works only on `/v1`. It does not sign in to the web, and the web's login does not work
 here. Keep it out of code you share; if it leaks, revoke it and make another.
+
+## 0. Which providers
+
+`GET /v1/providers` lists every provider: whether a worker serves it right now (`served`), whether
+it makes pictures (`makes_pictures`) and whether it takes a reference picture (`takes_reference`).
+
+```
+curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/providers
+```
+
+```json
+{"providers": [
+  {"name": "chatgpt", "served": true, "makes_pictures": true, "takes_reference": true},
+  {"name": "grok", "served": true, "makes_pictures": true, "takes_reference": false},
+  {"name": "gemini", "served": true, "makes_pictures": true, "takes_reference": true}
+]}
+```
+
+A provider that is not `served` answers a request with `503` until a worker serves it again.
 
 ## 1. Send a request
 
@@ -30,12 +50,14 @@ here. Keep it out of code you share; if it leaks, revoke it and make another.
 | Field | Required | What |
 |---|---|---|
 | `prompt` | yes | What to make, up to 8000 characters |
-| `image` | no | One picture file to use as the reference: PNG, JPEG or WEBP, at most 10 MB, at most 16384 pixels a side and 50 megapixels. Send one; if several are sent, the last one is used |
+| `provider` | no | `chatgpt` (the default), `grok` or `gemini` |
+| `image` | no | One picture file to use as the reference: PNG, JPEG or WEBP, at most 10 MB, at most 16384 pixels a side and 50 megapixels. Send one; if several are sent, the last one is used. Grok takes none |
 
 ```
 curl -X POST http://localhost:3000/v1/images \
   -H "Authorization: Bearer $AIP_API_KEY" \
   -F "prompt=the same fox, at night, in the snow" \
+  -F "provider=gemini" \
   -F "image=@fox.png"
 ```
 
@@ -46,8 +68,8 @@ Answer, `202`:
 ```
 
 The picture is checked by its content, not by its file name: its own header must say PNG, JPEG or
-WEBP and give its size. With a picture, ChatGPT is asked to use it as the reference for a new image
-made from your prompt.
+WEBP and give its size. With a picture, the provider is asked to use it as the reference for a new
+image made from your prompt; Grok cannot be sent one.
 
 ## 2. Ask for the status
 
@@ -60,6 +82,7 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/5f0
 ```json
 {
   "id": "5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a",
+  "provider": "chatgpt",
   "status": "done",
   "text": "Here is the fox at night.",
   "error": null,
@@ -78,9 +101,9 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/5f0
 
 | `status` | Meaning |
 |---|---|
-| `queued` | Waiting for ChatGPT to be free |
-| `running` | ChatGPT is making it |
-| `done` | Finished: `images` holds what was made, `text` any words ChatGPT added |
+| `queued` | Waiting for the provider to be free |
+| `running` | The provider is making it |
+| `done` | Finished: `images` holds what was made, `text` any words the provider added |
 | `failed` | Not made: `error` says why; the credit was given back |
 | `cancelled` | Stopped before it finished; the credit was given back |
 
@@ -103,14 +126,14 @@ kind, a list naming the field. A refused request costs nothing and keeps nothing
 
 | Status | When |
 |---|---|
-| `400` | The form itself cannot be read |
+| `400` | The form itself cannot be read, `provider` is not `chatgpt`, `grok` or `gemini`, or a picture was sent to `grok` |
 | `401` | No key, an unknown or revoked key, or a web login token |
 | `402` | No credit left today |
 | `404` | No such request or picture, it is someone else's, or it was not made through `/v1` |
 | `413` | The whole request is over 10 MB and 256 KB (checked before the key, as it arrives), or the picture is over 10 MB, 16384 pixels a side or 50 megapixels |
 | `415` | The file is not a PNG, JPEG or WEBP picture whose size can be read (an empty file too) |
 | `422` | No prompt or a prompt too long (a list), a prompt of only spaces (a sentence), or `image` sent as text instead of a file (a list) |
-| `503` | ChatGPT is not available right now; try again later |
+| `503` | The provider is not available right now; try again later |
 
 ## A ready example
 
@@ -120,6 +143,7 @@ kind, a list naming the field. A refused request costs nothing and keeps nothing
 export AIP_API_KEY=aip_...
 python3 scripts/image_api_example.py --prompt "a red fox in the snow"
 python3 scripts/image_api_example.py --prompt "the same fox at night" --image fox.png --out pictures
+python3 scripts/image_api_example.py --provider grok --prompt "a lighthouse at sunset"
 ```
 
 It prints the request id, waits for the result, and saves each picture into `--out`. `--api` (or

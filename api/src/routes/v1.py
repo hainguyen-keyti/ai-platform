@@ -8,7 +8,8 @@ from fastapi.responses import FileResponse
 
 from src.config import settings
 from src.db.client import db, many, one
-from src.jobs import create_job, get_job
+from src.jobs import create_job, get_job, provider_status
+from src.models import FEATURES, PROVIDERS, TAKES_REFERENCE
 from src.routes.media import CONTENT_TYPES, _safe_path
 from src.security import api_key_user
 
@@ -114,17 +115,34 @@ def _image_request(user_id: str, request_id: str) -> dict:
     with db() as conn:
         row = one(conn, "SELECT payload FROM jobs WHERE id = ? AND user_id = ?", (request_id, user_id))
     made_here = bool(row) and json.loads(row["payload"] or "{}").get("via") == "v1"
-    if job["feature"] != "image" or job["provider"] != "chatgpt" or not made_here:
+    if job["feature"] != "image" or not made_here:
         raise HTTPException(status_code=404, detail="image request not found")
     return job
 
 
+@router.get("/providers")
+def providers(user: dict = Depends(api_key_user)):
+    """Which providers a worker serves now, and what each does for /v1/images (issue #16)."""
+    served = {p["name"]: p["served"] for p in provider_status()["providers"]}
+    return {"providers": [{"name": name, "served": served.get(name, False),
+                           "makes_pictures": "image" in FEATURES[name],
+                           "takes_reference": name in TAKES_REFERENCE} for name in PROVIDERS]}
+
+
 @router.post("/images", status_code=202)
 def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile] = File(default=None),
-                 user: dict = Depends(api_key_user)):
+                 provider: str = Form(default="chatgpt", max_length=40), user: dict = Depends(api_key_user)):
     prompt = prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="a prompt is required")
+    # Refused before the picture is read or kept: a provider that is not there, and a reference
+    # picture to one whose picture turn takes none (issue #16).
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail="unknown provider {!r}; one of {}".format(
+            provider[:40], ", ".join(PROVIDERS)))
+    if image is not None and provider not in TAKES_REFERENCE:
+        raise HTTPException(status_code=400, detail="{} takes no reference picture; use {}".format(
+            provider, " or ".join(TAKES_REFERENCE)))
     upload, path, picture = None, None, b""
     if image is not None:
         picture = image.file.read(MAX_PICTURE_BYTES + 1)
@@ -145,10 +163,10 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile
     try:
         if path is not None:
             path.write_bytes(picture)
-        created = create_job(user=user, provider="chatgpt", feature="image", payload={"prompt": prompt, "via": "v1"},
+        created = create_job(user=user, provider=provider, feature="image", payload={"prompt": prompt, "via": "v1"},
                              user_message="Generate an image: {}".format(prompt), title=prompt, upload=upload)
     except BaseException:
-        # Refused (no credit, nobody serving ChatGPT) or a write that failed: the picture is not kept.
+        # Refused (no credit, nobody serving the provider) or a write that failed: the picture is not kept.
         if path is not None:
             path.unlink(missing_ok=True)
         raise
@@ -178,6 +196,7 @@ def image_status(request_id: str, user: dict = Depends(api_key_user)):
         })
     return {
         "id": job["id"],
+        "provider": job["provider"],
         "status": STATUSES.get(job["status"], job["status"]),
         "text": result.get("text") or "",
         "error": job["error"],

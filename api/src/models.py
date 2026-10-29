@@ -10,6 +10,9 @@ FEATURES = {
     "grok": ("chat", "image"),
     "gemini": ("chat", "image", "video_script"),
 }
+# The providers whose picture turn takes a reference picture; grok's driver refuses one
+# (worker/src/providers/grok.py, generate_image).
+TAKES_REFERENCE = ("chatgpt", "gemini")
 
 
 class RegisterRequest(BaseModel):

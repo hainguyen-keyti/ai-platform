@@ -553,7 +553,21 @@ time the worker ended with it and the api needed `docker compose up -d --force-r
   message ends "(page kept as …)"; a record that cannot be kept says "(page not kept: …)" and never
   changes the failure; a turn refused before its send keeps nothing. `tests/test_gemini_driver.py`
   152/152 (three red before), four mutants red; tried on the real page once, no turn (a 236 KB
-  picture and the JSON). Full gate 60/60, build, 75/75, exit 0. Old records are not cleaned up. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
+  picture and the JSON). Full gate 60/60, build, 75/75, exit 0. Old records are not cleaned up.
+- **Issue #16, code done, open for the real pictures** (`/v1` picks its provider): `POST /v1/images`
+  takes `provider` (`chatgpt` by default, `grok`, `gemini`; another one 400, uncharged); a reference
+  picture to grok is refused 400 before it is kept or charged (`TAKES_REFERENCE` in
+  `api/src/models.py`); a request on any provider is readable through `/v1`; `GET /v1/providers`
+  with a key says served, makes_pictures, takes_reference; the status answer names its provider;
+  `docs/api-v1-images.md` and `scripts/image_api_example.py --provider` say it. Three quick gate
+  checks red before; four mutants red; **the quick gate has 63 checks**; full gate 63/63, build,
+  75/75, exit 0. Real, with a throwaway account `v1-real-…@aiplatform-acceptance.com` and its key
+  (revoked after): `/v1/providers` right; ChatGPT a picture in 59s; **Grok** done with words and no
+  picture ("Here's a simple generated image…", 16s), then, retried, "answered with nothing" after
+  111s; **Gemini** answered "I don't seem to have access to that content" (22s), then **Google's
+  unusual-traffic check came on again**: the worker runs with `PROVIDERS=chatgpt,grok` until it
+  lifts. The routing is right (each job ran on the provider asked); the missing pictures are the
+  providers' turns, not looked into yet. Left on the Gemini account: "Red Apple on Wood" (a probe's; not
   found in the list 15s after the load, so not deleted) and "Màu của bầu trời lúc trưa" (the
   acceptance turn's); the probe threads "kappa" and "1b74d62d" were deleted. The label "Stop response" is the English interface's; another language
   is not measured. The Gemini account shows "Tomy Tom, Pro", where HANDOFF recorded `ke***2@gmail.com`.
