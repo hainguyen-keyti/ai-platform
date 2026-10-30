@@ -247,8 +247,8 @@ turns it off) the worker moves to ChatGPT's Library trash the pictures from befo
 platform's own threads, a page at a time while it has no job. A trashed file can be restored from
 the Library and no longer counts in the store. Nothing else on the account is touched: not a file of
 another thread, not a file that is not a picture. Worker health shows the last run as
-`library_cleanup` and the store as `storage`. A `continue_from` on a request from before today may
-find its picture gone from ChatGPT's side.
+`library_cleanup` and the store as `storage`. A `continue_from` on a request from before today still
+worked after its picture was trashed (measured once, 2026-10-30).
 
 Install it in a venv of its own (the `mcp` SDK and Pillow for the previews, pinned in its
 requirements):

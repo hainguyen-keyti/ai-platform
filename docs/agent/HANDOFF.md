@@ -10,7 +10,29 @@ there and in each plan's Evidence; what the reviews left open moved into its pla
 open" at the end of the file; what the tests left in the accounts is in
 `docs/agent/residue-left-in-accounts.md`.
 
-## Current state (2026-10-30, at 7e553d2, pushed)
+## Current state (2026-10-30, at #27, pushed)
+
+**Newest first, what changed after the section below was written:**
+- #22 done (up to 4 reference pictures), #23 done (health's `storage`, warns from 80%; the owner chose
+  warn over remove), #26 done (one ChatGPT thread per key per UTC day, `api_key_conversations`), #27
+  done (nightly Library cleanup). **The full gate now runs on a stack of its own** (`aip-gate`, api
+  :3100, web :5273, worker :8100, `storage/gate/`), so the real worker keeps running during it.
+- **#27**: `LIBRARY_CLEANUP_AT` (UTC, default 16:30, 23:30 in Vietnam). `soft_delete=true` only: a
+  trashed file can be restored and leaves `used_bytes` at once. Only pictures from before today in
+  threads `POST /internal/threads/known` names. First real run, 2026-10-30: 34 pictures, 87 MB moved,
+  **361 pictures kept as not ours**: their threads are not in this database (older than this machine's
+  database, or the owner's own use, not told apart). What to do with them is the owner's call; they
+  do not grow.
+- `continue_from` on a request whose picture was trashed still worked (measured once, the cat of
+  2026-10-29, "now wearing a small red scarf").
+- **Worktrees**: work that touches the api goes in a git worktree, since the Docker api reloads from
+  this folder at once (a slip in #22 gave four real requests a 500). Git for Windows writes a Windows
+  path into a worktree's `.git`, so run git there from Windows, not WSL. Link `.env` and
+  `web/node_modules` into it from WSL. Merge only with the real worker idle.
+- **Open**: #25 (the source is gone with the gate's own stack; 12 old mock tombstones remain), #16 and
+  #18 (Grok's allowance, Gemini's bot check).
+
+## Earlier today (at 7e553d2)
 
 - **Machine**: Windows 11, the repo at `D:\keyti\ai-platform`, everything run inside WSL Ubuntu from
   `/mnt/d/keyti/ai-platform` (README.md). Docker Desktop does not start with Windows; after a WSL
