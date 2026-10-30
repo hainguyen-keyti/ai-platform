@@ -2,7 +2,22 @@ import uuid
 
 from fastapi import HTTPException
 
-from src.db.client import db, one
+from src.db.client import db, many, one
+
+
+def known_threads(provider, thread_urls):
+    """Which of these thread addresses the platform stores for this provider: a live conversation's, or
+    a deleted one's tombstone. The nightly Library cleanup (#27) touches nothing else on the account."""
+    if not thread_urls:
+        return []
+    marks = ", ".join("?" * len(thread_urls))
+    with db() as conn:
+        rows = many(conn, "SELECT provider_thread_url AS url FROM conversations WHERE provider = ?"
+                          " AND provider_thread_url IN ({0}) UNION SELECT thread_url AS url FROM thread_tombstones"
+                          " WHERE provider = ? AND thread_url IN ({0})".format(marks),
+                    (provider, *thread_urls, provider, *thread_urls))
+    return [row["url"] for row in rows]
+
 
 # A claim the worker never settled goes back to the queue after this long.
 RECLAIM_AFTER = "-10 minutes"

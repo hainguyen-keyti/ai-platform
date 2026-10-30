@@ -94,6 +94,11 @@ class ConversationUpdate(BaseModel):
     title: str = Field(min_length=1, max_length=80)
 
 
+class ThreadsKnown(BaseModel):
+    provider: str = Field(max_length=40)
+    thread_urls: list[str] = Field(default_factory=list, max_length=100)
+
+
 class TombstoneResult(BaseModel):
     ok: bool
     error: Optional[str] = Field(default=None, max_length=500)

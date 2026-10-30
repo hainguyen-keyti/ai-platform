@@ -62,6 +62,9 @@ class Pool:
     def cooling_down(self, provider):
         return self.cooling
 
+    def can_clean_library(self, provider):
+        return False
+
 
 def asked_for_tombstone(hold, cooling):
     Client.paths = []

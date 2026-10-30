@@ -216,6 +216,28 @@ async (token) => {
 # The store is read after a picture turn at most this often, and warns from this share or over its limit.
 STORAGE_READ_SECONDS, STORAGE_WARN_SHARE = 600, 0.8
 
+# Measured 2026-10-30 (issue #27). The Library lists {items, cursor}, 50 a page. The page's own scripts
+# remove a file with DELETE .../files/{libfile id}, soft_delete saying trash or for good. Trashed, a
+# file answered {success: true}, left the list, could be restored, and its bytes left used_bytes at once
+# (179 of 179), so the cleanup never deletes for good.
+FETCH_LIBRARY_PAGE = """
+async ([token, cursor]) => {
+    const r = await fetch("/backend-api/files/library", {method: "POST", credentials: "include",
+        headers: {Authorization: "Bearer " + token, "Content-Type": "application/json"},
+        body: JSON.stringify({cursor: cursor, limit: 50, trashed_only: false, include_hidden_files: true})});
+    if (!r.ok) return {status: r.status};
+    const j = await r.json();
+    return {status: 200, cursor: j.cursor || null, items: j.items || []};
+}
+"""
+TRASH_LIBRARY_FILE = """
+async ([token, id]) => {
+    const r = await fetch("/backend-api/files/library/files/" + encodeURIComponent(id) + "?soft_delete=true",
+        {method: "DELETE", credentials: "include", headers: {Authorization: "Bearer " + token}});
+    return {status: r.status};
+}
+"""
+
 # Measured 2026-09-24 by flipping the switch in Settings, Personalization and
 # watching the wire: "Enable memory" is PATCH settings/account_user_setting
 # ?feature=m3m, and GET settings/user reports it as settings.m3m, with
@@ -1038,6 +1060,48 @@ class ChatGPTProvider(BaseProvider):
         if status in (200, 404):
             return True
         raise ProviderError("thread {} was not deleted: server status {}".format(wanted[:8], status))
+
+    def clean_library_page(self, cursor: Optional[str], day: str, known) -> dict:
+        """One page of the nightly cleanup (issue #27): move to the Library's trash the pictures created
+        before `day` whose thread `known` says is the platform's, and nothing else on the account.
+
+        `known` takes thread addresses and answers those the platform stores. A file that cannot be
+        moved is reported and does not stop the rest; a list that cannot be read is an error.
+        """
+        page = self._ensure_page()
+        if not page.url.startswith(HOME):
+            page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+        if not self._access_token:
+            self._access_token = self._session_token(page, 20)
+        if not self._access_token:
+            raise ProviderError("no session token: the provider session is logged out; "
+                                "run scripts/login_provider.py chatgpt")
+        token = self._access_token
+        got = page.evaluate(FETCH_LIBRARY_PAGE, [token, cursor])
+        if got.get("status") == 401:
+            self._access_token = None
+        if got.get("status") != 200:
+            raise ProviderError("chatgpt's library could not be read ({})".format(got.get("status")))
+        pictures = [
+            item for item in got.get("items") or []
+            if item.get("library_file_category") == "image" and item.get("access_kind") == "owned"
+            and not item.get("trashed_at") and item.get("origination_thread_id")
+            and str(item.get("record_creation_time") or "")[:10] and str(item["record_creation_time"])[:10] < day]
+        address = {item["id"]: "{}c/{}".format(HOME, item["origination_thread_id"]) for item in pictures}
+        ours = known(sorted(set(address.values()))) if address else set()
+        report = {"removed": 0, "bytes": 0, "failed": [], "not_ours": 0, "cursor": got.get("cursor")}
+        for item in pictures:
+            if address[item["id"]] not in ours:
+                report["not_ours"] += 1
+                continue
+            status = page.evaluate(TRASH_LIBRARY_FILE, [token, item["id"]]).get("status")
+            if status == 200:
+                report["removed"] += 1
+                report["bytes"] += item.get("file_size_bytes") or 0
+            else:
+                report["failed"].append((item["id"], status))
+            page.wait_for_timeout(200)
+        return report
 
     def chat(self, message: str, history: Optional[list] = None,
              thread_url: Optional[str] = None) -> GenerationResult:

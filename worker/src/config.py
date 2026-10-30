@@ -20,6 +20,9 @@ class Settings:
         self.image_budget = int(os.environ.get("IMAGE_BUDGET_3H", "40"))
         self.cooldown_base = float(os.environ.get("COOLDOWN_BASE_SECONDS", "30"))
         self.cooldown_max = float(os.environ.get("COOLDOWN_MAX_SECONDS", "900"))
+        # When the worker cleans ChatGPT's Library each day, as HH:MM in UTC (issue #27). The default is
+        # 23:30 in Vietnam. Empty turns it off.
+        self.library_cleanup_at = os.environ.get("LIBRARY_CLEANUP_AT", "16:30").strip()
         self.providers = [
             p.strip() for p in os.environ.get("PROVIDERS", "chatgpt").split(",") if p.strip()
         ]

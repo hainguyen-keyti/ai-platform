@@ -115,6 +115,7 @@ CHECKS = (
     "a /v1 chatgpt request carries up to four reference pictures in order, and more is refused uncharged",
     "a /v1 key's requests share one conversation and thread a day, apart from other keys and providers",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
+    "the api tells a worker which threads are the platform's, and only for that provider",
     "a done result with nothing in it fails and refunds",
     "a running job whose worker died is failed and refunded by its owner's next poll",
 )
@@ -2424,6 +2425,35 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
                     still_held, back, back_in, after_final.get("status"), after_final.get("error")))
 
     v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, restart_worker)
+
+    # Issue #27: the nightly Library cleanup removes files only of threads the api says are the
+    # platform's: a live conversation's, or a deleted one's tombstone, of that provider.
+    known_check = "the api tells a worker which threads are the platform's, and only for that provider"
+    try:
+        with sqlite3.connect(db_path) as conn:
+            live = conn.execute("SELECT provider_thread_url FROM conversations WHERE provider = ? AND"
+                                " provider_thread_url IS NOT NULL LIMIT 1", (provider,)).fetchone()
+            stone = conn.execute("SELECT thread_url FROM thread_tombstones WHERE provider = ? LIMIT 1",
+                                 (provider,)).fetchone()
+    except sqlite3.Error:
+        live, stone = None, None
+    asked = [u[0] for u in (live, stone) if u] + ["https://chatgpt.com/c/not-the-platforms"]
+
+    def known_for(name, headers):
+        kstatus, kbody = http("POST", api + "/internal/threads/known", {"provider": name, "thread_urls": asked},
+                              headers=headers)
+        return kstatus, set((kbody or {}).get("known") or []) if isinstance(kbody, dict) else set()
+
+    mine_status, mine = known_for(provider, {"X-Worker-Token": worker_token})
+    other_status, other = known_for(other_provider, {"X-Worker-Token": worker_token})
+    nobody = known_for(provider, None)[0]
+    if (live and stone and mine_status == 200 and mine == set(asked[:-1]) and other_status == 200
+            and not (other & mine) and nobody == 401):
+        c[known_check].passed("a live thread and a tombstone known, an address it never stored not, another "
+                              "provider none of them, no worker token 401")
+    else:
+        c[known_check].failed("asked {}, answered {} {}, another provider {} {}, no token {}".format(
+            asked, mine_status, mine, other_status, other, nobody))
 
     if not real:
         # A served turn afterwards, so the reading below is of a provider that

@@ -1,5 +1,6 @@
 import threading
 import time
+from datetime import datetime, timezone
 
 import httpx
 
@@ -43,6 +44,10 @@ class Runner(threading.Thread):
         self.threads_deleted = 0
         self.thread_deletions_failed = 0
         self._next_tombstone_check = 0.0
+        # The nightly Library cleanup (#27): where the run stands, the last day it ran, what it did.
+        self._cleaning = None
+        self._cleaned_day = None
+        self.library_cleanup = None
 
     def snapshot(self) -> dict:
         return {
@@ -54,6 +59,7 @@ class Runner(threading.Thread):
             "results_refused": self.refused,
             "threads_deleted": self.threads_deleted,
             "thread_deletions_failed": self.thread_deletions_failed,
+            "library_cleanup": self.library_cleanup,
             "last_error": self.last_error,
         }
 
@@ -88,6 +94,7 @@ class Runner(threading.Thread):
 
                 if job is None:
                     self._maybe_delete_one_thread(client)
+                    self._maybe_clean_library(client)
                     self._halt.wait(settings.poll_interval)
                     continue
 
@@ -105,6 +112,51 @@ class Runner(threading.Thread):
             return None
         response.raise_for_status()
         return response.json()
+
+    @staticmethod
+    def _utcnow():
+        return datetime.now(timezone.utc)
+
+    def _maybe_clean_library(self, client):
+        """One page of the day's Library cleanup, when the runner has no job (issue #27): a person's
+        request is served between pages. Only from LIBRARY_CLEANUP_AT, once a day; a failed page ends
+        the day's run and says why."""
+        if not settings.library_cleanup_at or not self.pool.can_clean_library(self.provider):
+            return
+        now = self._utcnow()
+        day = now.date().isoformat()
+        if self._cleaning is None:
+            if self._cleaned_day == day or now.strftime("%H:%M") < settings.library_cleanup_at:
+                return
+            self._cleaning = {"day": day, "cursor": None}
+            self.library_cleanup = {"day": day, "running": True, "removed": 0, "bytes": 0, "not_ours": 0,
+                                    "failed": 0, "error": None}
+        report = self.library_cleanup
+        try:
+            page = self.pool.clean_library_page(self.provider, self._cleaning["cursor"], self._cleaning["day"],
+                                                lambda urls: self._known_threads(client, urls))
+        except Exception as exc:
+            report["error"] = "{}: {}".format(type(exc).__name__, exc)
+            report["running"] = False
+            self.last_error = "library cleanup failed, {}".format(report["error"])
+            self._cleaned_day, self._cleaning = self._cleaning["day"], None
+            return
+        report["removed"] += page["removed"]
+        report["bytes"] += page["bytes"]
+        report["not_ours"] += page["not_ours"]
+        report["failed"] += len(page["failed"])
+        if page["cursor"]:
+            self._cleaning["cursor"] = page["cursor"]
+        else:
+            report["running"] = False
+            self._cleaned_day, self._cleaning = self._cleaning["day"], None
+
+    def _known_threads(self, client, thread_urls):
+        """Which of these thread addresses the platform stores: anything else on the account is not ours."""
+        response = client.post("/internal/threads/known",
+                               json={"provider": self.provider, "thread_urls": thread_urls})
+        response.raise_for_status()
+        return set(response.json()["known"])
 
     def _maybe_delete_one_thread(self, client):
         if time.time() < self._next_tombstone_check:

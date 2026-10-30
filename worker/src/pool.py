@@ -240,6 +240,24 @@ class BrowserPool:
                 return GenerationResult.failure(
                     "{}: {}".format(type(exc).__name__, exc), kind="worker_error")
 
+    def can_clean_library(self, provider_name: str) -> bool:
+        """Whether this provider's driver has a Library to clean (issue #27): ChatGPT's alone."""
+        return hasattr(self._providers.get(provider_name), "clean_library_page")
+
+    def clean_library_page(self, provider_name: str, cursor, day: str, known) -> dict:
+        """One page of the nightly cleanup, under the same lock as turns, so it never meets one."""
+        provider = self._providers[provider_name]
+        with self._locks[provider_name]:
+            try:
+                return provider.clean_library_page(cursor, day, known)
+            except Exception as exc:
+                if browser_gone(exc):
+                    try:
+                        provider.stop()
+                    except Exception:
+                        pass
+                raise
+
     def status(self) -> dict:
         out = {}
         for name in settings.providers:

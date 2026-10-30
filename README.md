@@ -242,6 +242,14 @@ Each request costs one credit, as on the web, and a failed one gives it back. Pi
 (`D:\...`) is read as `/mnt/d/...`, and every saved file is also named by its Windows path
 (`\\wsl.localhost\...`).
 
+Each day at `LIBRARY_CLEANUP_AT` (HH:MM in UTC, 16:30 by default, which is 23:30 in Vietnam; empty
+turns it off) the worker moves to ChatGPT's Library trash the pictures from before today of the
+platform's own threads, a page at a time while it has no job. A trashed file can be restored from
+the Library and no longer counts in the store. Nothing else on the account is touched: not a file of
+another thread, not a file that is not a picture. Worker health shows the last run as
+`library_cleanup` and the store as `storage`. A `continue_from` on a request from before today may
+find its picture gone from ChatGPT's side.
+
 Install it in a venv of its own (the `mcp` SDK and Pillow for the previews, pinned in its
 requirements):
 
