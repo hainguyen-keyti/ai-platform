@@ -74,8 +74,9 @@ mcp = MCPServer("aip-chatgpt-images", instructions=(
     "A picture takes about a minute, and ChatGPT makes one at a time. If a request is still running, "
     "call get_image with its request id later. To change a picture already made, pass its request id "
     "as continue_from rather than sending the picture back. Every request of one API key goes into that "
-    "key's own ChatGPT thread for the day, so ChatGPT sees the key's earlier pictures of the day. "
-    "account_status says the credits left before a set; "
+    "key's own ChatGPT thread for the day, so ChatGPT sees the key's earlier pictures of the day and "
+    "its pictures drift toward one look: for a varied set, name the face angle and the expression in "
+    "every prompt. account_status says the credits left before a set; "
     "cancel_image cancels a request sent by mistake."))
 
 

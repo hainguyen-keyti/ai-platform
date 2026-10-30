@@ -1,8 +1,10 @@
+import json
 import statistics
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 
 from src.config import settings
 from src.providers.base import GenerationResult, JobCancelled, ProviderError
@@ -50,9 +52,28 @@ class ProviderHealth:
         self.consecutive_errors = 0
         self.cooldown_until = 0.0
         self.last_turn_at = 0.0
-        self.image_times = deque()
+        # A real account's budget outlives the worker: counted in memory, a restart gave it all back.
+        # Only a worker told where keeps it (run-worker.sh, in real mode): a mock's or a test's pictures
+        # spend no account and must not count against the real one's file.
+        self.budget_file = (Path(settings.pacing_path) / "pacing-{}.json".format(provider)
+                            if settings.pacing_path else None)
+        self.image_times = deque(self._stored_image_times())
         self.latencies = deque(maxlen=50)
         self.last_provider_error = None
+
+    def _stored_image_times(self) -> list:
+        if self.budget_file is None or not self.budget_file.exists():
+            return []
+        cutoff = time.time() - IMAGE_WINDOW_SECONDS
+        return sorted(at for at in json.loads(self.budget_file.read_text()) if at >= cutoff)
+
+    def _store_image_times(self):
+        if self.budget_file is None:
+            return
+        self.images_in_window()
+        written = self.budget_file.with_name(self.budget_file.name + ".new")
+        written.write_text(json.dumps(list(self.image_times)))
+        written.replace(self.budget_file)
 
     def note(self, result: GenerationResult, elapsed: float):
         self.last_turn_at = time.time()
@@ -70,6 +91,7 @@ class ProviderHealth:
             for item in result.media:
                 if item.type == "image":
                     self.image_times.append(time.time())
+            self._store_image_times()
 
     def images_in_window(self) -> int:
         cutoff = time.time() - IMAGE_WINDOW_SECONDS

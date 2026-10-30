@@ -9,6 +9,7 @@ class Settings:
         self.provider_mode = os.environ.get("PROVIDER_MODE", "real").lower()
         self.media_path = Path(os.environ.get("MEDIA_PATH", "./storage/media"))
         self.sessions_path = Path(os.environ.get("SESSIONS_PATH", "./storage/sessions"))
+        self.pacing_path = os.environ.get("PACING_PATH", "")
         self.poll_interval = float(os.environ.get("POLL_INTERVAL", "1.0"))
         # A mock that answers instantly cannot exercise anything the UI shows
         # while it waits. Tests raise this to make that state observable.

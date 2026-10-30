@@ -34,6 +34,10 @@ export PROVIDER_MODE="${PROVIDER_MODE:-real}"
 export MEDIA_PATH="${WORKER_MEDIA_PATH:-$(pwd)/storage/media}"
 export SESSIONS_PATH="${SESSIONS_PATH:-$(pwd)/storage/sessions}"
 export PYTHONPATH="$(pwd)/worker"
+# Where a real account's picture budget is counted across restarts; a mock spends none.
+if [ "$PROVIDER_MODE" = "real" ]; then
+  export PACING_PATH="${PACING_PATH:-$(dirname "$MEDIA_PATH")}"
+fi
 
 mkdir -p "$MEDIA_PATH" "$SESSIONS_PATH"
 

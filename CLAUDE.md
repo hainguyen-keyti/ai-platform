@@ -17,6 +17,7 @@ On Windows every command below runs inside WSL, from the project folder.
 Install: docker compose build
 Run (the providers in .env's PROVIDERS, chatgpt,grok,gemini): docker compose up -d && ./scripts/run-worker.sh
 Stop: docker compose down
+The real worker as a service (installed once, README step 10): systemctl --user start|stop|restart|status aip-worker
 Log in a provider: ~/cloakbrowser-env/bin/python scripts/login_provider.py <chatgpt|grok|gemini>
 Quick gate: python3 acceptance.py
 Full gate: ./scripts/full-gate.sh

@@ -96,6 +96,7 @@ CHECKS = (
     "health shows code version and pacing",
     "the provider's error banner is recognised by shape",
     "grok settles on words or a picture, never on an empty turn",
+    "a real account's picture budget outlives the worker",
     "an api key is shown once, listed without its secret, stored as a hash, and revoked",
     "an api key works only on /v1/images, and a login token not there",
     "a person keeps at most ten live api keys",
@@ -1260,6 +1261,17 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
     else:
         c["grok settles on words or a picture, never on an empty turn"].failed(
             "exit {} {}".format(settle.returncode, (summary or (lines[-1] if lines else ""))[:110]))
+
+    pacing = subprocess.run([python, str(ROOT / "tests" / "test_worker_pacing.py")],
+                            capture_output=True, text=True, cwd=str(ROOT))
+    lines = [l for l in ((pacing.stdout or "") + (pacing.stderr or "")).splitlines() if l.strip()]
+    summary = next((l for l in reversed(lines) if "PASSED" in l), "")
+    counted = re.match(r"(\d+)/(\d+) PASSED", summary)
+    if pacing.returncode == 0 and counted and counted.group(1) == counted.group(2) and int(counted.group(2)) >= 8:
+        c["a real account's picture budget outlives the worker"].passed(summary)
+    else:
+        c["a real account's picture budget outlives the worker"].failed(
+            "exit {} {}".format(pacing.returncode, (summary or (lines[-1] if lines else ""))[:110]))
 
     status, body = http("GET", api + "/health")
     if status == 200 and isinstance(body, dict) and body.get("status") == "ok":

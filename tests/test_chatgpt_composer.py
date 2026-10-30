@@ -463,6 +463,8 @@ class DrawingPage(Page):
         nodes.append(node("u1", "user", "text", self.sent_at, text="a prompt"))
         if self.reached(self.tool_after):
             edit = ('{"image_paths": ["' + self.EARLIER_COPY + '"]}') if self.earlier == "edited picture" else "{}"
+            if self.saved_copy == "inputs":
+                edit = '{"referenced_image_ids": ["/mnt/data/one-reference.webp", "/mnt/data/another-reference.webp"]}'
             nodes += [node("a1", "assistant", "code", self.sent_at + self.tool_after - 1, end_turn=False, text=edit),
                       node("t1", "tool", self.tool_kind, self.sent_at + self.tool_after,
                            status=done if self.reached(self.finished_after) else "in_progress")]
@@ -977,6 +979,12 @@ def main():
     said, pictures, text, took = draw_on(page, stored=b"info")
     record("a reference picture of an earlier turn, already in the store, is not this turn's picture",
            said == "success" and pictures == 1, "{} with {} file(s)".format(said, pictures))
+
+    page = DrawingPage(clock, tool_after=22, words_after=27, words_text="", saved_copy="inputs")
+    said, pictures, text, took = draw_on(page)
+    record("a drawing turn does not fetch the reference pictures its image call names as input",
+           said == "success" and pictures == 1 and page.sandbox_reads == [DrawingPage.COPY],
+           "{} with {} picture(s), sandbox reads {}".format(said, pictures, page.sandbox_reads))
 
     page = DrawingPage(clock, tool_after=22, words_after=27, words_text="", saved_copy="twice")
     said, pictures, text, took = draw_on(page)

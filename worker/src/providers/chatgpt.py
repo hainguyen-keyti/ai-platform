@@ -727,10 +727,13 @@ class ChatGPTProvider(BaseProvider):
         # output also names every scratch file it wrote along the way (measured:
         # the two empty text files inside a zip came back as three downloads).
         # Prefer the final message, fall back to everything only when it names
-        # nothing.
+        # nothing. In a turn that drew, the assistant's own nodes hold the image tool's input (measured
+        # 2026-10-30: all 18 reference pictures of the thread, by sandbox names); only the tool's output
+        # names what it made.
         preferred = SANDBOX_PATH.findall(answers[-1]["text"] or "")
+        drew = any(self._drew(n) for n in fresh)
         candidates = preferred or SANDBOX_PATH.findall(
-            "\n".join(n["text"] for n in fresh if n["text"]))
+            "\n".join(n["text"] for n in fresh if n["text"] and (not drew or n["role"] == "tool")))
         paths = []
         for match in candidates:
             if (match not in paths and PurePosixPath(match).name not in skip_names

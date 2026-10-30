@@ -205,6 +205,21 @@ The worker serves the providers in `PROVIDERS`, in real mode (`PROVIDER_MODE=moc
 replies). Open http://localhost:5173 and sign in (step 7). Stop with `docker compose down` and
 Ctrl-C on the worker.
 
+To keep the real worker up without a terminal open, make it a service of WSL's systemd:
+
+```bash
+./scripts/install-worker-service.sh 8010 chatgpt,grok
+systemctl --user start aip-worker
+```
+
+Port and providers are optional (8000 and `.env`'s `PROVIDERS`). It comes back after a crash and when
+WSL starts, and logs to `~/.cache/ai-platform/host-worker-real.log`. Before a login or a probe that
+needs the session, `systemctl --user stop aip-worker`. Code changes reach it with
+`systemctl --user restart aip-worker`.
+
+The picture budget's count is kept in `storage/pacing-<provider>.json`, so a restart does not give it
+back.
+
 ## 11. MCP server for ChatGPT pictures
 
 `mcp_server/chatgpt_images.py` lets an agent (Claude Code, Claude Desktop, any MCP client) make
