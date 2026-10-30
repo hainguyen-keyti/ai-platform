@@ -63,6 +63,11 @@ is. So this read already shows the new day's balance.
 
 ## 1. Send a request
 
+**One conversation per key.** Every request of a key goes into that key's own conversation, and so
+into one provider thread, for the day (UTC). The provider sees the key's earlier pictures of the
+day. A new day, another provider and another key each start their own. The status answer names it
+as `conversation_id`, and it shows on the web as "API key <name>, <provider>, <day>".
+
 `POST /v1/images`, as `multipart/form-data`:
 
 | Field | Required | What |
@@ -103,6 +108,7 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/5f0
   "id": "5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a",
   "provider": "chatgpt",
   "continued_from": null,
+  "conversation_id": "0c1d2e3f4a5b4c6d8e9f0a1b2c3d4e5f",
   "status": "done",
   "text": "Here is the fox at night.",
   "error": null,

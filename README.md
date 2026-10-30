@@ -214,7 +214,8 @@ calls the platform's image API (`docs/api-v1-images.md`) with your own API key. 
 - `generate_image(prompt, reference_path=None, save_dir=None, wait_seconds=420, preview=True)`:
   sends the prompt (and a PNG, JPEG or WEBP reference picture, if given), waits for ChatGPT (about a
   minute), saves every picture it made and answers with the files' paths. A request still running
-  when the wait ends answers with its id. `continue_from=<request id>` changes a picture already made
+  when the wait ends answers with its id. Every request of one key goes into that key's own
+  ChatGPT thread for the day (UTC). `continue_from=<request id>` changes a picture already made
   ("the same, at night"): the prompt goes into the ChatGPT thread that made it, so the picture is
   not sent back. `reference_paths=[…]` sends up to 4 reference pictures in order ("the character of
   the first in the scene of the second"), all together under 10 MB.

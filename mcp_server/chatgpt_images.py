@@ -72,7 +72,9 @@ mcp = MCPServer("aip-chatgpt-images", instructions=(
     "prompts for a set; each answers with the saved files' paths and a small preview of each picture. "
     "A picture takes about a minute, and ChatGPT makes one at a time. If a request is still running, "
     "call get_image with its request id later. To change a picture already made, pass its request id "
-    "as continue_from rather than sending the picture back. account_status says the credits left before a set; "
+    "as continue_from rather than sending the picture back. Every request of one API key goes into that "
+    "key's own ChatGPT thread for the day, so ChatGPT sees the key's earlier pictures of the day. "
+    "account_status says the credits left before a set; "
     "cancel_image cancels a request sent by mistake."))
 
 
@@ -86,12 +88,14 @@ class Picture(TypedDict):
 
 
 class Answer(TypedDict):
-    """A request: done with its pictures, or still queued or running (then call get_image later)."""
+    """A request: done with its pictures, or still queued or running (then call get_image later). The
+    conversation is the key's for the day: every request of this key goes into the same ChatGPT thread."""
     request_id: str
     status: str
     pictures: List[Picture]
     text: str
     message: str
+    conversation_id: Optional[str]
 
 
 class SetRequest(TypedDict):
@@ -301,7 +305,8 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
             message = "ChatGPT made {} picture(s) for request {}, saved as:\n{}{}".format(
                 len(saved), request_id, "\n".join(listed(saved, notes)), words)
             return answered(message, Answer(request_id=request_id, status="done", pictures=saved,
-                                            text=state.get("text") or "", message=message), shown)
+                                            text=state.get("text") or "", message=message,
+                                            conversation_id=state.get("conversation_id")), shown)
         if state.get("status") in ("failed", "cancelled"):
             raise ToolError("request {} {}: {} (the credit was given back)".format(
                 request_id, state["status"], state.get("error") or "no reason given"))
@@ -310,7 +315,8 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
             message = "Request {} is still {} after {:.0f}s: {}.".format(
                 request_id, state.get("status"), waited, later(request_id))
             return answered(message, Answer(request_id=request_id, status=state.get("status") or "running",
-                                            pictures=[], text="", message=message), [])
+                                            pictures=[], text="", message=message,
+                                            conversation_id=state.get("conversation_id")), [])
         if ctx is not None:
             await ctx.report_progress(min(waited, wait), wait, message="ChatGPT is {}".format(state.get("status")))
         await anyio.sleep(POLL_SECONDS)

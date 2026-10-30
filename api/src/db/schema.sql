@@ -124,6 +124,16 @@ CREATE TABLE IF NOT EXISTS api_keys (
     revoked_at   TEXT
 );
 
+-- The conversation, and so the provider thread, every /v1 request of a key goes into, per provider, for
+-- one UTC day (issue #26). A new day, or a conversation the person deleted, starts a new one.
+CREATE TABLE IF NOT EXISTS api_key_conversations (
+    key_id          TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    provider        TEXT NOT NULL,
+    day             TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    PRIMARY KEY (key_id, provider)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tombstones_open      ON thread_tombstones(deleted_at, claimed_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_token       ON sessions(token);
 CREATE INDEX IF NOT EXISTS idx_conversations_user   ON conversations(user_id, updated_at DESC);

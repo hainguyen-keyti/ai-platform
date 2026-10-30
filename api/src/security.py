@@ -101,6 +101,8 @@ def api_key_user(authorization: str = Header(default="")) -> dict:
             user = refill_if_due(conn, user)
     if not user:
         raise HTTPException(status_code=401, detail="unknown user")
+    # Which key it was, for the key's own conversation (#26); never shown to the caller.
+    user["api_key_id"] = found["id"]
     return user
 
 

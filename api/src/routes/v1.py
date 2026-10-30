@@ -123,6 +123,34 @@ def _image_request(user_id: str, request_id: str) -> dict:
     return job
 
 
+def _key_conversation(user: dict, provider: str) -> str:
+    """The conversation every /v1 request of this key on this provider goes into today (issue #26):
+    one provider thread per key a day. Made on the key's first request of a UTC day, or when the person
+    deleted the one it had; two keys never share one."""
+    day = today()
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            kept = one(conn, "SELECT k.day, k.conversation_id FROM api_key_conversations k"
+                             " JOIN conversations c ON c.id = k.conversation_id AND c.user_id = ?"
+                             " WHERE k.key_id = ? AND k.provider = ?", (user["id"], user["api_key_id"], provider))
+            if kept and kept["day"] == day:
+                conn.execute("COMMIT")
+                return kept["conversation_id"]
+            named = one(conn, "SELECT name FROM api_keys WHERE id = ?", (user["api_key_id"],)) or {}
+            conversation_id = uuid.uuid4().hex
+            conn.execute("INSERT INTO conversations (id, user_id, provider, title) VALUES (?, ?, ?, ?)",
+                         (conversation_id, user["id"], provider,
+                          "API key {}, {}, {}".format(named.get("name") or "", provider, day)[:80]))
+            conn.execute("INSERT OR REPLACE INTO api_key_conversations (key_id, provider, day, conversation_id)"
+                         " VALUES (?, ?, ?, ?)", (user["api_key_id"], provider, day, conversation_id))
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return conversation_id
+
+
 @router.get("/providers")
 def providers(user: dict = Depends(api_key_user)):
     """Which providers a worker serves now, and what each does for /v1/images (issue #16)."""
@@ -174,7 +202,8 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[List[Uploa
             raise HTTPException(status_code=409, detail="request {} was made by {}; continue it with {}".format(
                 continue_from, earlier["provider"], earlier["provider"]))
         conversation_id = earlier["conversation_id"]
-    # Every picture is checked before any is kept.
+    # Every picture is checked before any is kept; the key's conversation is found only after, so a
+    # refused picture opens none.
     uploads, kept = [], []
     for given in images:
         picture = given.file.read(MAX_PICTURE_BYTES + 1)
@@ -191,14 +220,16 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[List[Uploa
         uploads.append({"filename": filename, "picture": picture,
                         "metadata": {"source": "upload", "size": len(picture), "width": width, "height": height,
                                      "name": (given.filename or "")[:120]}})
+    payload = {"prompt": prompt, "via": "v1"}
+    if conversation_id:
+        payload["continued_from"] = continue_from
+    else:
+        conversation_id = _key_conversation(user, provider)
     try:
         for upload in uploads:
             path = settings.media_path / upload["filename"]
             path.write_bytes(upload.pop("picture"))
             kept.append(path)
-        payload = {"prompt": prompt, "via": "v1"}
-        if conversation_id:
-            payload["continued_from"] = continue_from
         created = create_job(user=user, provider=provider, feature="image", payload=payload,
                              conversation_id=conversation_id,
                              user_message="Generate an image: {}".format(prompt), title=prompt, upload=uploads)
@@ -235,6 +266,7 @@ def image_status(request_id: str, user: dict = Depends(api_key_user)):
         "id": job["id"],
         "provider": job["provider"],
         "continued_from": job["continued_from"],
+        "conversation_id": job["conversation_id"],
         "status": STATUSES.get(job["status"], job["status"]),
         "text": result.get("text") or "",
         "error": job["error"],

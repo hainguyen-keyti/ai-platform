@@ -113,6 +113,7 @@ CHECKS = (
     "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner",
     "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise",
     "a /v1 chatgpt request carries up to four reference pictures in order, and more is refused uncharged",
+    "a /v1 key's requests share one conversation and thread a day, apart from other keys and providers",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a done result with nothing in it fails and refunds",
     "a running job whose worker died is failed and refunded by its owner's next poll",
@@ -127,6 +128,7 @@ V1_JOB_CHECKS = (
     "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner",
     "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise",
     "a /v1 chatgpt request carries up to four reference pictures in order, and more is refused uncharged",
+    "a /v1 key's requests share one conversation and thread a day, apart from other keys and providers",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
 )
@@ -894,8 +896,9 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
         job = http("GET", "{}/jobs/{}".format(api, prid), token=token)[1] or {} if prid else {}
         conv = (http("GET", "{}/conversations/{}".format(api, job.get("conversation_id")), token=token)[1]
                 or {}) if job.get("conversation_id") else {}
+        # The key's conversation holds its earlier requests too (#26): this request's message is the newest.
         asked = [m for m in conv.get("messages") or [] if m.get("role") == "user"]
-        shown = (asked[0].get("media") or []) if asked else []
+        shown = (asked[-1].get("media") or []) if asked else []
         kept = http_bytes("{}/media/{}/file".format(api, shown[0]["id"]), token)[1] if shown else b""
         if shown and upload_id is None:
             upload_id, picture_rid = shown[0]["id"], prid
@@ -1109,9 +1112,10 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
     mjob = http("GET", "{}/jobs/{}".format(api, mid), token=token)[1] or {} if mid else {}
     mconv = (http("GET", "{}/conversations/{}".format(api, mjob.get("conversation_id")), token=token)[1]
              or {}) if mjob.get("conversation_id") else {}
+    # The key's conversation holds its earlier requests too (#26): this request's message is the newest.
     masked = [m for m in mconv.get("messages") or [] if m.get("role") == "user"]
     shown = [http_bytes("{}/media/{}/file".format(api, m["id"]), token)[1]
-             for m in ((masked[0].get("media") or []) if masked else [])]
+             for m in ((masked[-1].get("media") or []) if masked else [])]
     q1, files_before = quota_of(token), files_now()
     big = png_head(8, 8) + b"\x00" * (3 * 1024 * 1024)
     refused = {"five pictures": (with_pictures(5)[0], 400),
@@ -1130,6 +1134,44 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
                               mstatus, msent if mstatus != 202 else "", mdone.get("status"), handed, wanted_refs,
                               len(shown), shown == pics[:4], q0, q1, q2, wrong,
                               sorted(files_after - files_before)[:3]))
+
+    # Issue #26: every request of one key goes into that key's conversation, and so its thread, for
+    # the day; another key, another day and another provider each get their own.
+    per_key = "a /v1 key's requests share one conversation and thread a day, apart from other keys and providers"
+
+    def sent_with(key, provider=None):
+        fields = {"prompt": "a square for the key's thread"}
+        if provider:
+            fields["provider"] = provider
+        sstatus, sbody = http_form(api + "/v1/images", fields, token=key)
+        request_id = sbody.get("id") if sstatus == 202 and isinstance(sbody, dict) else None
+        state = poll_v1(request_id, key) if request_id else {}
+        return request_id, conversation_of(request_id), thread_in(state), state.get("conversation_id")
+
+    k1 = new_key(token, "thread key one")[1]
+    k2 = new_key(token, "thread key two")[1]
+    one_a, one_b = sent_with(k1.get("key")), sent_with(k1.get("key"))
+    two = sent_with(k2.get("key"))
+    on_grok = sent_with(k1.get("key"), provider="grok")
+    try:
+        with sqlite3.connect(db_path) as conn:
+            moved = conn.execute("UPDATE api_key_conversations SET day = '2000-01-01' WHERE key_id = ?",
+                                 (k1.get("id"),)).rowcount
+    except sqlite3.Error as exc:
+        moved = "db: {}".format(exc)
+    next_day = sent_with(k1.get("key"))
+    later = sent_with(k1.get("key"))
+    if (one_a[1] and one_a[1] == one_b[1] and one_a[2] and one_a[2] == one_b[2] and one_a[3] == one_a[1]
+            and two[1] and two[1] != one_a[1] and on_grok[1] and on_grok[1] not in (one_a[1], two[1])
+            and moved and next_day[1] and next_day[1] not in (one_a[1], two[1], on_grok[1])
+            and later[1] == next_day[1]):
+        c[per_key].passed("one key: two requests in conversation {}… and thread {}; another key, grok and the "
+                          "next day each their own, the next day's kept for the day".format(
+                              one_a[1][:8], one_a[2]))
+    else:
+        c[per_key].failed("key one {} then {}; key two {}; grok {}; day moved {}; next day {} then {} "
+                          "(request, conversation, thread, answered conversation)".format(
+                              one_a, one_b, two, on_grok, moved, next_day, later))
 
     # The documented example, run as a person would: the key in the environment, never on the line.
     example = "the example script sends a prompt and a picture, waits, and saves the picture made"
