@@ -226,8 +226,9 @@ calls the platform's image API (`docs/api-v1-images.md`) with your own API key. 
   refusal when sending (no credit left, say) stops sending the rest, and the answer says which
   prompts were not sent.
 - `get_image(request_id, save_dir=None, preview=True)`: collects such a request later.
-- `account_status()`: the credits left today, when they come back, and whether ChatGPT is served
-  right now; worth asking before a set.
+- `account_status()`: the credits left today, when they come back, whether ChatGPT is served right
+  now, and how much of the worker's picture budget is used (40 in three hours by default,
+  `IMAGE_BUDGET_3H`; past it requests wait in the queue); worth asking before a set.
 - `cancel_image(request_id)`: cancels a request sent by mistake, queued or running, and gives its
   credit back.
 

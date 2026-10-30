@@ -100,7 +100,11 @@ CREATE TABLE IF NOT EXISTS thread_tombstones (
 -- queued behind a five minute picture is never mistaken for an orphan.
 CREATE TABLE IF NOT EXISTS worker_pings (
     provider  TEXT PRIMARY KEY,
-    last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+    last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+    -- What the worker last said of its picture budget; budget_free_at only while it is spent.
+    images_3h      INTEGER,
+    image_budget   INTEGER,
+    budget_free_at TEXT
 );
 
 -- A provider whose account needs its admin (signed out, memory on) is held out until `until`: not

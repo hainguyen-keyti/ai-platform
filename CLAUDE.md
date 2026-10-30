@@ -24,6 +24,7 @@ Provider smoke: python3 acceptance.py --real --keep --provider <chatgpt|grok|gem
 Real journey: INVITE_CODE=... ~/cloakbrowser-env/bin/python tests/ui_journey.py
 Site probe: ~/cloakbrowser-env/bin/python tests/provider_probe.py all
 MCP server test (its own venv, README step 11): ~/.venvs/aip-mcp/bin/python tests/test_mcp_chatgpt_images.py
+MCP stress (its own temp stack with a mock worker, about 3 minutes, in no gate): ~/.venvs/aip-mcp/bin/python tests/stress_mcp.py
 Owner's cleanup (dry run; --yes deletes, owner only): ~/cloakbrowser-env/bin/python scripts/purge_test_residue.py <list.json>
 ```
 

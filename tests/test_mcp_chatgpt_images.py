@@ -58,6 +58,7 @@ class FakeV1:
 
     def __init__(self):
         self.posts, self.requests, self.served = [], {}, True
+        self.account_broken = self.providers_broken = False
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -104,24 +105,49 @@ class FakeV1:
                     return self.answer(401, {"detail": "invalid api key"})
                 parts = self.path.strip("/").split("/")
                 if self.path == "/v1/account":
+                    if fake.account_broken:
+                        return self.answer(500, {"detail": "account broken"})
                     return self.answer(200, FakeV1.ACCOUNT)
                 if self.path == "/v1/providers":
+                    if fake.providers_broken:
+                        return self.answer(500, {"detail": "providers broken"})
                     return self.answer(200, {"providers": [
                         {"name": "chatgpt", "served": fake.served, "makes_pictures": True, "takes_reference": True},
                         {"name": "grok", "served": True, "makes_pictures": True, "takes_reference": False}]})
                 if len(parts) == 5 and parts[3] == "files":
-                    shown = fake.requests.get(parts[2], {}).get("prompt", "")
+                    held = fake.requests.get(parts[2], {})
+                    shown = held.get("prompt", "")
+                    if "nofile" in shown:
+                        return self.answer(404, {"detail": "picture not found"})
+                    if "flakyfile" in shown and held.get("file_tries", 0) < 3:
+                        held["file_tries"] = held.get("file_tries", 0) + 1
+                        return self.answer(500, {"detail": "not yet"})
                     return self.answer(200, BROKEN if "broken" in shown else PICTURE, ctype="image/png")
                 rid = parts[2] if len(parts) == 3 else None
                 if rid not in fake.requests:
                     return self.answer(404, {"detail": "image request not found"})
+                held = fake.requests[rid]
+                if "vanishes" in held["prompt"]:
+                    return self.answer(404, {"detail": "image request not found"})
+                if "flakyread" in held["prompt"] and held.get("read_tries", 0) < 3:
+                    held["read_tries"] = held.get("read_tries", 0) + 1
+                    return self.answer(503, {"detail": "the api is restarting"})
+                if "alwaysdown" in held["prompt"]:
+                    return self.answer(502, {"detail": "the api is down"})
                 self.answer(200, fake.status(rid))
 
             def log_message(self, *args):
                 pass
 
+        self.handler = Handler
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.url = "http://127.0.0.1:{}".format(self.server.server_address[1])
+        self.port = self.server.server_address[1]
+        self.url = "http://127.0.0.1:{}".format(self.port)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def restart(self):
+        """Back on the same port after a shutdown, as the api after a restart."""
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", self.port), self.handler)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def status(self, rid, read=True):
@@ -137,6 +163,8 @@ class FakeV1:
                         finished_at="2026-10-29 10:05:00")
         elif ("slow" in state["prompt"] and not state["finished"]) or state["reads"] < 2:
             body["status"] = "running"
+        elif "noimage" in state["prompt"]:
+            body.update(status="done", text="I could not draw that.", finished_at="2026-10-29 10:01:04")
         else:
             body.update(status="done", text="Here it is.", finished_at="2026-10-29 10:01:04", images=[{
                 "id": "m1", "url": "/v1/images/{}/files/m1".format(rid), "content_type": "image/png",
@@ -422,6 +450,66 @@ async def run(fake, work):
         record("cancel_image on an unknown request is a tool error with the platform's reason",
                result.is_error and "404" in said(result) and "image request not found" in said(result),
                "said {!r}".format(said(result)[:200]))
+
+    # The branches coverage showed no test had reached (2026-10-30), and the platform not answering.
+    async with Client(server_params(fake.url)) as client:
+        async def picture(prompt, **more):
+            return await client.call_tool("generate_image", dict({"prompt": prompt, "save_dir": str(work / "errs")},
+                                                                 **more), read_timeout_seconds=60)
+
+        got = await picture("flakyread comes back")
+        record("a status read answering 503 for a while is waited through, and the picture is saved",
+               not got.is_error and (got.structured_content or {}).get("status") == "done",
+               "error {} said {!r}".format(got.is_error, said(got)[:140]))
+        got = await picture("flakyfile comes back")
+        record("a download answering 500 for a while is tried again, and the picture is saved",
+               not got.is_error and (got.structured_content or {}).get("status") == "done",
+               "error {} said {!r}".format(got.is_error, said(got)[:140]))
+        got = await picture("alwaysdown never answers", wait_seconds=1)
+        rid = fake.rid("alwaysdown never answers") or ""
+        record("a platform that stays down ends the wait with the request's id to collect later, and is no error",
+               not got.is_error and rid and rid in said(got) and "get_image" in said(got)
+               and "does not answer" in said(got) and (got.structured_content or {}).get("request_id") == rid,
+               "error {} said {!r}".format(got.is_error, said(got)[:200]))
+        got = await picture("nofile is gone")
+        record("a picture that answers 404 on download is a tool error naming it",
+               got.is_error and "could not be downloaded" in said(got) and "404" in said(got), said(got)[:160])
+        got = await picture("noimage at all")
+        record("a request done with no picture is a tool error carrying what ChatGPT said",
+               got.is_error and "no picture came back" in said(got) and "I could not draw that" in said(got),
+               said(got)[:160])
+        got = await picture("vanishes after sending")
+        record("a request that answers 404 when read is a tool error naming it",
+               got.is_error and "could not be read" in said(got) and "404" in said(got), said(got)[:160])
+
+        prompts = ["set vanishes", "set nofile", "set noimage", "set flakyread", "set flakyfile", "set fine"]
+        got = await client.call_tool("generate_images", {"prompts": prompts, "save_dir": str(work / "errset")},
+                                     read_timeout_seconds=60)
+        fates = [i.get("status") for i in (got.structured_content or {}).get("requests") or []]
+        record("in a set, each failure stays its own prompt's: the rest are saved, the waits waited through",
+               not got.is_error and fates == ["unread", "unsaved", "unsaved", "done", "done", "done"]
+               and "get_image" in said(got), "fates {} said {!r}".format(fates, said(got)[:160]))
+
+        before = len(fake.posts)
+        fake.server.shutdown()
+        fake.server.server_close()
+        got = await client.call_tool("generate_images", {"prompts": ["nobody is there", "nor here"],
+                                                         "save_dir": str(work / "down")}, read_timeout_seconds=30)
+        record("a set whose first prompt cannot reach the platform is a tool error saying so",
+               got.is_error and "could not be reached" in said(got), said(got)[:160])
+        fake.restart()
+
+        got = await client.call_tool("generate_image", {"prompt": "still fine", "save_dir": str(work / "again")},
+                                     read_timeout_seconds=30)
+        fake.account_broken = True
+        broken_account = await client.call_tool("account_status", {}, read_timeout_seconds=30)
+        fake.account_broken, fake.providers_broken = False, True
+        broken_providers = await client.call_tool("account_status", {}, read_timeout_seconds=30)
+        fake.providers_broken = False
+        record("account_status names what it could not read",
+               not got.is_error and broken_account.is_error and "account broken" in said(broken_account)
+               and broken_providers.is_error and "providers broken" in said(broken_providers),
+               "{!r} {!r}".format(said(broken_account)[:80], said(broken_providers)[:80]))
 
     before = len(fake.posts)
     async with Client(server_params(fake.url, key=None)) as client:

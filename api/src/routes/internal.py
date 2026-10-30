@@ -10,12 +10,12 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 
 @router.post("/workers/ping")
 def ping(body: WorkerClaim = WorkerClaim(), _: bool = Depends(require_worker)):
-    return note_workers(body.providers)
+    return note_workers(body.providers, body.pacing.model_dump() if body.pacing else None)
 
 
 @router.post("/jobs/claim")
 def claim(body: WorkerClaim = WorkerClaim(), _: bool = Depends(require_worker)):
-    job = claim_next_job(body.providers)
+    job = claim_next_job(body.providers, body.pacing.model_dump() if body.pacing else None)
     if job is None:
         return Response(status_code=204)
     return job

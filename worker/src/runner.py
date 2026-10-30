@@ -75,8 +75,7 @@ class Runner(threading.Thread):
                     # Pausing on purpose is not being dead: say so, or the api
                     # fails the jobs waiting for this provider as unserved.
                     try:
-                        client.post("/internal/workers/ping",
-                                    json={"providers": [self.provider]})
+                        client.post("/internal/workers/ping", json=self._ping_body())
                     except Exception:
                         pass
                     # A thread deletion is one call, not a turn: a pacing gap
@@ -106,8 +105,13 @@ class Runner(threading.Thread):
                 finally:
                     self.current_job = None
 
+    def _ping_body(self):
+        """Who this runner serves, and what it has spent of its picture budget."""
+        pacing = self.pool.pacing_report(self.provider)
+        return {"providers": [self.provider], "pacing": pacing or None}
+
     def _claim(self, client):
-        response = client.post("/internal/jobs/claim", json={"providers": [self.provider]})
+        response = client.post("/internal/jobs/claim", json=self._ping_body())
         if response.status_code == 204:
             return None
         response.raise_for_status()

@@ -215,13 +215,20 @@ def _sweep_stranded(conn):
             )
 
 
-def _note_worker(conn, providers):
+def _note_worker(conn, providers, pacing=None):
     for name in providers:
         conn.execute(
             "INSERT INTO worker_pings (provider, last_seen) VALUES (?, datetime('now'))"
             " ON CONFLICT(provider) DO UPDATE SET last_seen = datetime('now')",
             (name,),
         )
+        if pacing:
+            free_in = pacing.get("budget_free_in") or 0
+            conn.execute(
+                "UPDATE worker_pings SET images_3h = ?, image_budget = ?,"
+                " budget_free_at = CASE WHEN ? > 0 THEN datetime('now', ?) END WHERE provider = ?",
+                (pacing["images_last_3h"], pacing["image_budget"], free_in, "+{} seconds".format(int(free_in)), name),
+            )
 
 
 def _held(conn, provider):
@@ -272,6 +279,19 @@ def provider_status():
                               for name in PROVIDERS]}
 
 
+def provider_load():
+    """Per provider: the requests waiting, and what its worker last said of its picture budget. A job
+    behind a spent budget just waits (40 pictures in three hours by default), and looks served."""
+    with db() as conn:
+        pings = {row["provider"]: row for row in many(conn, "SELECT * FROM worker_pings")}
+        waiting = {row["provider"]: row["n"] for row in many(
+            conn, "SELECT provider, COUNT(*) AS n FROM jobs WHERE status = 'pending' GROUP BY provider")}
+    return {name: {"waiting": waiting.get(name, 0),
+                   "pictures_last_3h": (pings.get(name) or {}).get("images_3h"),
+                   "picture_budget": (pings.get(name) or {}).get("image_budget"),
+                   "budget_free_at": (pings.get(name) or {}).get("budget_free_at")} for name in PROVIDERS}
+
+
 def _sweep_unserved(conn, job_id=None):
     """Fail and refund pending jobs whose provider no worker has asked for.
 
@@ -299,7 +319,7 @@ def _sweep_unserved(conn, job_id=None):
             _refund(conn, job["user_id"])
 
 
-def note_workers(providers):
+def note_workers(providers, pacing=None):
     """Record that a worker serving these providers is alive right now.
 
     Claiming is not the only proof of life: a runner deliberately pausing
@@ -309,11 +329,11 @@ def note_workers(providers):
     if not serves:
         return {"noted": []}
     with db() as conn:
-        _note_worker(conn, serves)
+        _note_worker(conn, serves, pacing)
     return {"noted": serves}
 
 
-def claim_next_job(providers=None):
+def claim_next_job(providers=None, pacing=None):
     lease = "+{} seconds".format(settings.job_lease_seconds)
     serves = [p for p in (providers or []) if p in PROVIDERS]
     if not serves:
@@ -323,7 +343,7 @@ def claim_next_job(providers=None):
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            _note_worker(conn, serves)
+            _note_worker(conn, serves, pacing)
             _sweep_stranded(conn)
             _sweep_unserved(conn)
             where = "j.status = 'pending' AND j.provider IN ({})".format(

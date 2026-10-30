@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 
 from src.config import settings
 from src.db.client import db, many, one
-from src.jobs import cancel_job, create_job, get_job, provider_status
+from src.jobs import cancel_job, create_job, get_job, provider_load, provider_status
 from src.models import FEATURES, MAX_REFERENCES, PROVIDERS, TAKES_REFERENCE
 from src.quota import today
 from src.routes.media import CONTENT_TYPES, _safe_path
@@ -155,9 +155,10 @@ def _key_conversation(user: dict, provider: str) -> str:
 def providers(user: dict = Depends(api_key_user)):
     """Which providers a worker serves now, and what each does for /v1/images (issue #16)."""
     served = {p["name"]: p["served"] for p in provider_status()["providers"]}
-    return {"providers": [{"name": name, "served": served.get(name, False),
-                           "makes_pictures": "image" in FEATURES[name],
-                           "takes_reference": name in TAKES_REFERENCE} for name in PROVIDERS]}
+    load = provider_load()
+    return {"providers": [dict({"name": name, "served": served.get(name, False),
+                                "makes_pictures": "image" in FEATURES[name],
+                                "takes_reference": name in TAKES_REFERENCE}, **load[name]) for name in PROVIDERS]}
 
 
 @router.get("/account")

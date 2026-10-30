@@ -45,6 +45,12 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/providers
 
 A provider that is not `served` answers a request with `503` until a worker serves it again.
 
+Each entry also says how busy it is: `waiting`, the requests in its queue; `pictures_last_3h` and
+`picture_budget`, what its worker has made of the pictures it allows itself in three hours (40 by
+default, `IMAGE_BUDGET_3H`, so an account is not driven into a wall); and `budget_free_at` (UTC), set
+only while that budget is spent. Past the budget a request is taken and charged but waits in the
+queue until then; it still counts as `served`. The count starts again when the worker restarts.
+
 ## Your credits
 
 `GET /v1/account` says how many credits are left today, the daily allowance, and when the balance

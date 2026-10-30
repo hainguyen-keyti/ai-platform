@@ -139,6 +139,15 @@ class BrowserPool:
             return health.hold_seconds() if health else 0.0
         return max([h.hold_seconds() for h in self._health.values()] or [0.0])
 
+    def pacing_report(self, provider: str) -> dict:
+        """What this provider has spent of its picture budget, for the api to tell whoever asks."""
+        health = self._health.get(provider)
+        if health is None:
+            return {}
+        used, budget = health.images_in_window(), health.pacing["image_budget"]
+        free_in = health.image_times[0] + IMAGE_WINDOW_SECONDS - time.time() if budget and used >= budget else 0
+        return {"images_last_3h": used, "image_budget": int(budget), "budget_free_in": max(0.0, free_in)}
+
     def cooling_down(self, provider: str) -> bool:
         """An error cooldown, as opposed to a pacing gap: the site is unwell now."""
         health = self._health.get(provider)

@@ -65,6 +65,9 @@ class Pool:
     def can_clean_library(self, provider):
         return False
 
+    def pacing_report(self, provider):
+        return {}
+
 
 def asked_for_tombstone(hold, cooling):
     Client.paths = []

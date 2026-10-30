@@ -43,6 +43,9 @@ def init_db():
             ("jobs", "error_kind", "TEXT"),
             ("users", "quota_daily", "INTEGER NOT NULL DEFAULT 100"),
             ("users", "last_refill_day", "TEXT"),
+            ("worker_pings", "images_3h", "INTEGER"),
+            ("worker_pings", "image_budget", "INTEGER"),
+            ("worker_pings", "budget_free_at", "TEXT"),
         ):
             existing = {row["name"] for row in conn.execute("PRAGMA table_info({})".format(table))}
             if column not in existing:

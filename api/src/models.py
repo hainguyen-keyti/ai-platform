@@ -68,8 +68,16 @@ class WorkerResult(BaseModel):
     thread_url: Optional[str] = Field(default=None, max_length=500)
 
 
+class WorkerPacing(BaseModel):
+    """What a worker's runner has spent of its picture budget, told with each claim and ping."""
+    images_last_3h: int = Field(ge=0)
+    image_budget: int = Field(ge=0)
+    budget_free_in: float = Field(default=0, ge=0)
+
+
 class WorkerClaim(BaseModel):
     providers: list[str] = Field(default_factory=list, max_length=8)
+    pacing: Optional[WorkerPacing] = None
 
 
 class WorkerHeartbeat(BaseModel):

@@ -21,6 +21,7 @@ Issue #17.
 """
 
 import base64
+import http.client
 import io
 import json
 import os
@@ -119,6 +120,10 @@ class Account(TypedDict):
     credits_daily: Optional[int]
     refills_at: str
     chatgpt_served: bool
+    pictures_last_3h: Optional[int]
+    picture_budget: Optional[int]
+    budget_free_at: Optional[str]
+    waiting: int
     message: str
 
 
@@ -160,6 +165,12 @@ def slug(prompt: str) -> str:
     return name or "picture"
 
 
+class Unreachable(ToolError):
+    """The platform did not answer, or answered 5xx. A request already sent is not lost by it: the api
+    restarting (a code reload, Docker, WSL) took a whole set's answer with it, ids and all (stress test,
+    2026-10-30), so whoever is waiting keeps waiting."""
+
+
 def call(method: str, path: str, body: bytes = None, content_type: str = None):
     """(status, body bytes) of one call to the platform with the key; an error status is returned."""
     request = urllib.request.Request(API + path, data=body, method=method,
@@ -171,8 +182,21 @@ def call(method: str, path: str, body: bytes = None, content_type: str = None):
             return response.status, response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
-    except urllib.error.URLError as exc:
-        raise ToolError("the platform at {} could not be reached: {}".format(API, exc.reason))
+    except (OSError, http.client.HTTPException) as exc:
+        raise Unreachable("the platform at {} could not be reached: {}".format(API, getattr(exc, "reason", exc)))
+
+
+def read_state(request_id: str) -> Optional[dict]:
+    """A request's status; None while the platform cannot answer. Anything else it answers is final."""
+    try:
+        status, raw = call("GET", "/v1/images/{}".format(request_id))
+    except Unreachable:
+        return None
+    if status >= 500:
+        return None
+    if status != 200:
+        raise ToolError("request {} could not be read ({}): {}".format(request_id, status, detail(raw)))
+    return json.loads(raw)
 
 
 def detail(raw: bytes) -> str:
@@ -247,6 +271,9 @@ def save(state: dict, folder: Path, prompt: Optional[str], given: List[str], wit
     saved, shown, notes = [], [], []
     for number, picture in enumerate(state.get("images") or [], 1):
         status, blob = call("GET", picture["url"])
+        if status >= 500:
+            raise Unreachable("picture {} of request {} could not be downloaded yet ({})".format(
+                number, state["id"], status))
         if status != 200:
             raise ToolError("picture {} of request {} could not be downloaded ({}): {}".format(
                 number, state["id"], status, detail(blob)))
@@ -294,31 +321,39 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
     """Ask for the request until it ends or `wait` seconds pass; save what a done one made."""
     prompt, given = SENT.get(request_id, (None, []))
     began = time.monotonic()
+    state = None
     while True:
-        status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/images/{}".format(request_id))
-        if status != 200:
-            raise ToolError("request {} could not be read ({}): {}".format(request_id, status, detail(raw)))
-        state = json.loads(raw)
-        if state.get("status") == "done":
-            saved, shown, notes = await anyio.to_thread.run_sync(save, state, folder, prompt, given, with_preview)
-            words = "\nChatGPT said: {}".format(state["text"]) if state.get("text") else ""
-            message = "ChatGPT made {} picture(s) for request {}, saved as:\n{}{}".format(
-                len(saved), request_id, "\n".join(listed(saved, notes)), words)
-            return answered(message, Answer(request_id=request_id, status="done", pictures=saved,
-                                            text=state.get("text") or "", message=message,
-                                            conversation_id=state.get("conversation_id")), shown)
-        if state.get("status") in ("failed", "cancelled"):
+        now = await anyio.to_thread.run_sync(read_state, request_id)
+        # The last status known stands while the platform cannot answer.
+        state, answering = now or state, now is not None
+        if answering and state.get("status") == "done":
+            try:
+                saved, shown, notes = await anyio.to_thread.run_sync(save, state, folder, prompt, given, with_preview)
+            except Unreachable:
+                answering = False
+            else:
+                words = "\nChatGPT said: {}".format(state["text"]) if state.get("text") else ""
+                message = "ChatGPT made {} picture(s) for request {}, saved as:\n{}{}".format(
+                    len(saved), request_id, "\n".join(listed(saved, notes)), words)
+                return answered(message, Answer(request_id=request_id, status="done", pictures=saved,
+                                                text=state.get("text") or "", message=message,
+                                                conversation_id=state.get("conversation_id")), shown)
+        if answering and state.get("status") in ("failed", "cancelled"):
             raise ToolError("request {} {}: {} (the credit was given back)".format(
                 request_id, state["status"], state.get("error") or "no reason given"))
+        known = state or {}
         waited = time.monotonic() - began
         if waited >= wait:
             message = "Request {} is still {} after {:.0f}s: {}.".format(
-                request_id, state.get("status"), waited, later(request_id))
-            return answered(message, Answer(request_id=request_id, status=state.get("status") or "running",
+                request_id, known.get("status") or "not known", waited, later(request_id))
+            if not answering:
+                message = "The platform does not answer just now, so {}".format(message[0].lower() + message[1:])
+            return answered(message, Answer(request_id=request_id, status=known.get("status") or "unknown",
                                             pictures=[], text="", message=message,
-                                            conversation_id=state.get("conversation_id")), [])
+                                            conversation_id=known.get("conversation_id")), [])
         if ctx is not None:
-            await ctx.report_progress(min(waited, wait), wait, message="ChatGPT is {}".format(state.get("status")))
+            await ctx.report_progress(min(waited, wait), wait, message="ChatGPT is {}".format(
+                known.get("status") if answering else "not answering, still waiting"))
         await anyio.sleep(POLL_SECONDS)
 
 
@@ -374,14 +409,19 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
     items = [SetRequest(prompt=prompt, request_id=None, status="not sent", pictures=[], error=None)
              for prompt in prompts]
     for item in items:
-        status, raw = await anyio.to_thread.run_sync(send, item["prompt"], references, continue_from)
+        try:
+            status, raw = await anyio.to_thread.run_sync(send, item["prompt"], references, continue_from)
+        except Unreachable as exc:
+            # Whether this one arrived cannot be told, and those sent before it must not be lost.
+            item.update(status="unknown", error=str(exc))
+            break
         if status != 202:
             item.update(status="refused", error="the platform refused it ({}): {}".format(status, detail(raw)))
             break
         item.update(request_id=json.loads(raw)["id"], status="queued")
         SENT[item["request_id"]] = (item["prompt"], given)
-    if items[0]["status"] == "refused":
-        raise ToolError("the platform refused the set's first prompt, so none was sent: " + items[0]["error"])
+    if items[0]["status"] in ("refused", "unknown"):
+        raise ToolError("the set's first prompt did not go, so none was sent: " + items[0]["error"])
 
     sent = [item for item in items if item["request_id"]]
     wait = max(1, min(int(wait_seconds), MAX_SET_WAIT_SECONDS))
@@ -389,15 +429,19 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
     began = time.monotonic()
     while True:
         for item in [item for item in sent if item["status"] in LIVE]:
-            status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/images/{}".format(item["request_id"]))
-            if status != 200:
-                item.update(status="unread", error="it could not be read ({}): {}".format(status, detail(raw)))
+            try:
+                state = await anyio.to_thread.run_sync(read_state, item["request_id"])
+            except ToolError as exc:
+                item.update(status="unread", error=str(exc))
                 continue
-            state = json.loads(raw)
+            if state is None:
+                continue
             if state.get("status") == "done":
                 try:
                     saved, more, notes[item["request_id"]] = await anyio.to_thread.run_sync(
                         save, state, folder, item["prompt"], given, preview)
+                except Unreachable:
+                    continue
                 except ToolError as exc:
                     item.update(status="unsaved", error=str(exc))
                     continue
@@ -426,7 +470,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
             lines.append(head + "request {}: {}; {}".format(item["request_id"], item["error"],
                                                             later(item["request_id"])))
         elif item["status"] == "not sent":
-            lines.append(head + "not sent, as the platform refused an earlier prompt")
+            lines.append(head + "not sent, as sending stopped at an earlier prompt")
         else:
             lines.append(head + "{}: {}".format(item["status"], item["error"]))
     done = sum(1 for item in items if item["status"] == "done")
@@ -436,8 +480,10 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
 
 @mcp.tool()
 async def account_status() -> Annotated[CallToolResult, Account]:
-    """How many credits are left today and when they come back, and whether ChatGPT is served right now.
-    Worth asking before a set: each request takes one credit, and none is sent while nobody serves ChatGPT."""
+    """How many credits are left today and when they come back, whether ChatGPT is served right now, how
+    much of the worker's picture budget is used (40 pictures in three hours by default; past it requests
+    wait in the queue) and how many requests are waiting. Worth asking before a set: each request takes one
+    credit, and none is sent while nobody serves ChatGPT."""
     needs_key()
     status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/account")
     if status != 200:
@@ -446,12 +492,22 @@ async def account_status() -> Annotated[CallToolResult, Account]:
     status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/providers")
     if status != 200:
         raise ToolError("the providers could not be read ({}): {}".format(status, detail(raw)))
-    served = any(p.get("name") == "chatgpt" and p.get("served") for p in json.loads(raw).get("providers") or [])
+    chatgpt = next((p for p in json.loads(raw).get("providers") or [] if p.get("name") == "chatgpt"), {})
+    served = bool(chatgpt.get("served"))
     message = "{} of {} credits left today; they come back at {} (UTC). ChatGPT is {}.".format(
         account["credits_left"], account.get("credits_daily"), account["refills_at"],
         "served right now" if served else "not served right now, so a request would be refused (503) until it is")
+    used, budget, free_at = chatgpt.get("pictures_last_3h"), chatgpt.get("picture_budget"), chatgpt.get("budget_free_at")
+    if budget:
+        message += " {} of the {} pictures the worker makes in three hours are used.".format(used, budget)
+    if free_at:
+        message += " The budget is spent: requests wait in the queue until about {} (UTC).".format(free_at)
+    if chatgpt.get("waiting"):
+        message += " {} request(s) are waiting.".format(chatgpt["waiting"])
     return answered(message, Account(credits_left=account["credits_left"], credits_daily=account.get("credits_daily"),
-                                     refills_at=account["refills_at"], chatgpt_served=served, message=message), [])
+                                     refills_at=account["refills_at"], chatgpt_served=served, pictures_last_3h=used,
+                                     picture_budget=budget, budget_free_at=free_at,
+                                     waiting=chatgpt.get("waiting") or 0, message=message), [])
 
 
 @mcp.tool()
