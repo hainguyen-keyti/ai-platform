@@ -538,7 +538,7 @@ class ChatGPTProvider(BaseProvider):
         self.memory = "unknown"
         for attempt in range(2):
             if not self._access_token:
-                self._access_token = page.evaluate(SESSION_TOKEN)
+                self._access_token = self._session_token(page, 20)
             if not self._access_token:
                 raise ProviderError("no session token: the provider session is logged out; "
                                     "run scripts/login_provider.py chatgpt")

@@ -628,6 +628,24 @@ def main():
            not gone and "logged out" in said and page.deletions == [],
            "deletions {} said {!r}".format(len(page.deletions), said[:60]))
 
+    # Measured 2026-10-30: a fresh worker's first picture failed with "logged out" at the memory read
+    # that opens the turn (job f9cb16ab); the next job, on the same session, was done.
+    def memory_on(page):
+        try:
+            return provider_on(page)._read_memory(page), ""
+        except chatgpt.ProviderError as exc:
+            return None, str(exc)
+
+    page = Page(clock, has=(), token="token", token_after=2)
+    memory, said = memory_on(page)
+    record("a turn's memory read waits for a session read that answers late",
+           memory is not None and not said, "memory {} after {} reads said {!r}".format(memory, page.token_reads, said[:60]))
+
+    page = Page(clock, has=(), token=None)
+    memory, said = memory_on(page)
+    record("a turn's memory read with no session is still called logged out",
+           memory is None and "logged out" in said, "memory {} said {!r}".format(memory, said[:60]))
+
     # A picture that cannot be taken must not turn a provider error into a worker error.
     page = Page(clock, has=(), token="token", screenshot_fails=True)
     opened, said = open_on(page)
