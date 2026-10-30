@@ -13,6 +13,21 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **The MCP's stress and coverage, 2026-10-30, at f13c54a** (the owner: "cần phải stress test và cover
+  test"). `tests/stress_mcp.py` 16/16 on a mock worker, MCP test 41/41, quick gate 69/69, full gate
+  green. Coverage over the offline suites: MCP server 98% (93 before), v1 91%, jobs 90%, chatgpt driver
+  84%, runner 71%, pool 58%, total 84%; the worker's lines are probably understated, its stack is killed.
+  **Real set, one `generate_images` of 10 prompts through stdio, first job on a fresh worker: 9 done, 1
+  failed**, 684s, 47 to 88s a picture, no Cloudflare check, 9 distinct files, credits 100 to 91.
+- **OPEN, not fixed, the owner's call: the first picture after a worker start can fail with a false
+  "logged out".** Job `f9cb16ab`: `no session token: the provider session is logged out; run
+  scripts/login_provider.py chatgpt`, after 60s of browser start; the next job, 30s later on the same
+  session, was done. It is raised by `_read_memory` (`chatgpt.py` line 543), which reads the token once,
+  where `_session_token(page, 20)` waits for it (measured 2026-09-30: a fresh browser's first read is
+  empty, the token 1.1s later). That cause is inferred from the code and that measure; the job's record
+  names only the raise. The message's advice is harmful: a login would take the session off the worker.
+- One queue: a set of 10 held studio's request `58a596ab` for 10 minutes (11:15:52 to 11:26:08). The
+  picture budget's count resets at a worker restart.
 - #22 done (up to 4 reference pictures), #23 done (health's `storage`, warns from 80%; the owner chose
   warn over remove), #26 done (one ChatGPT thread per key per UTC day, `api_key_conversations`), #27
   done (nightly Library cleanup). **The full gate now runs on a stack of its own** (`aip-gate`, api
