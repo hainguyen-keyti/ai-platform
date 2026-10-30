@@ -16,13 +16,23 @@ open" at the end of the file; what the tests left in the accounts is in
   `/mnt/d/keyti/ai-platform` (README.md). Docker Desktop does not start with Windows; after a WSL
   restart run `docker compose up -d --force-recreate`.
 - **Running**: the api and the web in Docker. The real host worker runs in the desktop app's Terminal
-  panel ("host worker (real, no gemini)") with `PROVIDERS=chatgpt,grok`, its output appended to
+  panel ("host worker (real, :8010)") with `WORKER_PORT=8010 PROVIDERS=chatgpt,grok`: since
+  2026-10-30 about 01:00 another project's app (`~/.venvs/studio/bin/python -m app.main`, "Studio")
+  holds `127.0.0.1:8000` in WSL. Not ours, left alone. The api never calls the worker, so the port
+  only names `/health`. Run the full gate with `WORKER_PORT=8011` while it is there. Its output is appended to
   `~/.cache/ai-platform/host-worker-real.log` in WSL. It ends with the tab or the app. Gemini is left
   off because Google's unusual-traffic check came on twice (#14, #16); try it again thinly.
 - **Gates**: quick gate **65 checks**, ui_smoke **75**; the full gate is `./scripts/full-gate.sh`
   (`.claude/test-command.txt`). It needs :8000 free: stop the real worker first, start it again after.
 - **Plan (3)** closed 2026-10-28 (#1-#9). **Closed since**: #10-#15 (found in the owner's acceptance
-  walk), #17, #19, #20 (the MCP server, below).
+  walk), #17, #19, #20 (the MCP server, below), #21 (`continue_from`: a `/v1` request continues an
+  earlier done one in its ChatGPT thread; quick gate 66 checks) and #24 (such a follow-up no longer
+  returns the earlier picture again, fetched from the sandbox). **Open, to do in order**: #22 (up to
+  four reference pictures), #23 (the ChatGPT driver removes its own uploads from the account's file
+  store). **Found, no issue yet**: ui_smoke runs on the Docker api's database, which the real worker
+  also serves, so a mock thread it leaves tombstoned (`mock-thread-…`) is handed to the real worker,
+  whose deletion fails with 400 (`thread_deletions_failed`). It may also have held a real job queued
+  for 4 minutes; not proven.
 - **Open issues**: #16 (`/v1` picks its provider; code done, every item but the real pictures met,
   checklist not ticked yet) and #18 (Grok's refusal reason; code done). Both wait on outside things:
   Grok's free image allowance is spent, and Gemini's bot check. A real Grok picture closes #18 and
