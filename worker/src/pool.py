@@ -253,9 +253,9 @@ class BrowserPool:
             entry["pacing"] = self._health[name].pacing
             # Diagnostics the provider chooses to expose: how the last turn was
             # settled, whether the last thread open landed where it aimed, what
-            # the account's memory switch read before the last turn, and how the
-            # last stop ended its turn.
-            for attr in ("last_settle", "last_open", "memory", "last_stop"):
+            # the account's memory switch read before the last turn, how the
+            # last stop ended its turn, and how full the account's file store is (#23).
+            for attr in ("last_settle", "last_open", "memory", "last_stop", "storage"):
                 if provider is not None and hasattr(provider, attr):
                     entry[attr] = getattr(provider, attr)
             out[name] = entry

@@ -386,6 +386,10 @@ class DrawingPage(Page):
         self.words_text = more.get("words_text", self.WORDS)
         self.recap_after, self.saved_copy = more.get("recap_after"), more.get("saved_copy", False)
         self.memory_at, self.sandbox_reads = None, []
+        # The account's file store, as measured 2026-10-30: 1.43 GB of 20 GB on Plus.
+        self.usage = more.get("usage", {"status": 200, "used_bytes": 1428788369, "allowed_bytes": 21474836480,
+                                        "remaining_bytes": 20046048111, "is_over_limit": False})
+        self.usage_reads = 0
         super().__init__(clock, has={PROSEMIRROR})
 
     def since(self):
@@ -500,6 +504,12 @@ class DrawingPage(Page):
             if self.reads <= self.unreadable and self.first_read != 200:
                 return {"status": self.first_read, "nodes": []}
             return {"status": 200, "nodes": self.nodes()}
+        if script == getattr(chatgpt, "FETCH_STORAGE_USAGE", None):
+            # Measured 2026-10-30 (issue #23): GET /backend-api/files/library/storage/usage.
+            self.usage_reads += 1
+            if self.usage == "raise":
+                raise Exception("Target page, context or browser has been closed")
+            return self.usage if self.usage is not None else {"status": 500}
         if script == chatgpt.SESSION_TOKEN and self.token_gone and self.reads >= 1:
             return None
         if script == chatgpt.FETCH_USER_SETTINGS:
@@ -744,6 +754,59 @@ def main():
                 (driver.media_path / name).write_bytes(b"\x89PNG not really")
         got = driver.generate_image("đổi nền thành bãi biển lúc hoàng hôn", reference_filename=reference)
         return got, page
+
+    # Issue #23: after a picture turn the driver reads the account's file store, at most every ten minutes,
+    # and warns from 80% or over the limit; a failed read never fails the turn.
+    def usage_after(**usage):
+        page = DrawingPage(clock, tool_after=22, usage=usage or None)
+        driver = provider_on(page)
+        driver.media_path.mkdir(parents=True, exist_ok=True)
+        got = driver.generate_image("a blue square")
+        return got, driver, page
+
+    got, driver, page = usage_after(status=200, used_bytes=1428788369, allowed_bytes=21474836480,
+                                    remaining_bytes=20046048111, is_over_limit=False)
+    stored = getattr(driver, "storage", None) or {}
+    record("after a picture turn the account's file store is read: 1.43 of 20 GB, no warning",
+           got.success and page.usage_reads == 1 and stored.get("used_bytes") == 1428788369
+           and stored.get("allowed_bytes") == 21474836480 and stored.get("used_share") == 0.067
+           and stored.get("warning") is False,
+           "success {}, reads {}, storage {}".format(got.success, page.usage_reads, stored))
+    first_read = page.usage_reads
+    got_again = driver.generate_image("a red square")
+    clock.now += 601
+    driver.generate_image("a green square")
+    record("the store is read at most every ten minutes",
+           got_again.success and first_read == 1 and page.usage_reads == 2,
+           "reads after the first turn {}, after a second at once and a third ten minutes on: {}".format(
+               first_read, page.usage_reads))
+    got, driver, page = usage_after(status=200, used_bytes=17 * 2 ** 30, allowed_bytes=20 * 2 ** 30,
+                                    remaining_bytes=3 * 2 ** 30, is_over_limit=False)
+    record("a store 85% full warns", (getattr(driver, "storage", None) or {}).get("warning") is True,
+           repr(getattr(driver, "storage", None)))
+    got, driver, page = usage_after(status=200, used_bytes=10, allowed_bytes=20 * 2 ** 30,
+                                    remaining_bytes=20 * 2 ** 30, is_over_limit=True)
+    record("a store over its limit warns, whatever its share", (getattr(driver, "storage", None) or {}).get("warning") is True,
+           repr(getattr(driver, "storage", None)))
+    page = DrawingPage(clock, tool_after=22)
+    page.usage = {"status": 401}
+    driver = provider_on(page)
+    got = driver.generate_image("a blue square")
+    record("a store that cannot be read leaves the turn as it was and says why",
+           got.success and len(got.media) == 1 and (getattr(driver, "storage", None) or {}).get("error") == 401,
+           "success {}, storage {}".format(got.success, getattr(driver, "storage", None)))
+    page = DrawingPage(clock, tool_after=22)
+    page.usage = "raise"
+    driver = provider_on(page)
+    try:
+        got = driver.generate_image("a blue square")
+        outcome = "success {} with {} picture(s)".format(got.success, len(got.media))
+    except Exception as exc:
+        got, outcome = None, "raised {}".format(exc)
+    record("a page that dies while the store is read still returns the picture made",
+           got is not None and got.success and len(got.media) == 1
+           and "closed" in str((getattr(driver, "storage", None) or {}).get("error")),
+           "{}, storage {}".format(outcome, getattr(driver, "storage", None)))
 
     # Issue #22: several reference pictures go out together through the input that takes several.
     many = ["upload-1111aaaa.png", "upload-2222bbbb.png", "upload-3333cccc.png"]

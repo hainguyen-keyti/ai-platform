@@ -200,6 +200,22 @@ async ([id, messageId, sandboxPath, token]) => {
 }
 """
 
+# Measured 2026-10-30 (issue #23): the Library page reads the account's file store here, as
+# {plan_type, limit_tier, used_bytes, allowed_bytes, remaining_bytes, is_over_limit, breakdown_*}.
+# Every reference picture and every picture made stays in that store, a deleted thread or not.
+FETCH_STORAGE_USAGE = """
+async (token) => {
+    const r = await fetch("/backend-api/files/library/storage/usage",
+                          {headers: {Authorization: "Bearer " + token}, credentials: "include"});
+    if (!r.ok) return {status: r.status};
+    const j = await r.json();
+    return {status: 200, used_bytes: j.used_bytes, allowed_bytes: j.allowed_bytes,
+            remaining_bytes: j.remaining_bytes, is_over_limit: j.is_over_limit};
+}
+"""
+# The store is read after a picture turn at most this often, and warns from this share or over its limit.
+STORAGE_READ_SECONDS, STORAGE_WARN_SHARE = 600, 0.8
+
 # Measured 2026-09-24 by flipping the switch in Settings, Personalization and
 # watching the wire: "Enable memory" is PATCH settings/account_user_setting
 # ?feature=m3m, and GET settings/user reports it as settings.m3m, with
@@ -292,6 +308,9 @@ class ChatGPTProvider(BaseProvider):
         self._access_token = None
         # The sandbox files the thread named before this turn's send (#24), never this turn's.
         self._named_before = set()
+        # The account's file store as last read, shown in health (#23); None until a picture turn.
+        self.storage = None
+        self._storage_read_at = None
         self.last_settle = None
         self.last_open = None
         # What the account's memory switch read before the last turn: on, off
@@ -1043,7 +1062,35 @@ class ChatGPTProvider(BaseProvider):
                            "generate a new image: {}").format(len(reference_filename), prompt)
         elif reference_filename:
             instruction = "Use the attached image as the reference and generate a new image: {}".format(prompt)
-        return self._run(instruction, upload=reference_filename, thread_url=thread_url)
+        result = self._run(instruction, upload=reference_filename, thread_url=thread_url)
+        self._read_storage(self._page)
+        return result
+
+    def _read_storage(self, page):
+        """Read the account's file store for health, at most every STORAGE_READ_SECONDS (#23).
+
+        Diagnostics only: the turn's result never depends on it, and a read that fails is kept as
+        its status in `storage["error"]`, not raised.
+        """
+        now = time.time()
+        if page is None or (self._storage_read_at is not None and now - self._storage_read_at < STORAGE_READ_SECONDS):
+            return
+        self._storage_read_at = now
+        try:
+            token = self._access_token or page.evaluate(SESSION_TOKEN)
+            got = page.evaluate(FETCH_STORAGE_USAGE, token) if token else {"status": "no session token"}
+        except Exception as exc:
+            # The turn already has its pictures; a page gone now is the next turn's to meet.
+            got = {"status": "{}: {}".format(type(exc).__name__, exc)[:200]}
+        if got.get("status") != 200 or not got.get("allowed_bytes"):
+            self.storage = {"error": got.get("status"), "read_at": round(now, 1)}
+            return
+        share = round(got["used_bytes"] / got["allowed_bytes"], 3)
+        self.storage = {"used_bytes": got["used_bytes"], "allowed_bytes": got["allowed_bytes"],
+                        "remaining_bytes": got.get("remaining_bytes"), "is_over_limit": bool(got.get("is_over_limit")),
+                        "used_share": share,
+                        "warning": share >= STORAGE_WARN_SHARE or bool(got.get("is_over_limit")),
+                        "read_at": round(now, 1)}
 
     def generate_video_script(self, image_filename: str, duration: int = 5,
                               thread_url: Optional[str] = None) -> GenerationResult:
