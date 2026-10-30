@@ -867,20 +867,27 @@ class ChatGPTProvider(BaseProvider):
             )
         return artifacts
 
-    def _not_copies(self, files, pictures):
-        """The sandbox files that are not byte for byte a picture already taken from the page.
+    def _not_copies(self, files):
+        """The sandbox files whose bytes the media store does not hold yet, each once.
 
         Measured 2026-10-28: a picture turn's tool output names the picture's sandbox copy, and the
-        server hands back the very file the page showed, so the person got it twice. A copy is
-        removed from disk, never stored.
+        server hands back the very file the page showed, so the person got it twice. Measured
+        2026-10-30: a turn named the reference pictures of its thread by sandbox names of their own,
+        and 30 of them came back as pictures. A copy is removed from disk, never stored.
         """
-        taken = {hashlib.sha256((self.media_path / p.filename).read_bytes()).hexdigest() for p in pictures}
+        digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+        new = {artifact.filename for artifact in files}
+        sizes = {(self.media_path / name).stat().st_size for name in new}
+        known = {digest(path) for path in self.media_path.iterdir()
+                 if path.name not in new and path.is_file() and path.stat().st_size in sizes}
         kept = []
         for artifact in files:
             path = self.media_path / artifact.filename
-            if hashlib.sha256(path.read_bytes()).hexdigest() in taken:
+            made = digest(path)
+            if made in known:
                 path.unlink()
             else:
+                known.add(made)
                 kept.append(artifact)
         return kept
 
@@ -1010,7 +1017,7 @@ class ChatGPTProvider(BaseProvider):
                 media = self._download(page, sources, prompt)
                 files = self._fetch_sandbox_files(
                     page, self._thread_id(page) or "", fresh, prompt, set(uploads))
-                media += self._not_copies(files, media) if files else self._save_files(
+                media += self._not_copies(files) if files else self._save_files(
                     page, seen_downloads, prompt)
         except JobCancelled:
             # Left alone the site writes or draws the turn out for nobody; measured 2026-10-01, its stop

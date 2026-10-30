@@ -18,8 +18,10 @@ node, and names the picture's sandbox copy, which is the same file.
 Prints N/N PASSED.
 """
 
+import base64
 import re
 import sys
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +30,7 @@ sys.path.insert(0, str(ROOT / "worker"))
 from src.providers import chatgpt  # noqa: E402
 from src.providers.base import JobCancelled, ProviderError  # noqa: E402
 
+REFERENCE_BYTES = b"\x89PNG not really"
 PROSEMIRROR = "ProseMirror"
 PLACEHOLDER = "pending-home-input"
 
@@ -469,8 +472,9 @@ class DrawingPage(Page):
             nodes.append(node("a2", "assistant", "text", self.sent_at + (self.words_from or self.words_after),
                               end_turn=True, text=self.words_text))
             if self.saved_copy:
+                named = self.COPY + ("\n- " + self.COPY + ".again" if self.saved_copy == "twice" else "")
                 nodes.append(node("t3", "tool", "text", self.sent_at + self.words_after,
-                                  text="Generated images were saved at:\n- " + self.COPY))
+                                  text="Generated images were saved at:\n- " + named))
         elif self.reached(self.words_from):
             nodes.append(node("a2", "assistant", "text", self.sent_at + self.words_from,
                               status="in_progress", text=self.WORDS[:4]))
@@ -492,7 +496,9 @@ class DrawingPage(Page):
             if args[0][2] == self.EARLIER_COPY:
                 return {"status": 200, "data": self.EARLIER_DATA, "name": self.EARLIER_COPY.rsplit("/", 1)[-1],
                         "mime": "image/png"}
-            data = self.PICTURE_DATA if self.saved_copy != "another" else "data:image/png;base64,aW5mbw=="
+            data = {"another": "data:image/png;base64,aW5mbw==", "twice": "data:image/png;base64,aW5mbw==",
+                    "reference": "data:image/webp;base64," + base64.b64encode(REFERENCE_BYTES).decode()
+                    }.get(self.saved_copy, self.PICTURE_DATA)
             return {"status": 200, "data": data, "name": self.COPY.rsplit("/", 1)[-1], "mime": "image/png"}
         if script == chatgpt.FETCH_THREAD:
             self.reads += 1
@@ -743,11 +749,15 @@ def main():
     # The real gate of 2026-10-02 lost a picture to the clock ("returned nothing after 302s"), and
     # every real picture took the ceiling and a little. Measured the same day: the picture is on the
     # page 22 seconds after the send and the server never closes the turn with an assistant node.
-    def draw_on(page, thread_url=None, upload=None):
+    def draw_on(page, thread_url=None, upload=None, stored=None):
         driver = provider_on(page)
+        # A media store of its own: what a turn's files are compared with is what the store already holds.
+        driver.media_path = driver.media_path / uuid.uuid4().hex
         driver.media_path.mkdir(parents=True, exist_ok=True)
         if upload:
-            (driver.media_path / upload).write_bytes(b"\x89PNG not really")
+            (driver.media_path / upload).write_bytes(REFERENCE_BYTES)
+        if stored:
+            (driver.media_path / "an-earlier-turns-reference.webp").write_bytes(stored)
         started = clock.now
         try:
             got = driver._run("vẽ cho tôi một hình vuông màu xanh", thread_url=thread_url, upload=upload)
@@ -954,6 +964,25 @@ def main():
     record("a sandbox file that is not the page's picture is still stored",
            said == "success" and pictures == 2,
            "{} with {} file(s)".format(said, pictures))
+
+    # Measured 2026-10-30: in a thread of one key, a turn named the reference pictures of its thread by
+    # sandbox names of their own; 30 came back as pictures, and a turn that drew nothing was called done.
+    page = DrawingPage(clock, words_after=27, words_text="", saved_copy="reference")
+    said, pictures, text, took = draw_on(page, upload="reference.webp")
+    record("a turn that only names its own reference picture made nothing and fails",
+           said == "failed as provider_timeout" and pictures == 0,
+           "{} with {} file(s)".format(said, pictures))
+
+    page = DrawingPage(clock, tool_after=22, words_after=27, words_text="", saved_copy="another")
+    said, pictures, text, took = draw_on(page, stored=b"info")
+    record("a reference picture of an earlier turn, already in the store, is not this turn's picture",
+           said == "success" and pictures == 1, "{} with {} file(s)".format(said, pictures))
+
+    page = DrawingPage(clock, tool_after=22, words_after=27, words_text="", saved_copy="twice")
+    said, pictures, text, took = draw_on(page)
+    record("one new file named by two sandbox paths is stored once",
+           said == "success" and pictures == 2 and len(page.sandbox_reads) == 2,
+           "{} with {} file(s), {} reads".format(said, pictures, len(page.sandbox_reads)))
 
     # Measured 2026-10-30 (issue #24): a turn changing the earlier picture named that picture's sandbox
     # file as its edit's input, and the driver fetched it as this turn's: two pictures, one the earlier.
