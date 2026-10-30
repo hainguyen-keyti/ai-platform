@@ -22,6 +22,10 @@ open" at the end of the file; what the tests left in the accounts is in
   only copies: the thread shows its picture was made, the driver never fetched it. `_not_copies` now drops
   any sandbox file whose bytes the media store holds; a turn left with nothing fails and refunds.
   Still fetched and dropped, one by one: a long thread's turn can spend minutes on them (follow-up).
+  **Proven on the real site, 2026-10-30 17:07 to 17:40 UTC:** two sets of 10 with one reference, each under
+  a throwaway key so in a thread of its own: 20 of 20 done, no copy of the reference, no error, no cooldown,
+  about 95s a picture. One request gave 2 pictures, so the count was 21. The owner's ask of varied face angle
+  and expression came from naming both in every prompt and from fresh threads; `storage/mcp-20-varied/`.
 - **Cloudflare's "Verifying..." page showed at 2026-10-30 ~16:08 UTC** when a browser opened chatgpt.com
   after that set; it cleared on its own within about 15s, nothing was clicked. So the re-run the owner asked
   for (20 pictures, varied face angle and expression) was NOT started: the owner decides when. The machine's
