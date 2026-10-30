@@ -233,7 +233,8 @@ class MockProvider(BaseProvider):
         self._phase("picture appeared")
         return GenerationResult(
             success=True, thread_url=thread,
-            text="mock image for: {}{}".format(prompt.strip()[:200], seen),
+            # The thread too, as chat() says it, so a gate sees a follow-up land in its thread (#21).
+            text="mock image for: {}{} [thread={}]".format(prompt.strip()[:200], seen, thread),
             media=[self._store(solid_png(64, 64, (220, 60, 60)), ".png", "image", prompt)],
         )
 

@@ -5,6 +5,7 @@
     python3 scripts/image_api_example.py --prompt "a red fox in the snow"
     python3 scripts/image_api_example.py --prompt "the same fox at night" --image fox.png --out pictures
     python3 scripts/image_api_example.py --provider grok --prompt "a lighthouse at sunset"
+    python3 scripts/image_api_example.py --prompt "the same fox, asleep" --continue-from 5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a
     python3 scripts/image_api_example.py --account
     python3 scripts/image_api_example.py --cancel 5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a
 
@@ -46,14 +47,16 @@ def detail(raw):
         return raw.decode(errors="replace")
 
 
-def form(prompt, image, provider=None):
-    """A multipart/form-data body with the prompt, the provider if named, and the picture as a file if given."""
+def form(prompt, image, provider=None, continue_from=None):
+    """A multipart/form-data body with the prompt, the provider if named, the request it continues if
+    any, and the picture as a file if given."""
     boundary = uuid.uuid4().hex
     body = ('--{}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n'.format(boundary).encode()
             + prompt.encode() + b"\r\n")
-    if provider:
-        body += ('--{}\r\nContent-Disposition: form-data; name="provider"\r\n\r\n'.format(boundary).encode()
-                 + provider.encode() + b"\r\n")
+    for name, value in (("provider", provider), ("continue_from", continue_from)):
+        if value:
+            body += ('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n'.format(boundary, name).encode()
+                     + value.encode() + b"\r\n")
     if image:
         body += ('--{}\r\nContent-Disposition: form-data; name="image"; filename="{}"\r\n'
                  'Content-Type: {}\r\n\r\n'.format(
@@ -72,6 +75,8 @@ def main():
     parser.add_argument("--provider", choices=("chatgpt", "grok", "gemini"),
                         help="who makes it (default: the api's, chatgpt); grok takes no --image")
     parser.add_argument("--image", type=Path, help="a PNG, JPEG or WEBP picture to use as the reference")
+    parser.add_argument("--continue-from", metavar="REQUEST_ID",
+                        help="an earlier done request to continue, in the same provider thread")
     parser.add_argument("--out", type=Path, default=Path("."), help="where to save the pictures (default: here)")
     parser.add_argument("--wait", type=int, default=600, help="seconds to keep asking before giving up")
     args = parser.parse_args()
@@ -98,7 +103,7 @@ def main():
     if not args.prompt:
         parser.error("--prompt is required unless --account or --cancel")
 
-    body, content_type = form(args.prompt, args.image, args.provider)
+    body, content_type = form(args.prompt, args.image, args.provider, args.continue_from)
     status, raw = call("POST", api + "/v1/images", key, body, content_type)
     if status != 202:
         sys.exit("refused ({}): {}".format(status, detail(raw)))

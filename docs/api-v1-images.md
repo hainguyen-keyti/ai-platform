@@ -69,6 +69,7 @@ is. So this read already shows the new day's balance.
 |---|---|---|
 | `prompt` | yes | What to make, up to 8000 characters |
 | `provider` | no | `chatgpt` (the default), `grok` or `gemini` |
+| `continue_from` | no | The id of an earlier request of yours, made through `/v1` on the same provider, that ended `done`. The new request goes into that request's conversation, so the provider gets the prompt in the thread where it made that picture and can change it ("the same, at night") without the picture being sent back |
 | `image` | no | One picture file to use as the reference: PNG, JPEG or WEBP, at most 10 MB, at most 16384 pixels a side and 50 megapixels. Send one; if several are sent, the last one is used. Grok takes none |
 
 ```
@@ -101,6 +102,7 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/5f0
 {
   "id": "5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a",
   "provider": "chatgpt",
+  "continued_from": null,
   "status": "done",
   "text": "Here is the fox at night.",
   "error": null,
@@ -174,7 +176,8 @@ kind, a list naming the field. A refused request costs nothing and keeps nothing
 | `400` | The form itself cannot be read, `provider` is not `chatgpt`, `grok` or `gemini`, or a picture was sent to `grok` |
 | `401` | No key, an unknown or revoked key, or a web login token |
 | `402` | No credit left today |
-| `404` | No such request or picture, it is someone else's, or it was not made through `/v1` (on a read and on a cancel alike) |
+| `404` | No such request or picture, it is someone else's, or it was not made through `/v1` (on a read, a cancel, and the request `continue_from` names alike) |
+| `409` | `continue_from` names a request that has not ended `done`, or one on another provider |
 | `413` | The whole request is over 10 MB and 256 KB (checked before the key, as it arrives), or the picture is over 10 MB, 16384 pixels a side or 50 megapixels |
 | `415` | The file is not a PNG, JPEG or WEBP picture whose size can be read (an empty file too) |
 | `422` | No prompt or a prompt too long (a list), a prompt of only spaces (a sentence), or `image` sent as text instead of a file (a list) |

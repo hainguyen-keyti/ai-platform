@@ -111,6 +111,7 @@ CHECKS = (
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
     "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner",
+    "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a done result with nothing in it fails and refunds",
     "a running job whose worker died is failed and refunded by its owner's next poll",
@@ -123,6 +124,7 @@ V1_JOB_CHECKS = (
     "a /v1 request and its pictures reach only their owner",
     "a failed /v1 request gives its credit back once",
     "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner",
+    "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
 )
@@ -1030,6 +1032,57 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
                              "{} -> {}; after {}; web {}; --cancel {}".format(
                                  slowed, restored, refused, before, said, q0, q_sent, q_back, q_later,
                                  [(a.get("status"), len(a.get("images") or [])) for a in after], web_after, script))
+
+    # Issue #21: a request continues an earlier done one: it goes into that request's conversation,
+    # so the worker sends it into the stored thread (the mock says which thread it was handed).
+    continuing = "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise"
+
+    def thread_in(state):
+        found = re.search(r"\[thread=([^\]]+)\]", (state or {}).get("text") or "")
+        return found.group(1) if found else None
+
+    def conversation_of(request_id):
+        return (http("GET", "{}/jobs/{}".format(api, request_id), token=token)[1] or {}).get("conversation_id") \
+            if request_id else None
+
+    q0 = quota_of(token)
+    cstatus, csent = http_form(api + "/v1/images", {"prompt": "the same square, at night", "continue_from": rid or ""},
+                               token=akey)
+    cid = csent.get("id") if cstatus == 202 and isinstance(csent, dict) else None
+    later_state = poll_v1(cid, akey) if cid else {}
+    first_state = v1_state(rid)
+    q1 = quota_of(token)
+    files_before = files_now()
+    refusals = {
+        "another person's request": (http_form(api + "/v1/images", {"prompt": "x", "continue_from": rid or ""},
+                                               token=bkey)[0], 404),
+        "an unknown request, with a picture": (http_form(
+            api + "/v1/images", {"prompt": "x", "continue_from": "not-a-request"},
+            {"image": ("a.png", "image/png", tiny_png((1, 2, 3)))}, token=akey)[0], 404),
+        "a picture made on the web": (http_form(api + "/v1/images", {"prompt": "x", "continue_from": web_job or ""},
+                                                token=akey)[0], 404),
+        "a request not done": (http_form(api + "/v1/images", {"prompt": "x", "continue_from": running_id or ""},
+                                         token=akey)[0], 409),
+        "another provider": (http_form(api + "/v1/images", {"prompt": "x", "continue_from": rid or "",
+                                                            "provider": "grok"}, token=akey)[0], 409),
+    }
+    q2, files_after = quota_of(token), files_now()
+    wrong = {k: v for k, v in refusals.items() if v[0] != v[1]}
+    if (cstatus == 202 and later_state.get("status") == "done" and later_state.get("images")
+            and thread_in(first_state) and thread_in(later_state) == thread_in(first_state)
+            and conversation_of(cid) == conversation_of(rid) and later_state.get("continued_from") == rid
+            and first_state.get("continued_from") is None and q1 == q0 - 1 and not wrong and q2 == q1
+            and files_after == files_before):
+        c[continuing].passed("continued in conversation {}... and thread {}, one credit; refused uncharged, "
+                             "nothing kept: {}".format((conversation_of(rid) or "")[:8], thread_in(later_state),
+                                                       {k: v[0] for k, v in refusals.items()}))
+    else:
+        c[continuing].failed("sent {} {}, then {}, threads {} -> {}, conversations {} -> {}, continued_from {}/{}, "
+                             "credits {} -> {} -> {}; refusals wrong {}; files added {}".format(
+                                 cstatus, csent, later_state.get("status"), thread_in(first_state),
+                                 thread_in(later_state), conversation_of(rid), conversation_of(cid),
+                                 first_state.get("continued_from"), later_state.get("continued_from"),
+                                 q0, q1, q2, wrong, sorted(files_after - files_before)[:3]))
 
     # The documented example, run as a person would: the key in the environment, never on the line.
     example = "the example script sends a prompt and a picture, waits, and saves the picture made"

@@ -260,6 +260,20 @@ async def run(fake, work):
                and [k.get("reference_path") for k in kept] == [str(reference)],
                "error {} sent {} bytes records {}".format(result.is_error, len(sent or b""), kept))
 
+        earlier = fake.rid("a plain blue square") or "none"
+        result = await client.call_tool("generate_image", {"prompt": "the same square, at night",
+                                                           "continue_from": earlier, "save_dir": str(work / "more")},
+                                        read_timeout_seconds=60)
+        once = fake.posts[-1].get("fields", {}).get("continue_from")
+        before = len(fake.posts)
+        await client.call_tool("generate_images", {"prompts": ["one more", "and another"], "continue_from": earlier,
+                                                   "save_dir": str(work / "more")}, read_timeout_seconds=60)
+        each = [p.get("fields", {}).get("continue_from") for p in fake.posts[before:]]
+        plain = [p.get("fields", {}) for p in fake.posts if p.get("path") == "/v1/images"][0]
+        record("continue_from is sent with the request, by generate_image and by every prompt of generate_images",
+               not result.is_error and once == earlier.encode() and each == [earlier.encode()] * 2
+               and "continue_from" not in plain, "once {} each {}".format(once, each))
+
         before = len(fake.posts)
         result = await client.call_tool("generate_image", {"prompt": "x", "reference_path": str(work / "nope.png")},
                                         read_timeout_seconds=30)

@@ -119,6 +119,7 @@ def _image_request(user_id: str, request_id: str) -> dict:
     made_here = bool(row) and json.loads(row["payload"] or "{}").get("via") == "v1"
     if job["feature"] != "image" or not made_here:
         raise HTTPException(status_code=404, detail="image request not found")
+    job["continued_from"] = json.loads(row["payload"] or "{}").get("continued_from")
     return job
 
 
@@ -141,7 +142,9 @@ def account(user: dict = Depends(api_key_user)):
 
 @router.post("/images", status_code=202)
 def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile] = File(default=None),
-                 provider: str = Form(default="chatgpt", max_length=40), user: dict = Depends(api_key_user)):
+                 provider: str = Form(default="chatgpt", max_length=40),
+                 continue_from: Optional[str] = Form(default=None, max_length=64),
+                 user: dict = Depends(api_key_user)):
     prompt = prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="a prompt is required")
@@ -153,6 +156,19 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile
     if image is not None and provider not in TAKES_REFERENCE:
         raise HTTPException(status_code=400, detail="{} takes no reference picture; use {}".format(
             provider, " or ".join(TAKES_REFERENCE)))
+    # Issue #21: a request continues an earlier done /v1 request of the same person and provider in
+    # that request's conversation, so the worker sends it into the stored thread. Refused before the
+    # picture is read or kept, and before anything is charged.
+    conversation_id = None
+    if continue_from:
+        earlier = _image_request(user["id"], continue_from)
+        if earlier["status"] != "done":
+            raise HTTPException(status_code=409, detail="request {} is {}; only a done request can be continued".format(
+                continue_from, STATUSES.get(earlier["status"], earlier["status"])))
+        if earlier["provider"] != provider:
+            raise HTTPException(status_code=409, detail="request {} was made by {}; continue it with {}".format(
+                continue_from, earlier["provider"], earlier["provider"]))
+        conversation_id = earlier["conversation_id"]
     upload, path, picture = None, None, b""
     if image is not None:
         picture = image.file.read(MAX_PICTURE_BYTES + 1)
@@ -173,7 +189,11 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile
     try:
         if path is not None:
             path.write_bytes(picture)
-        created = create_job(user=user, provider=provider, feature="image", payload={"prompt": prompt, "via": "v1"},
+        payload = {"prompt": prompt, "via": "v1"}
+        if conversation_id:
+            payload["continued_from"] = continue_from
+        created = create_job(user=user, provider=provider, feature="image", payload=payload,
+                             conversation_id=conversation_id,
                              user_message="Generate an image: {}".format(prompt), title=prompt, upload=upload)
     except BaseException:
         # Refused (no credit, nobody serving the provider) or a write that failed: the picture is not kept.
@@ -207,6 +227,7 @@ def image_status(request_id: str, user: dict = Depends(api_key_user)):
     return {
         "id": job["id"],
         "provider": job["provider"],
+        "continued_from": job["continued_from"],
         "status": STATUSES.get(job["status"], job["status"]),
         "text": result.get("text") or "",
         "error": job["error"],
