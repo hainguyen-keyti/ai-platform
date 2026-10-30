@@ -13,6 +13,20 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **A real set of 20 with one reference, 2026-10-30, found reference pictures returned as results; fixed
+  at 312e37e, full gate green, NOT yet proven on the real site.** 17 pictures, plus 30 copies of the
+  reference (requests 8, 9, 19). Read in the thread itself: when a turn's model passes the thread's earlier
+  references to `image_gen` ("Images A through R"), its code node names them by sandbox names of their own;
+  the closing answer is empty, so `_fetch_sandbox_files` falls back to every path of the turn. The copies
+  counted against the budget (48/40 with 18 real pictures), which held the 20th. Request 19 was "done" with
+  only copies: the thread shows its picture was made, the driver never fetched it. `_not_copies` now drops
+  any sandbox file whose bytes the media store holds; a turn left with nothing fails and refunds.
+  Still fetched and dropped, one by one: a long thread's turn can spend minutes on them (follow-up).
+- **Cloudflare's "Verifying..." page showed at 2026-10-30 ~16:08 UTC** when a browser opened chatgpt.com
+  after that set; it cleared on its own within about 15s, nothing was clicked. So the re-run the owner asked
+  for (20 pictures, varied face angle and expression) was NOT started: the owner decides when. The machine's
+  network was also slow from about 14:48 to past 15:35 (google 7.9s, github 10s), which fits the 302s failure
+  and the 20-minute request; the thread shows the failed request's prompt never arrived. Inferred, not measured.
 - **The MCP's stress and coverage, 2026-10-30, at f13c54a** (the owner: "cần phải stress test và cover
   test"). `tests/stress_mcp.py` 16/16 on a mock worker, MCP test 41/41, quick gate 69/69, full gate
   green. Coverage over the offline suites: MCP server 98% (93 before), v1 91%, jobs 90%, chatgpt driver
