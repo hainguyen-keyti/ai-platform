@@ -119,7 +119,28 @@ class Attachments:
         return self
 
     def set_input_files(self, path, *args, **kwargs):
+        # Measured 2026-10-30 (issue #22): the first image input is `multiple: false`, which
+        # Playwright refuses more than one file for.
+        if isinstance(path, (list, tuple)):
+            if len(path) > 1:
+                raise Exception("Error: Non-multiple file input can only accept single file")
+            path = path[0]
         self.page.attached.append(Path(path).name)
+
+
+class ManyAttachments:
+    """The image input that takes several files (`multiple: true`, measured 2026-10-30)."""
+
+    def __init__(self, page):
+        self.page = page
+
+    @property
+    def first(self):
+        return self
+
+    def set_input_files(self, paths, *args, **kwargs):
+        paths = paths if isinstance(paths, (list, tuple)) else [paths]
+        self.page.attached.extend(Path(p).name for p in paths)
 
 
 class Removes:
@@ -260,6 +281,8 @@ class Page:
             return StopButton(self)
         if selector == chatgpt.UPLOAD_INPUT:
             return Attachments(self)
+        if selector == getattr(chatgpt, "UPLOAD_MANY", None):
+            return ManyAttachments(self)
         if 'aria-label^="Remove' in selector:
             return Removes(self)
         if 'img[src^="data:"]' in selector:
@@ -716,10 +739,23 @@ def main():
         page = DrawingPage(clock, tool_after=22)
         driver = provider_on(page)
         driver.media_path.mkdir(parents=True, exist_ok=True)
-        if reference:
-            (driver.media_path / reference).write_bytes(b"\x89PNG not really")
+        for name in ([reference] if isinstance(reference, str) else reference or []):
+            if "missing" not in name:
+                (driver.media_path / name).write_bytes(b"\x89PNG not really")
         got = driver.generate_image("đổi nền thành bãi biển lúc hoàng hôn", reference_filename=reference)
         return got, page
+
+    # Issue #22: several reference pictures go out together through the input that takes several.
+    many = ["upload-1111aaaa.png", "upload-2222bbbb.png", "upload-3333cccc.png"]
+    got, page = draw_with(many)
+    record("a picture turn with several pictures attaches every one, in order, and names them as references",
+           got.success and page.attached == many and len(page.sent) == 1 and page.sent_with == [many]
+           and "đổi nền thành bãi biển lúc hoàng hôn" in page.sent[0] and "images" in page.sent[0].lower(),
+           "success {} ({}), attached {}, sent {}".format(got.success, got.error, page.attached, page.sent))
+    got, page = draw_with(["upload-1111aaaa.png", "upload-missing.png"])
+    record("a picture turn whose second picture is missing fails before anything is attached or sent",
+           not got.success and "upload-missing.png" in (got.error or "") and page.attached == [] and page.sent == [],
+           "success {} error {!r}, attached {}, sent {}".format(got.success, got.error, page.attached, page.sent))
 
     got, page = draw_with("upload-0123abcd.png")
     record("a picture turn with a person's picture attaches it and sends their prompt, not a character guess",

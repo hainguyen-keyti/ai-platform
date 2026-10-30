@@ -5,6 +5,7 @@
     python3 scripts/image_api_example.py --prompt "a red fox in the snow"
     python3 scripts/image_api_example.py --prompt "the same fox at night" --image fox.png --out pictures
     python3 scripts/image_api_example.py --provider grok --prompt "a lighthouse at sunset"
+    python3 scripts/image_api_example.py --prompt "the fox of the first in the second's forest" --image fox.png --image forest.png
     python3 scripts/image_api_example.py --prompt "the same fox, asleep" --continue-from 5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a
     python3 scripts/image_api_example.py --account
     python3 scripts/image_api_example.py --cancel 5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a
@@ -47,9 +48,9 @@ def detail(raw):
         return raw.decode(errors="replace")
 
 
-def form(prompt, image, provider=None, continue_from=None):
+def form(prompt, images, provider=None, continue_from=None):
     """A multipart/form-data body with the prompt, the provider if named, the request it continues if
-    any, and the picture as a file if given."""
+    any, and each picture given as an `image` file, in order."""
     boundary = uuid.uuid4().hex
     body = ('--{}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n'.format(boundary).encode()
             + prompt.encode() + b"\r\n")
@@ -57,7 +58,7 @@ def form(prompt, image, provider=None, continue_from=None):
         if value:
             body += ('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n'.format(boundary, name).encode()
                      + value.encode() + b"\r\n")
-    if image:
+    for image in images or []:
         body += ('--{}\r\nContent-Disposition: form-data; name="image"; filename="{}"\r\n'
                  'Content-Type: {}\r\n\r\n'.format(
                      boundary, image.name, CONTENT_TYPES.get(image.suffix.lower(), "application/octet-stream")
@@ -74,7 +75,8 @@ def main():
     parser.add_argument("--cancel", metavar="REQUEST_ID", help="cancel a request sent earlier, and stop")
     parser.add_argument("--provider", choices=("chatgpt", "grok", "gemini"),
                         help="who makes it (default: the api's, chatgpt); grok takes no --image")
-    parser.add_argument("--image", type=Path, help="a PNG, JPEG or WEBP picture to use as the reference")
+    parser.add_argument("--image", type=Path, action="append",
+                        help="a PNG, JPEG or WEBP picture to use as a reference; up to 4 for chatgpt, in order")
     parser.add_argument("--continue-from", metavar="REQUEST_ID",
                         help="an earlier done request to continue, in the same provider thread")
     parser.add_argument("--out", type=Path, default=Path("."), help="where to save the pictures (default: here)")

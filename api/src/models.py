@@ -13,6 +13,9 @@ FEATURES = {
 # The providers whose picture turn takes a reference picture; grok's driver refuses one
 # (worker/src/providers/grok.py, generate_image).
 TAKES_REFERENCE = ("chatgpt", "gemini")
+# How many reference pictures one /v1 picture request may carry (issue #22): ChatGPT's driver attaches
+# several through its multiple image input; Gemini's attaches one.
+MAX_REFERENCES = {"chatgpt": 4, "gemini": 1}
 
 
 class RegisterRequest(BaseModel):

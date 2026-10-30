@@ -112,6 +112,7 @@ CHECKS = (
     "a failed /v1 request gives its credit back once",
     "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner",
     "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise",
+    "a /v1 chatgpt request carries up to four reference pictures in order, and more is refused uncharged",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a done result with nothing in it fails and refunds",
     "a running job whose worker died is failed and refunded by its owner's next poll",
@@ -125,6 +126,7 @@ V1_JOB_CHECKS = (
     "a failed /v1 request gives its credit back once",
     "a /v1 request can be cancelled while queued or running, its credit back once, and only by its owner",
     "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise",
+    "a /v1 chatgpt request carries up to four reference pictures in order, and more is refused uncharged",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
 )
@@ -347,13 +349,14 @@ def http_bytes(url, token, timeout=30):
 
 
 def http_form(url, fields, files=None, token=None, timeout=60):
-    """POST multipart/form-data: fields {name: text}, files {name: (filename, content type, bytes)}."""
+    """POST multipart/form-data: fields {name: text}, files {name: (filename, content type, bytes)} or a
+    list of (name, (filename, content type, bytes)) when one name repeats."""
     boundary = "acceptance-" + os.urandom(12).hex()
     parts = []
     for name, value in fields.items():
         parts.append('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n'.format(
             boundary, name).encode() + value.encode() + b"\r\n")
-    for name, (filename, ctype, blob) in (files or {}).items():
+    for name, (filename, ctype, blob) in (files.items() if isinstance(files, dict) else files or []):
         parts.append('--{}\r\nContent-Disposition: form-data; name="{}"; filename="{}"\r\n'
                      'Content-Type: {}\r\n\r\n'.format(boundary, name, filename, ctype).encode()
                      + blob + b"\r\n")
@@ -1083,6 +1086,50 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
                                  thread_in(later_state), conversation_of(rid), conversation_of(cid),
                                  first_state.get("continued_from"), later_state.get("continued_from"),
                                  q0, q1, q2, wrong, sorted(files_after - files_before)[:3]))
+
+    # Issue #22: a chatgpt request carries up to four reference pictures; the mock says each one it
+    # was handed, in order, by its size and sha256.
+    several = "a /v1 chatgpt request carries up to four reference pictures in order, and more is refused uncharged"
+    pics = [tiny_png((40 * n, 30, 200 - 40 * n)) for n in range(5)]
+
+    def with_pictures(count, provider=None, blobs=None):
+        fields = {"prompt": "these pictures together"}
+        if provider:
+            fields["provider"] = provider
+        return http_form(api + "/v1/images", fields,
+                         [("image", ("p{}.png".format(n), "image/png", blob))
+                          for n, blob in enumerate((blobs or pics)[:count])], token=akey)
+
+    q0 = quota_of(token)
+    mstatus, msent = with_pictures(4)
+    mid = msent.get("id") if mstatus == 202 and isinstance(msent, dict) else None
+    mdone = poll_v1(mid, akey) if mid else {}
+    handed = re.findall(r"with reference (\d+) bytes sha256 (\w+)", mdone.get("text") or "")
+    wanted_refs = [(str(len(b)), hashlib.sha256(b).hexdigest()[:16]) for b in pics[:4]]
+    mjob = http("GET", "{}/jobs/{}".format(api, mid), token=token)[1] or {} if mid else {}
+    mconv = (http("GET", "{}/conversations/{}".format(api, mjob.get("conversation_id")), token=token)[1]
+             or {}) if mjob.get("conversation_id") else {}
+    masked = [m for m in mconv.get("messages") or [] if m.get("role") == "user"]
+    shown = [http_bytes("{}/media/{}/file".format(api, m["id"]), token)[1]
+             for m in ((masked[0].get("media") or []) if masked else [])]
+    q1, files_before = quota_of(token), files_now()
+    big = png_head(8, 8) + b"\x00" * (3 * 1024 * 1024)
+    refused = {"five pictures": (with_pictures(5)[0], 400),
+               "two pictures to gemini": (with_pictures(2, provider="gemini")[0], 400),
+               "two pictures to grok": (with_pictures(2, provider="grok")[0], 400),
+               "four of 3 MB, over the request's cap": (with_pictures(4, blobs=[big] * 4)[0], 413)}
+    q2, files_after = quota_of(token), files_now()
+    wrong = {k: v for k, v in refused.items() if v[0] != v[1]}
+    if (mstatus == 202 and mdone.get("status") == "done" and handed == wanted_refs and shown == pics[:4]
+            and q1 == q0 - 1 and not wrong and q2 == q1 and files_after == files_before):
+        c[several].passed("four pictures handed over in order, kept on the person's message, one credit; "
+                          "refused uncharged, nothing kept: {}".format({k: v[0] for k, v in refused.items()}))
+    else:
+        c[several].failed("sent {} {}, then {}, handed {} (wanted {}), kept on the message {} of 4 in order {}, "
+                          "credits {} -> {} -> {}; refusals wrong {}; files added {}".format(
+                              mstatus, msent if mstatus != 202 else "", mdone.get("status"), handed, wanted_refs,
+                              len(shown), shown == pics[:4], q0, q1, q2, wrong,
+                              sorted(files_after - files_before)[:3]))
 
     # The documented example, run as a person would: the key in the environment, never on the line.
     example = "the example script sends a prompt and a picture, waits, and saves the picture made"

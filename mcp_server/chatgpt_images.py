@@ -55,6 +55,8 @@ WAIT_SECONDS, MAX_WAIT_SECONDS = 420, 900
 MAX_SET, SET_WAIT_SECONDS, MAX_SET_WAIT_SECONDS = 20, 1800, 3600
 # Claude Code counts a result's images against MAX_MCP_OUTPUT_TOKENS (25,000 by default): a preview is small.
 PREVIEW_SIDE, SLUG_LENGTH = 512, 40
+# The platform takes up to four reference pictures in one chatgpt request (issue #22).
+MAX_REFERENCES = 4
 LIVE = ("queued", "running")
 WSL = "microsoft" in platform.release().lower()
 CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
@@ -177,9 +179,9 @@ def detail(raw: bytes) -> str:
     return str(said) if said else raw.decode(errors="replace")[:300]
 
 
-def form(prompt: str, reference: Optional[Path], continue_from: Optional[str] = None):
-    """multipart/form-data: the prompt, provider chatgpt, the request it continues if any (#21), and the
-    reference picture as `image`."""
+def form(prompt: str, references: List[Path], continue_from: Optional[str] = None):
+    """multipart/form-data: the prompt, provider chatgpt, the request it continues if any (#21), and each
+    reference picture as an `image` field, in order (#22)."""
     boundary = uuid.uuid4().hex
     body = b""
     fields = (("prompt", prompt), ("provider", "chatgpt")) + ((("continue_from", continue_from),)
@@ -187,7 +189,7 @@ def form(prompt: str, reference: Optional[Path], continue_from: Optional[str] = 
     for name, value in fields:
         body += ('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n'.format(boundary, name).encode()
                  + value.encode() + b"\r\n")
-    if reference is not None:
+    for reference in references:
         body += ('--{}\r\nContent-Disposition: form-data; name="image"; filename="{}"\r\n'
                  'Content-Type: {}\r\n\r\n'.format(
                      boundary, reference.name, CONTENT_TYPES.get(reference.suffix.lower(), "application/octet-stream")
@@ -195,8 +197,8 @@ def form(prompt: str, reference: Optional[Path], continue_from: Optional[str] = 
     return body + "--{}--\r\n".format(boundary).encode(), "multipart/form-data; boundary=" + boundary
 
 
-def send(prompt: str, reference: Optional[Path], continue_from: Optional[str] = None):
-    body, content_type = form(prompt, reference, continue_from)
+def send(prompt: str, references: List[Path], continue_from: Optional[str] = None):
+    body, content_type = form(prompt, references, continue_from)
     return call("POST", "/v1/images", body, content_type)
 
 
@@ -206,13 +208,22 @@ def needs_key():
                         "this server in its environment")
 
 
-def checked_reference(reference_path: Optional[str]) -> Optional[Path]:
-    if not reference_path:
-        return None
-    reference = Path(local_path(reference_path))
-    if not reference.is_file():
-        raise ToolError("the reference picture {} is not there".format(reference_path))
-    return reference
+def given_references(reference_path: Optional[str], reference_paths: Optional[List[str]]) -> List[str]:
+    """The reference pictures asked for, reference_path first, at most MAX_REFERENCES (#22)."""
+    given = ([reference_path] if reference_path else []) + list(reference_paths or [])
+    if len(given) > MAX_REFERENCES:
+        raise ToolError("at most {} reference pictures; {} were given".format(MAX_REFERENCES, len(given)))
+    return given
+
+
+def checked_references(given: List[str]) -> List[Path]:
+    references = []
+    for reference_path in given:
+        reference = Path(local_path(reference_path))
+        if not reference.is_file():
+            raise ToolError("the reference picture {} is not there".format(reference_path))
+        references.append(reference)
+    return references
 
 
 def preview(blob: bytes) -> ImageContent:
@@ -224,7 +235,7 @@ def preview(blob: bytes) -> ImageContent:
     return ImageContent(type="image", data=base64.b64encode(out.getvalue()).decode(), mime_type="image/jpeg")
 
 
-def save(state: dict, folder: Path, prompt: Optional[str], reference_path: Optional[str], with_preview: bool):
+def save(state: dict, folder: Path, prompt: Optional[str], given: List[str], with_preview: bool):
     """Download every picture of a done request into folder, each named by its prompt with its record
     beside it: (the pictures, their previews, a line for each picture no preview was made from)."""
     folder.mkdir(parents=True, exist_ok=True)
@@ -239,7 +250,8 @@ def save(state: dict, folder: Path, prompt: Optional[str], reference_path: Optio
         path.write_bytes(blob)
         kept = folder / "{}-{}.json".format(stem, number)
         kept.write_text(json.dumps({
-            "prompt": prompt, "request_id": state["id"], "reference_path": reference_path,
+            "prompt": prompt, "request_id": state["id"], "reference_path": given[0] if given else None,
+            "reference_paths": given,
             "continued_from": state.get("continued_from"),
             "created_at": state.get("created_at"), "finished_at": state.get("finished_at"),
             "text": state.get("text") or "", "picture": path.name,
@@ -276,7 +288,7 @@ def answered(message: str, data: dict, shown: list) -> CallToolResult:
 async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Context],
                   with_preview: bool) -> CallToolResult:
     """Ask for the request until it ends or `wait` seconds pass; save what a done one made."""
-    prompt, reference_path = SENT.get(request_id, (None, None))
+    prompt, given = SENT.get(request_id, (None, []))
     began = time.monotonic()
     while True:
         status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/images/{}".format(request_id))
@@ -284,8 +296,7 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
             raise ToolError("request {} could not be read ({}): {}".format(request_id, status, detail(raw)))
         state = json.loads(raw)
         if state.get("status") == "done":
-            saved, shown, notes = await anyio.to_thread.run_sync(save, state, folder, prompt, reference_path,
-                                                                 with_preview)
+            saved, shown, notes = await anyio.to_thread.run_sync(save, state, folder, prompt, given, with_preview)
             words = "\nChatGPT said: {}".format(state["text"]) if state.get("text") else ""
             message = "ChatGPT made {} picture(s) for request {}, saved as:\n{}{}".format(
                 len(saved), request_id, "\n".join(listed(saved, notes)), words)
@@ -308,9 +319,12 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
 @mcp.tool()
 async def generate_image(prompt: str, ctx: Context, reference_path: Optional[str] = None,
                          save_dir: Optional[str] = None, wait_seconds: int = WAIT_SECONDS,
-                         preview: bool = True, continue_from: Optional[str] = None) -> Annotated[CallToolResult, Answer]:
-    """Make a picture with ChatGPT from a prompt, optionally following a reference picture (PNG, JPEG
-    or WEBP, at most 10 MB), and save it named by its prompt, with a .json record of it beside it.
+                         preview: bool = True, continue_from: Optional[str] = None,
+                         reference_paths: Optional[List[str]] = None) -> Annotated[CallToolResult, Answer]:
+    """Make a picture with ChatGPT from a prompt, optionally following reference pictures (PNG, JPEG
+    or WEBP; reference_path for one, reference_paths for up to 4 in order, e.g. "put the character of
+    the first into the scene of the second"; all together under 10 MB), and save it named by its
+    prompt, with a .json record of it beside it.
     To change a picture already made ("brighter", "the same cat, sleeping"), pass its request id as
     continue_from instead of sending the picture back: the prompt goes into the ChatGPT thread that
     made it, which sees that picture and what was asked before. Waits for it (about a minute, up to
@@ -318,12 +332,13 @@ async def generate_image(prompt: str, ctx: Context, reference_path: Optional[str
     (preview=False leaves it out); a request still running then is collected with get_image. Each
     request costs one credit on the platform; a failed one gives it back."""
     needs_key()
-    reference = checked_reference(reference_path)
-    status, raw = await anyio.to_thread.run_sync(send, prompt, reference, continue_from)
+    given = given_references(reference_path, reference_paths)
+    references = checked_references(given)
+    status, raw = await anyio.to_thread.run_sync(send, prompt, references, continue_from)
     if status != 202:
         raise ToolError("the platform refused the request ({}): {}".format(status, detail(raw)))
     request_id = json.loads(raw)["id"]
-    SENT[request_id] = (prompt, reference_path)
+    SENT[request_id] = (prompt, given)
     folder = Path(local_path(save_dir)) if save_dir else SAVE_DIR
     return await collect(request_id, folder, max(1, min(int(wait_seconds), MAX_WAIT_SECONDS)), ctx, preview)
 
@@ -331,12 +346,13 @@ async def generate_image(prompt: str, ctx: Context, reference_path: Optional[str
 @mcp.tool()
 async def generate_images(prompts: List[str], ctx: Context, reference_path: Optional[str] = None,
                           save_dir: Optional[str] = None, wait_seconds: int = SET_WAIT_SECONDS,
-                          preview: bool = True, continue_from: Optional[str] = None
-                          ) -> Annotated[CallToolResult, SetAnswer]:
+                          preview: bool = True, continue_from: Optional[str] = None,
+                          reference_paths: Optional[List[str]] = None) -> Annotated[CallToolResult, SetAnswer]:
     """Make a set of pictures with ChatGPT, one request per prompt (1 to 20), all following the same
-    reference picture when one is given, and all continuing the request continue_from names when one
-    is given (each then goes into that request's ChatGPT thread, one after another). Sends them all at once; ChatGPT makes them one after another,
-    about a minute each. Reports how many are done as it goes, and answers once all have ended or
+    reference pictures when given (reference_path, or reference_paths for up to 4), and all continuing
+    the request continue_from names when one is given (each then goes into that request's ChatGPT
+    thread, one after another). Sends them all at once; ChatGPT makes them one after another, about a
+    minute each. Reports how many are done as it goes, and answers once all have ended or
     wait_seconds has passed (at most 3600) with each prompt's files and preview, its failure reason,
     or its request id for get_image when it is still running. One failed prompt fails only itself; a
     refusal when sending (no credit left, say) stops sending the rest. One credit per request sent."""
@@ -346,17 +362,18 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
     blank = [str(n) for n, prompt in enumerate(prompts, 1) if not prompt.strip()]
     if blank:
         raise ToolError("prompt {} of the set is blank".format(", ".join(blank)))
-    reference = checked_reference(reference_path)
+    given = given_references(reference_path, reference_paths)
+    references = checked_references(given)
     folder = Path(local_path(save_dir)) if save_dir else SAVE_DIR
     items = [SetRequest(prompt=prompt, request_id=None, status="not sent", pictures=[], error=None)
              for prompt in prompts]
     for item in items:
-        status, raw = await anyio.to_thread.run_sync(send, item["prompt"], reference, continue_from)
+        status, raw = await anyio.to_thread.run_sync(send, item["prompt"], references, continue_from)
         if status != 202:
             item.update(status="refused", error="the platform refused it ({}): {}".format(status, detail(raw)))
             break
         item.update(request_id=json.loads(raw)["id"], status="queued")
-        SENT[item["request_id"]] = (item["prompt"], reference_path)
+        SENT[item["request_id"]] = (item["prompt"], given)
     if items[0]["status"] == "refused":
         raise ToolError("the platform refused the set's first prompt, so none was sent: " + items[0]["error"])
 
@@ -374,7 +391,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
             if state.get("status") == "done":
                 try:
                     saved, more, notes[item["request_id"]] = await anyio.to_thread.run_sync(
-                        save, state, folder, item["prompt"], reference_path, preview)
+                        save, state, folder, item["prompt"], given, preview)
                 except ToolError as exc:
                     item.update(status="unsaved", error=str(exc))
                     continue

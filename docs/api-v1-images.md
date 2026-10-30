@@ -70,7 +70,7 @@ is. So this read already shows the new day's balance.
 | `prompt` | yes | What to make, up to 8000 characters |
 | `provider` | no | `chatgpt` (the default), `grok` or `gemini` |
 | `continue_from` | no | The id of an earlier request of yours, made through `/v1` on the same provider, that ended `done`. The new request goes into that request's conversation, so the provider gets the prompt in the thread where it made that picture and can change it ("the same, at night") without the picture being sent back |
-| `image` | no | One picture file to use as the reference: PNG, JPEG or WEBP, at most 10 MB, at most 16384 pixels a side and 50 megapixels. Send one; if several are sent, the last one is used. Grok takes none |
+| `image` | no | A picture file to use as a reference: PNG, JPEG or WEBP, at most 10 MB, at most 16384 pixels a side and 50 megapixels. `chatgpt` takes up to 4, each sent as its own `image` field, in the order they are used ("the character of the first in the scene of the second"); together they must fit the request's 10 MB. `gemini` takes one; Grok takes none |
 
 ```
 curl -X POST http://localhost:3000/v1/images \
@@ -173,7 +173,7 @@ kind, a list naming the field. A refused request costs nothing and keeps nothing
 
 | Status | When |
 |---|---|
-| `400` | The form itself cannot be read, `provider` is not `chatgpt`, `grok` or `gemini`, or a picture was sent to `grok` |
+| `400` | The form itself cannot be read, `provider` is not `chatgpt`, `grok` or `gemini`, a picture was sent to `grok`, more than one to `gemini`, or more than 4 to `chatgpt` |
 | `401` | No key, an unknown or revoked key, or a web login token |
 | `402` | No credit left today |
 | `404` | No such request or picture, it is someone else's, or it was not made through `/v1` (on a read, a cancel, and the request `continue_from` names alike) |

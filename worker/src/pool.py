@@ -177,8 +177,10 @@ class BrowserPool:
                         payload.get("message", ""), payload.get("history"), thread_url
                     )
                 if feature == "image":
+                    # Several references only ever come for chatgpt (issue #22); one stays a name.
                     return provider.generate_image(
-                        payload.get("prompt", ""), payload.get("reference_filename"), thread_url
+                        payload.get("prompt", ""),
+                        payload.get("reference_filenames") or payload.get("reference_filename"), thread_url
                     )
                 if feature == "video_script":
                     return provider.generate_video_script(

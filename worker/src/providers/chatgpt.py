@@ -25,6 +25,9 @@ SEND_BUTTON = 'button[data-testid="send-button"], button[aria-label="Send"]'
 STOP_BUTTON = '[data-testid="stop-button"], button[aria-label="Stop"]'
 ASSISTANT_TURN = '[data-message-author-role="assistant"], [data-chatgpt-selection-message-id]'
 UPLOAD_INPUT = '#upload-files, input[type="file"][accept="image/*"]'
+# Measured 2026-10-30 on a new chat: UPLOAD_INPUT's first match is `multiple: false`; a second image
+# input takes several files at once (issue #22).
+UPLOAD_MANY = 'input[type="file"][accept="image/*"][multiple]'
 # Measured 2026-10-22: a picture attached to the composer shows as a chip, an img with a data:
 # source beside a button labelled "Remove <file name>", inside the form; the chip is gone at the
 # next page load, which _open makes. The label is the English interface's; the preview is not.
@@ -895,7 +898,9 @@ class ChatGPTProvider(BaseProvider):
             pass
         return False
 
-    def _run(self, prompt: str, upload: Optional[str] = None, thread_url: Optional[str] = None):
+    def _run(self, prompt: str, upload=None, thread_url: Optional[str] = None):
+        """One turn; `upload` is a file name in media_path, or a list of them (issue #22)."""
+        uploads = [upload] if isinstance(upload, str) else list(upload or [])
         # Never let a cancel report the previous turn's thread as this one's.
         self.last_cancelled_thread = None
         page = self._open(thread_url)
@@ -906,16 +911,21 @@ class ChatGPTProvider(BaseProvider):
         if self._read_memory(page) == "on":
             raise ProviderError(MEMORY_ON_ERROR, kind="provider_misconfigured")
         baseline = page.locator(ASSISTANT_TURN).count()
-        if upload and not (self.media_path / upload).exists():
-            return GenerationResult.failure("reference image {} not found".format(upload))
+        missing = [name for name in uploads if not (self.media_path / name).exists()]
+        if missing:
+            return GenerationResult.failure("reference image {} not found".format(", ".join(missing)))
         # Before anything is attached: a turn refused here must leave the shared composer empty.
         baseline_ids = self._baseline_ids(page)
 
-        if upload:
-            path = self.media_path / upload
+        if uploads:
+            paths = [str(self.media_path / name) for name in uploads]
             # A picture attached for a job already gone would wait in the shared composer for the next turn.
             self._stop_unsent()
-            page.locator(UPLOAD_INPUT).first.set_input_files(str(path))
+            if len(paths) == 1:
+                page.locator(UPLOAD_INPUT).first.set_input_files(paths[0])
+            else:
+                # Measured 2026-10-30: the first image input takes one file; this one takes several.
+                page.locator(UPLOAD_MANY).first.set_input_files(paths)
             page.wait_for_timeout(3000)
 
         seen_before = set(page.evaluate(SNAPSHOT_IMAGES))
@@ -958,7 +968,7 @@ class ChatGPTProvider(BaseProvider):
                     sources = [s for s in page.evaluate(COLLECT_CANDIDATE_IMAGES) if s not in seen_before]
                 media = self._download(page, sources, prompt)
                 files = self._fetch_sandbox_files(
-                    page, self._thread_id(page) or "", fresh, prompt, {upload} if upload else set())
+                    page, self._thread_id(page) or "", fresh, prompt, set(uploads))
                 media += self._not_copies(files, media) if files else self._save_files(
                     page, seen_downloads, prompt)
         except JobCancelled:
@@ -1028,7 +1038,10 @@ class ChatGPTProvider(BaseProvider):
     def generate_image(self, prompt: str, reference_filename: Optional[str] = None,
                        thread_url: Optional[str] = None) -> GenerationResult:
         instruction = "Generate an image: {}".format(prompt)
-        if reference_filename:
+        if isinstance(reference_filename, list) and len(reference_filename) > 1:
+            instruction = ("Use the {} attached images as references, in the order they are attached, and "
+                           "generate a new image: {}").format(len(reference_filename), prompt)
+        elif reference_filename:
             instruction = "Use the attached image as the reference and generate a new image: {}".format(prompt)
         return self._run(instruction, upload=reference_filename, thread_url=thread_url)
 

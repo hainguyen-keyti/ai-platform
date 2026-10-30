@@ -2,7 +2,7 @@ import json
 import struct
 import uuid
 from datetime import date, timedelta
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 from src.config import settings
 from src.db.client import db, many, one
 from src.jobs import cancel_job, create_job, get_job, provider_status
-from src.models import FEATURES, PROVIDERS, TAKES_REFERENCE
+from src.models import FEATURES, MAX_REFERENCES, PROVIDERS, TAKES_REFERENCE
 from src.quota import today
 from src.routes.media import CONTENT_TYPES, _safe_path
 from src.security import api_key_user
@@ -141,7 +141,7 @@ def account(user: dict = Depends(api_key_user)):
 
 
 @router.post("/images", status_code=202)
-def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile] = File(default=None),
+def create_image(prompt: str = Form(max_length=8000), image: Optional[List[UploadFile]] = File(default=None),
                  provider: str = Form(default="chatgpt", max_length=40),
                  continue_from: Optional[str] = Form(default=None, max_length=64),
                  user: dict = Depends(api_key_user)):
@@ -153,9 +153,14 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile
     if provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail="unknown provider {!r}; one of {}".format(
             provider[:40], ", ".join(PROVIDERS)))
-    if image is not None and provider not in TAKES_REFERENCE:
+    images = image or []
+    if images and provider not in TAKES_REFERENCE:
         raise HTTPException(status_code=400, detail="{} takes no reference picture; use {}".format(
             provider, " or ".join(TAKES_REFERENCE)))
+    # Issue #22: up to four for chatgpt, in the order sent; one for gemini.
+    if len(images) > MAX_REFERENCES.get(provider, 0):
+        raise HTTPException(status_code=400, detail="{} takes at most {} reference picture(s); {} were sent".format(
+            provider, MAX_REFERENCES.get(provider, 0), len(images)))
     # Issue #21: a request continues an earlier done /v1 request of the same person and provider in
     # that request's conversation, so the worker sends it into the stored thread. Refused before the
     # picture is read or kept, and before anything is charged.
@@ -169,9 +174,10 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile
             raise HTTPException(status_code=409, detail="request {} was made by {}; continue it with {}".format(
                 continue_from, earlier["provider"], earlier["provider"]))
         conversation_id = earlier["conversation_id"]
-    upload, path, picture = None, None, b""
-    if image is not None:
-        picture = image.file.read(MAX_PICTURE_BYTES + 1)
+    # Every picture is checked before any is kept.
+    uploads, kept = [], []
+    for given in images:
+        picture = given.file.read(MAX_PICTURE_BYTES + 1)
         if len(picture) > MAX_PICTURE_BYTES:
             raise HTTPException(status_code=413, detail="the picture is over 10 MB")
         size = _picture_size(picture)
@@ -182,22 +188,23 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[UploadFile
             raise HTTPException(status_code=413, detail="the picture is over {} pixels a side or {} megapixels".format(
                 MAX_SIDE, MAX_PIXELS // 1_000_000))
         filename = "upload-{}{}".format(uuid.uuid4().hex, suffix)
-        path = settings.media_path / filename
-        upload = {"filename": filename,
-                  "metadata": {"source": "upload", "size": len(picture), "width": width, "height": height,
-                               "name": (image.filename or "")[:120]}}
+        uploads.append({"filename": filename, "picture": picture,
+                        "metadata": {"source": "upload", "size": len(picture), "width": width, "height": height,
+                                     "name": (given.filename or "")[:120]}})
     try:
-        if path is not None:
-            path.write_bytes(picture)
+        for upload in uploads:
+            path = settings.media_path / upload["filename"]
+            path.write_bytes(upload.pop("picture"))
+            kept.append(path)
         payload = {"prompt": prompt, "via": "v1"}
         if conversation_id:
             payload["continued_from"] = continue_from
         created = create_job(user=user, provider=provider, feature="image", payload=payload,
                              conversation_id=conversation_id,
-                             user_message="Generate an image: {}".format(prompt), title=prompt, upload=upload)
+                             user_message="Generate an image: {}".format(prompt), title=prompt, upload=uploads)
     except BaseException:
-        # Refused (no credit, nobody serving the provider) or a write that failed: the picture is not kept.
-        if path is not None:
+        # Refused (no credit, nobody serving the provider) or a write that failed: no picture is kept.
+        for path in kept:
             path.unlink(missing_ok=True)
         raise
     return {"id": created["job_id"], "status": "queued"}

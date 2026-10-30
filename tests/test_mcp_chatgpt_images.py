@@ -74,11 +74,14 @@ class FakeV1:
                 body = self.rfile.read(length)
                 message = email.parser.BytesParser().parsebytes(
                     b"Content-Type: " + self.headers.get("Content-Type", "").encode() + b"\r\n\r\n" + body)
-                fields = {}
+                fields, images = {}, []
                 for part in message.get_payload() if message.is_multipart() else []:
                     name = part.get_param("name", header="content-disposition")
                     fields[name] = part.get_payload(decode=True)
-                fake.posts.append({"path": self.path, "auth": self.headers.get("Authorization"), "fields": fields})
+                    if name == "image":
+                        images.append(fields[name])
+                fake.posts.append({"path": self.path, "auth": self.headers.get("Authorization"), "fields": fields,
+                                   "images": images})
                 parts = self.path.strip("/").split("/")
                 if len(parts) == 4 and parts[:2] == ["v1", "images"] and parts[3] == "cancel":
                     state = fake.requests.get(parts[2])
@@ -273,6 +276,25 @@ async def run(fake, work):
         record("continue_from is sent with the request, by generate_image and by every prompt of generate_images",
                not result.is_error and once == earlier.encode() and each == [earlier.encode()] * 2
                and "continue_from" not in plain, "once {} each {}".format(once, each))
+
+        refs = []
+        for n in range(5):
+            refs.append(work / "ref{}.png".format(n))
+            refs[-1].write_bytes(b"\x89PNG\r\n\x1a\n reference " + str(n).encode())
+        result = await client.call_tool("generate_image", {"prompt": "the two together",
+                                                           "reference_paths": [str(refs[0]), str(refs[1])],
+                                                           "save_dir": str(work / "two")}, read_timeout_seconds=60)
+        sent = fake.posts[-1].get("images")
+        kept = [kept_record(p) for p in (work / "two").glob("*.json")]
+        before = len(fake.posts)
+        five = await client.call_tool("generate_image", {"prompt": "too many", "reference_path": str(refs[0]),
+                                                         "reference_paths": [str(r) for r in refs[1:]]},
+                                      read_timeout_seconds=30)
+        record("reference_paths sends each picture in order, the record names them, and more than 4 is refused",
+               not result.is_error and sent == [refs[0].read_bytes(), refs[1].read_bytes()]
+               and [k.get("reference_paths") for k in kept] == [[str(refs[0]), str(refs[1])]]
+               and five.is_error and "at most 4" in said(five) and len(fake.posts) == before,
+               "error {} sent {} records {} five {!r}".format(result.is_error, len(sent or []), kept, said(five)[:120]))
 
         before = len(fake.posts)
         result = await client.call_tool("generate_image", {"prompt": "x", "reference_path": str(work / "nope.png")},

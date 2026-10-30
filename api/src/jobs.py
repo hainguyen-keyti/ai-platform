@@ -148,14 +148,19 @@ def create_job(user, provider, feature, payload, conversation_id=None,
                     (message_id, conversation_id, user_message),
                 )
 
-            # A picture the person sent: kept as their media on their own message, read by the worker.
-            if upload:
-                payload["reference_filename"] = upload["filename"]
+            # The pictures the person sent: kept as their media on their own message, in the order sent,
+            # read by the worker. One upload, or a list of them (issue #22, several for chatgpt).
+            uploads = [upload] if isinstance(upload, dict) else list(upload or [])
+            if uploads:
+                payload["reference_filename"] = uploads[0]["filename"]
+            if len(uploads) > 1:
+                payload["reference_filenames"] = [sent["filename"] for sent in uploads]
+            for sent in uploads:
                 conn.execute(
                     "INSERT INTO media (id, user_id, conversation_id, message_id, provider, type, prompt,"
                     " filename, metadata) VALUES (?, ?, ?, ?, ?, 'image', ?, ?, ?)",
                     (uuid.uuid4().hex, user["id"], conversation_id, message_id, provider,
-                     payload.get("prompt"), upload["filename"], json.dumps(upload["metadata"])),
+                     payload.get("prompt"), sent["filename"], json.dumps(sent["metadata"])),
                 )
 
             if feature == "chat":

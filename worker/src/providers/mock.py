@@ -224,12 +224,13 @@ class MockProvider(BaseProvider):
             return GenerationResult.failure("mock provider showed its error banner", kind="provider_error")
         # Says what reached it, so the gate can tell the exact picture a person sent was handed over.
         seen = ""
-        if reference_filename:
-            reference = self.media_path / reference_filename
+        # One name, or a list of them (issue #22): each is said in the order handed over.
+        for name in [reference_filename] if isinstance(reference_filename, str) else reference_filename or []:
+            reference = self.media_path / name
             if not reference.is_file():
                 return GenerationResult.failure("the reference picture is missing", kind="provider_error")
             blob = reference.read_bytes()
-            seen = " with reference {} bytes sha256 {}".format(len(blob), hashlib.sha256(blob).hexdigest()[:16])
+            seen += " with reference {} bytes sha256 {}".format(len(blob), hashlib.sha256(blob).hexdigest()[:16])
         self._phase("picture appeared")
         return GenerationResult(
             success=True, thread_url=thread,
