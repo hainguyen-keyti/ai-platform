@@ -328,6 +328,10 @@ class DrawingPage(Page):
     PICTURE = "blob:https://chatgpt.com/picture-1"
     PICTURE_DATA = "data:image/png;base64,iVBORw0KGgo="
     COPY = "/mnt/data/a_small_blue_square_1.png"
+    # Measured 2026-10-30 (issue #24): the earlier turn's tool names its picture's sandbox copy, and a
+    # turn that changes that picture names the same path again in its edit call, as the edit's input.
+    EARLIER_COPY = "/mnt/data/ghostwriter_images/generated/an_earlier_picture_1.png"
+    EARLIER_DATA = "data:image/png;base64,ZWFybGllcg=="
     WORDS = "Here it is."
 
     def __init__(self, clock, tool_after=None, tool_kind="multimodal_text", writes=None,
@@ -413,6 +417,13 @@ class DrawingPage(Page):
             if self.reads >= 2:
                 nodes += [node("a0", "assistant", "code", self.made_at - 99, end_turn=False, text="{}"),
                           node("t0", "tool", "multimodal_text", self.made_at - 98)]
+        elif self.earlier == "edited picture":
+            nodes += [node("u0", "user", "text", self.made_at - 100, text="an earlier prompt"),
+                      node("a0", "assistant", "code", self.made_at - 99, end_turn=False, text="{}"),
+                      node("t0", "tool", "multimodal_text", self.made_at - 98),
+                      node("w0", "assistant", "text", self.made_at - 97, end_turn=True, text=""),
+                      node("c0", "tool", "text", self.made_at - 97,
+                           text="Generated images were saved at:\n- " + self.EARLIER_COPY)]
         elif self.earlier:
             nodes += [node("u0", "user", "text", self.made_at - 100, text="an earlier prompt"),
                       node("a0", "assistant", "code", self.made_at - 99, end_turn=False, text="{}"),
@@ -421,7 +432,8 @@ class DrawingPage(Page):
             return nodes
         nodes.append(node("u1", "user", "text", self.sent_at, text="a prompt"))
         if self.reached(self.tool_after):
-            nodes += [node("a1", "assistant", "code", self.sent_at + self.tool_after - 1, end_turn=False, text="{}"),
+            edit = ('{"image_paths": ["' + self.EARLIER_COPY + '"]}') if self.earlier == "edited picture" else "{}"
+            nodes += [node("a1", "assistant", "code", self.sent_at + self.tool_after - 1, end_turn=False, text=edit),
                       node("t1", "tool", self.tool_kind, self.sent_at + self.tool_after,
                            status=done if self.reached(self.finished_after) else "in_progress")]
         if self.reached(self.second_after):
@@ -450,6 +462,9 @@ class DrawingPage(Page):
             return self.PICTURE_DATA
         if script == chatgpt.FETCH_INTERPRETER_FILE:
             self.sandbox_reads.append(args[0][2])
+            if args[0][2] == self.EARLIER_COPY:
+                return {"status": 200, "data": self.EARLIER_DATA, "name": self.EARLIER_COPY.rsplit("/", 1)[-1],
+                        "mime": "image/png"}
             data = self.PICTURE_DATA if self.saved_copy != "another" else "data:image/png;base64,aW5mbw=="
             return {"status": 200, "data": data, "name": self.COPY.rsplit("/", 1)[-1], "mime": "image/png"}
         if script == chatgpt.FETCH_THREAD:
@@ -822,6 +837,22 @@ def main():
     record("a sandbox file that is not the page's picture is still stored",
            said == "success" and pictures == 2,
            "{} with {} file(s)".format(said, pictures))
+
+    # Measured 2026-10-30 (issue #24): a turn changing the earlier picture named that picture's sandbox
+    # file as its edit's input, and the driver fetched it as this turn's: two pictures, one the earlier.
+    page = DrawingPage(clock, tool_after=22, words_after=27, words_text="", saved_copy=True,
+                       earlier="edited picture")
+    said, pictures, text, took = draw_on(page, thread_url=DrawingPage.THREAD)
+    record("a turn that changes an earlier picture does not return that picture again",
+           said == "success" and pictures == 1 and DrawingPage.EARLIER_COPY not in page.sandbox_reads,
+           "{} with {} picture(s), sandbox reads {}".format(said, pictures, page.sandbox_reads))
+
+    page = DrawingPage(clock, tool_after=22, words_after=27, words_text="", saved_copy="another",
+                       earlier="edited picture")
+    said, pictures, text, took = draw_on(page, thread_url=DrawingPage.THREAD)
+    record("a file only this follow-up names is still stored",
+           said == "success" and pictures == 2 and page.sandbox_reads == [DrawingPage.COPY],
+           "{} with {} file(s), sandbox reads {}".format(said, pictures, page.sandbox_reads))
 
     # A picture from an earlier turn of the thread never ends this one, whether or not the read
     # of the thread before the send went through.

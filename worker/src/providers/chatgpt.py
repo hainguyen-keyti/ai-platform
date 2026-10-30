@@ -287,6 +287,8 @@ class ChatGPTProvider(BaseProvider):
         self._context = None
         self._page = None
         self._access_token = None
+        # The sandbox files the thread named before this turn's send (#24), never this turn's.
+        self._named_before = set()
         self.last_settle = None
         self.last_open = None
         # What the account's memory switch read before the last turn: on, off
@@ -557,6 +559,7 @@ class ChatGPTProvider(BaseProvider):
         A follow-up turn that cannot know them would take the earlier answers for its own, so
         the read is tried again and, still failing, the turn is refused before it is sent.
         """
+        self._named_before = set()
         thread_id = self._thread_id(page)
         if not thread_id:
             return set()
@@ -570,6 +573,10 @@ class ChatGPTProvider(BaseProvider):
             status = data.get("status") if data else "no session token"
             # A follow-up's thread always holds its earlier turn: a read with no node is no read.
             if data and status == 200 and data.get("nodes"):
+                # Measured 2026-10-30 (#24): a turn that changes an earlier picture names that picture's
+                # sandbox file again, as its edit's input; fetched, it came back as this turn's.
+                self._named_before = {path for n in data["nodes"]
+                                      for path in SANDBOX_PATH.findall(n.get("text") or "")}
                 return {n["id"] for n in data["nodes"]}
             if data and status == 200:
                 status = "no node"
@@ -682,7 +689,8 @@ class ChatGPTProvider(BaseProvider):
             "\n".join(n["text"] for n in fresh if n["text"]))
         paths = []
         for match in candidates:
-            if match not in paths and PurePosixPath(match).name not in skip_names:
+            if (match not in paths and PurePosixPath(match).name not in skip_names
+                    and match not in self._named_before):
                 paths.append(match)
 
         artifacts = []
