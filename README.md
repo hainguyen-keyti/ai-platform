@@ -135,10 +135,9 @@ docker compose up -d
 
 The api answers on http://localhost:3000/health and the web on http://localhost:5173.
 
-**Register your own account now**, at http://localhost:5173 with the invite code, before the full
-gate: the first account on an empty database is the admin, and the full gate's `tests/ui_smoke.py`
-registers its test accounts in this same database (`storage/db`). Run the gate first and its test
-account is the admin.
+**Register your own account now**, at http://localhost:5173 with the invite code: the first account
+on an empty database is the admin. The full gate's test accounts live in a database of its own
+(`storage/gate/`, below), never in `storage/db`.
 
 ## 8. The gates
 
@@ -156,12 +155,14 @@ Full gate, about 8 minutes, in one command:
 ./scripts/full-gate.sh
 ```
 
-It runs, stopping at the first red step: the quick gate; `npm run build` in `web/`;
-`docker compose up -d` and a wait for the api and the web; a mock worker on :8000 with
-`MOCK_DELAY_SECONDS=4` when nothing answers there (its log in `~/.cache/ai-platform/`, stopped on
-exit; a worker already on :8000 is used only if its health says mock mode); then
-`tests/ui_smoke.py` with `INVITE_CODE` read from `.env`. It needs the venv, `.env` and Docker
-running, and ports 3000, 5173 and 8000 for the stack and the worker.
+It runs, stopping at the first red step: the quick gate; `npm run build` in `web/`; **a stack of
+its own**, a second compose project `aip-gate` (api :3100, web :5273, its database and media in
+`storage/gate/`, emptied each run); a mock worker of its own on :8100 with `MOCK_DELAY_SECONDS=4`,
+serving that api only (its log in `~/.cache/ai-platform/`); then `tests/ui_smoke.py` with
+`INVITE_CODE` read from `.env`. It takes its stack down and stops its worker on exit. The real
+stack, its database and a real worker are never touched, so the gate can run while people use the
+platform. It needs the venv, `.env` and Docker running, and ports 3100, 5273 and 8100 free
+(`GATE_API_PORT`, `GATE_WEB_PORT`, `WORKER_PORT` change them).
 
 ### `.claude/test-command.txt`
 

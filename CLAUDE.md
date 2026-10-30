@@ -27,9 +27,10 @@ MCP server test (its own venv, README step 11): ~/.venvs/aip-mcp/bin/python test
 Owner's cleanup (dry run; --yes deletes, owner only): ~/cloakbrowser-env/bin/python scripts/purge_test_residue.py <list.json>
 ```
 
-The full gate is the quick gate, `npm run build` in `web/`, then `tests/ui_smoke.py` against the
-compose stack and a mock worker that `scripts/full-gate.sh` starts itself when nothing answers on
-:8000. The gates mock the provider boundary on purpose so they can be rerun freely. `--real` drives
+The full gate is the quick gate, `npm run build` in `web/`, then `tests/ui_smoke.py` against a
+compose stack and a mock worker of the gate's own (project `aip-gate`, api :3100, web :5273,
+worker :8100, database in `storage/gate/`), so it never touches the real stack or its jobs and
+the real worker can keep running. The gates mock the provider boundary on purpose so they can be rerun freely. `--real` drives
 the actual browser session of the provider `--provider` names (chatgpt by default): it takes minutes
 and spends account quota, so run it when the browser flow itself changed, not on every commit. The
 real journey walks the web interface as a user with the host worker in real mode (two turns, one

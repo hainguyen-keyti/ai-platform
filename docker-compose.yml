@@ -1,11 +1,16 @@
 services:
+  # The full gate brings up a second copy of this stack as its own project (`-p aip-gate`), on
+  # API_PORT and WEB_PORT with its own STORAGE_DIR, so its mock worker and test accounts never touch
+  # the real stack's database or its jobs (2026-10-30: a real /v1 request was answered by the gate's
+  # mock worker). Unset, everything is the real stack's. The images are named so both share them.
   api:
     build: ./api
+    image: ai-platform-api
     # Reload in place, so an api change needs a restart at worst and never a
     # rebuild. The image still defaults to the plain command for a real deploy.
     command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "3000", "--reload"]
     ports:
-      - "3000:3000"
+      - "${API_PORT:-3000}:3000"
     environment:
       DB_PATH: /data/db/app.db
       MEDIA_PATH: /data/media
@@ -23,16 +28,17 @@ services:
       PROVIDER_HOLD_SECONDS: ${PROVIDER_HOLD_SECONDS:-600}
     volumes:
       - ./api/src:/app/src
-      - ./storage/db:/data/db
-      - ./storage/media:/data/media
+      - ${STORAGE_DIR:-./storage}/db:/data/db
+      - ${STORAGE_DIR:-./storage}/media:/data/media
     restart: unless-stopped
 
   web:
     build: ./web
+    image: ai-platform-web
     ports:
-      - "5173:5173"
+      - "${WEB_PORT:-5173}:5173"
     environment:
-      VITE_API_URL: http://localhost:3000
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
     volumes:
       # The whole directory, not single files: replacing a file on the host
       # swaps its inode and a single-file bind mount keeps serving the old one.
