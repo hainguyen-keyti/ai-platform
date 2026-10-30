@@ -19,13 +19,14 @@ open" at the end of the file; what the tests left in the accounts is in
   84%, runner 71%, pool 58%, total 84%; the worker's lines are probably understated, its stack is killed.
   **Real set, one `generate_images` of 10 prompts through stdio, first job on a fresh worker: 9 done, 1
   failed**, 684s, 47 to 88s a picture, no Cloudflare check, 9 distinct files, credits 100 to 91.
-- **OPEN, not fixed, the owner's call: the first picture after a worker start can fail with a false
-  "logged out".** Job `f9cb16ab`: `no session token: the provider session is logged out; run
+- **Fixed at 13cf3c3: the first picture after a worker start could fail with a false "logged out".**
+  Job `f9cb16ab`: `no session token: the provider session is logged out; run
   scripts/login_provider.py chatgpt`, after 60s of browser start; the next job, 30s later on the same
-  session, was done. It is raised by `_read_memory` (`chatgpt.py` line 543), which reads the token once,
-  where `_session_token(page, 20)` waits for it (measured 2026-09-30: a fresh browser's first read is
-  empty, the token 1.1s later). That cause is inferred from the code and that measure; the job's record
-  names only the raise. The message's advice is harmful: a login would take the session off the worker.
+  session, was done. It was raised by `_read_memory`, which read the token once; it now waits with
+  `_session_token(page, 20)` (measured 2026-09-30: a fresh browser's first read is empty, the token 1.1s
+  later). That cause is inferred from the code and that measure; the job's record names only the raise.
+  Composer test 72/72 (red before the fix), full gate green, one real first picture on a fresh worker
+  done (99s). One real run does not prove a race gone: watch for this error after worker starts.
 - One queue: a set of 10 held studio's request `58a596ab` for 10 minutes (11:15:52 to 11:26:08). The
   picture budget's count resets at a worker restart.
 - #22 done (up to 4 reference pictures), #23 done (health's `storage`, warns from 80%; the owner chose
