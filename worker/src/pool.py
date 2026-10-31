@@ -57,6 +57,7 @@ class ProviderHealth:
         # spend no account and must not count against the real one's file.
         self.budget_file = (Path(settings.pacing_path) / "pacing-{}.json".format(provider)
                             if settings.pacing_path else None)
+        self.budget_file_error = None
         self.image_times = deque(self._stored_image_times())
         self.latencies = deque(maxlen=50)
         self.last_provider_error = None
@@ -72,8 +73,14 @@ class ProviderHealth:
             return
         self.images_in_window()
         written = self.budget_file.with_name(self.budget_file.name + ".new")
-        written.write_text(json.dumps(list(self.image_times)))
-        written.replace(self.budget_file)
+        # The picture is made and its job waits to be told: a file that cannot be written must not lose it.
+        # Memory still counts, and health says the count will not outlive a restart.
+        try:
+            written.write_text(json.dumps(list(self.image_times)))
+            written.replace(self.budget_file)
+            self.budget_file_error = None
+        except OSError as exc:
+            self.budget_file_error = "{}: {}".format(type(exc).__name__, exc)
 
     def note(self, result: GenerationResult, elapsed: float):
         self.last_turn_at = time.time()
@@ -114,6 +121,7 @@ class ProviderHealth:
                                if self.cooldown_until > time.time() else None),
             "consecutive_errors": self.consecutive_errors,
             "images_last_3h": self.images_in_window(),
+            "budget_file_error": self.budget_file_error,
             "p50_latency_s": round(p50, 1) if p50 is not None else None,
             "last_provider_error": self.last_provider_error,
         }

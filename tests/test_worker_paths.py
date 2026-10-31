@@ -8,15 +8,18 @@ dies does is in test_pool_dead_browser.py, what a busy runner says in test_runne
 cleanup in test_library_cleanup.py. Prints N/N PASSED.
 """
 
+import socket
 import sys
 import tempfile
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "worker"))
 
+import httpx  # noqa: E402
 from playwright._impl._errors import TargetClosedError  # noqa: E402
 
 from src import pool as pool_module, runner as runner_module  # noqa: E402
@@ -25,6 +28,7 @@ from src.pool import BrowserPool, ProviderHealth  # noqa: E402
 from src.providers.base import FeatureType, GenerationResult, JobCancelled, MediaArtifact, ProviderError  # noqa: E402
 
 results = []
+real_httpx_client = httpx.Client
 
 
 def record(name, ok, detail=""):
@@ -116,6 +120,9 @@ class Client:
         self.calls.append((path, json))
         for part, answer in self.answers.items():
             if part in path:
+                # A list answers in turn, its last for good.
+                if isinstance(answer, list):
+                    answer = answer.pop(0) if len(answer) > 1 else answer[0]
                 if isinstance(answer, Exception):
                     raise answer
                 return answer
@@ -431,13 +438,118 @@ def runner_answers():
            runner.failed == 2 and runner.current_job is None and "the pool blew up" in runner.last_error
            and len(pool.executed) == 2, "failed {} current {} {!r}".format(runner.failed, runner.current_job, runner.last_error))
 
+    # The api restarts on every change to its code. A result it never got means the turn is made again.
+    runner_module.RESULT_RETRY_SECONDS = (0.01, 0.01, 0.01, 0.01, 0.01)
+    down = httpx.ConnectError("the api is restarting")
+
     pool = Pool(result=GenerationResult(success=True, text="ok"))
-    client = Client({"/jobs/claim": Response(200, JOB), "/result": RuntimeError("the api is restarting")})
+    client = Client({"/jobs/claim": Response(200, JOB), "/result": down})
     runner = runner_module.Runner(pool, "chatgpt")
-    turns(runner, client, 1)
-    record("a result that cannot be posted is said, not counted as done, and the runner goes on",
-           runner.processed == 0 and runner.failed == 1 and runner.current_job is None
-           and "handle failed" in runner.last_error, "{!r}".format(runner.last_error))
+    # Twice round: the second job is the one the runner, told to stop, gives up on after two tries.
+    turns(runner, client, 2)
+    record("a result the api never takes is tried again, then said, not counted as done, and the runner goes on",
+           len(client.to("/result")) == 6 + 2 and runner.processed == 0 and runner.failed == 2
+           and runner.current_job is None and "handle failed" in runner.last_error,
+           "{} tries, {!r}".format(len(client.to("/result")), runner.last_error))
+
+    pool = Pool(result=GenerationResult(success=True, text="ok"))
+    client = Client({"/result": [down, down, Response(200)]})
+    runner = runner_module.Runner(pool, "chatgpt")
+    runner._handle(client, JOB)
+    bodies = client.to("/result")
+    record("a result the api takes once it is back counts as done, the same result each try",
+           len(bodies) == 3 and bodies[0] == bodies[2] and runner.processed == 1 and runner.failed == 0,
+           "{} tries, processed {}".format(len(bodies), runner.processed))
+
+    pool = Pool(result=GenerationResult(success=True, text="ok"))
+    client = Client({"/result": [Response(503), Response(200)]})
+    runner = runner_module.Runner(pool, "chatgpt")
+    runner._handle(client, JOB)
+    record("a 5xx from the api is tried again", len(client.to("/result")) == 2 and runner.processed == 1)
+
+    pool = Pool(result=GenerationResult(success=True, text="ok"))
+    client = Client({"/result": Response(422)})
+    runner = runner_module.Runner(pool, "chatgpt")
+    try:
+        runner._handle(client, JOB)
+        said = "returned"
+    except RuntimeError:
+        said = "raised"
+    record("an answer the api means is not tried again", said == "raised" and len(client.to("/result")) == 1,
+           "{} after {} tries".format(said, len(client.to("/result"))))
+
+    # The api can take a result and lose its answer: the next try then gets 409, about the job's own result.
+    kept = media / "taken.png"
+    kept.write_bytes(b"x")
+    pool = Pool(result=GenerationResult(success=True, media=[MediaArtifact(filename="taken.png", type="image")]))
+    client = Client({"/result": [httpx.ReadTimeout("the answer was lost"), Response(409, {"detail": "job is done"})]})
+    runner = runner_module.Runner(pool, "chatgpt")
+    runner._handle(client, JOB)
+    record("a 409 after a try that went unanswered keeps the files: they may be the job's own",
+           kept.exists() and runner.refused == 1 and runner.processed == 0, "file left {}".format(kept.exists()))
+
+    pool = Pool(result=GenerationResult(success=True, text="ok"))
+    client = Client({"/result": down})
+    runner = runner_module.Runner(pool, "chatgpt")
+    runner.stop()
+    try:
+        runner._handle(client, JOB)
+    except httpx.ConnectError:
+        pass
+    record("a worker shutting down stops waiting on the api", len(client.to("/result")) == 2,
+           "{} tries".format(len(client.to("/result"))))
+
+    # With the real http client, what really reaches the except: a port nobody listens on, then an api on it.
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+
+    class Api(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    servers = []
+
+    def comes_back():
+        servers.append(HTTPServer(("127.0.0.1", port), Api))
+        servers[0].serve_forever()
+    runner_module.RESULT_RETRY_SECONDS = (0.5, 0.5, 0.5, 0.5, 0.5)
+    threading.Timer(0.3, comes_back).start()
+    pool = Pool(result=GenerationResult(success=True, text="ok"))
+    runner = runner_module.Runner(pool, "chatgpt")
+    with real_httpx_client(base_url="http://127.0.0.1:{}".format(port), timeout=5.0) as real:
+        runner._handle(real, JOB)
+    servers[0].shutdown()
+    record("a real connection refused is waited out", runner.processed == 1 and runner.failed == 0,
+           "processed {} last error {!r}".format(runner.processed, runner.last_error))
+    runner_module.RESULT_RETRY_SECONDS = (0.01, 0.01, 0.01, 0.01, 0.01)
+
+    # A budget file that cannot be written cost a finished picture its result (measured 2026-10-31).
+    settings.pacing_path = str(media / "no" / "such" / "folder")
+    made = GenerationResult(success=True, media=[MediaArtifact(filename="made.png", type="image")])
+    real_pool = pool_with(Provider(result=made))
+    client = Client()
+    runner = runner_module.Runner(real_pool, "chatgpt")
+    runner._handle(client, JOB)
+    snapshot = real_pool.status()
+    record("a budget file that cannot be written does not lose the job's result",
+           len(client.to("/result")) == 1 and runner.processed == 1, "{} posted".format(len(client.to("/result"))))
+    health = real_pool._health["chatgpt"]
+    record("and health says so, and memory still counts", health.images_in_window() == 1
+           and "FileNotFoundError" in (snapshot["chatgpt"]["budget_file_error"] or ""),
+           repr(snapshot["chatgpt"]["budget_file_error"]))
+    settings.pacing_path = str(media)
+    health = ProviderHealth("chatgpt")
+    health.budget_file_error = "an old failure"
+    health.note(made, 1.0)
+    record("a write that works again clears it", health.budget_file_error is None)
+    settings.pacing_path = ""
 
     pool = Pool()
     client = Client({"/tombstones/claim": Response(200, STONE)})

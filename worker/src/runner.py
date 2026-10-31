@@ -15,6 +15,9 @@ BUSY_PING_SECONDS = 5.0
 # How long a runner in a job goes at most without asking whether the job is still its own, whatever the
 # lease: a third of production's lease was 140s, and a Stop reached the driver after its turn had ended.
 CANCEL_CHECK_SECONDS = 5.0
+# How long to wait before each new try at handing the api a finished job's result, about a minute in all: the
+# api restarts on every change to its code, and a result it never got means the turn is made again.
+RESULT_RETRY_SECONDS = (2.0, 5.0, 10.0, 15.0, 30.0)
 
 
 class Runner(threading.Thread):
@@ -217,6 +220,26 @@ class Runner(threading.Thread):
             except Exception:
                 pass
 
+    def _post_result(self, client, job_id, body):
+        """Hand the api a finished job's result: (its answer, whether a try before it went unanswered).
+
+        Only an api that did not answer, or answered 5xx, is tried again; its last failure goes up.
+        """
+        path = "/internal/jobs/{}/result".format(job_id)
+        retried = False
+        for pause in RESULT_RETRY_SECONDS:
+            try:
+                response = client.post(path, json=body)
+                if response.status_code < 500:
+                    return response, retried
+                self.last_error = "result not taken, status {}".format(response.status_code)
+            except httpx.TransportError as exc:
+                self.last_error = "result not taken, {}: {}".format(type(exc).__name__, exc)
+            retried = True
+            if self._halt.wait(pause):
+                break
+        return client.post(path, json=body), retried
+
     def _handle(self, client, job):
         if job.get("provider") != self.provider:
             # This runner owns one browser, on this thread. Driving another
@@ -268,15 +291,18 @@ class Runner(threading.Thread):
             "error_kind": result.error_kind,
             "thread_url": result.thread_url,
         }
-        response = client.post("/internal/jobs/{}/result".format(job_id), json=body)
+        response, retried = self._post_result(client, job_id, body)
         if response.status_code == 409:
             # Cancelled or reclaimed while we worked; the api already settled it,
-            # so what this attempt saved has no row to belong to. Remove it.
-            for item in result.media:
-                try:
-                    (settings.media_path / item.filename).unlink(missing_ok=True)
-                except OSError:
-                    pass
+            # so what this attempt saved has no row to belong to. Remove it. After a
+            # retry the 409 may be the api refusing a result it took the first time,
+            # its answer lost, so those files may be the job's own: they stay.
+            if not retried:
+                for item in result.media:
+                    try:
+                        (settings.media_path / item.filename).unlink(missing_ok=True)
+                    except OSError:
+                        pass
             self.refused += 1
             self.last_error = "result refused: {}".format(response.json().get("detail"))
             return
