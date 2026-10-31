@@ -138,6 +138,17 @@ CREATE TABLE IF NOT EXISTS api_key_conversations (
     PRIMARY KEY (key_id, provider)
 );
 
+-- The conversation a named session of a key keeps on a provider, across days (issue #28): a character
+-- of its own, unseen by the key's other sessions. A conversation the person deleted starts a new one.
+CREATE TABLE IF NOT EXISTS api_key_sessions (
+    key_id          TEXT NOT NULL REFERENCES api_keys(id) ON DELETE CASCADE,
+    provider        TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (key_id, provider, name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_tombstones_open      ON thread_tombstones(deleted_at, claimed_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_token       ON sessions(token);
 CREATE INDEX IF NOT EXISTS idx_conversations_user   ON conversations(user_id, updated_at DESC);

@@ -81,6 +81,7 @@ as `conversation_id`, and it shows on the web as "API key <name>, <provider>, <d
 | `prompt` | yes | What to make, up to 8000 characters |
 | `provider` | no | `chatgpt` (the default), `grok` or `gemini` |
 | `continue_from` | no | The id of an earlier request of yours, made through `/v1` on the same provider, that ended `done`. The new request goes into that request's conversation, so the provider gets the prompt in the thread where it made that picture and can change it ("the same, at night") without the picture being sent back |
+| `session` | no | A name, up to 64 characters, for a person or character (case and extra spaces do not count). The same name on the same key and provider goes into the same provider thread on any day; another name goes into a thread that sees none of its pictures. With no name, requests go into the key's thread for the day. Not with `continue_from`: a continued request stays in that request's session. |
 | `image` | no | A picture file to use as a reference: PNG, JPEG or WEBP, at most 10 MB, at most 16384 pixels a side and 50 megapixels. `chatgpt` takes up to 4, each sent as its own `image` field, in the order they are used ("the character of the first in the scene of the second"); together they must fit the request's 10 MB. `gemini` takes one; Grok takes none |
 
 ```
@@ -114,6 +115,7 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/5f0
   "id": "5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a",
   "provider": "chatgpt",
   "continued_from": null,
+  "session": null,
   "conversation_id": "0c1d2e3f4a5b4c6d8e9f0a1b2c3d4e5f",
   "status": "done",
   "text": "Here is the fox at night.",
@@ -140,6 +142,18 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/5f0
 | `cancelled` | Stopped before it finished; the credit was given back |
 
 Times are UTC.
+
+## Your sessions
+
+`GET /v1/sessions` lists this key's named sessions, the last used first; `?provider=chatgpt` keeps to one provider.
+
+```json
+{"sessions": [{"name": "woman-a", "provider": "chatgpt", "conversation_id": "0c1d2e3f4a5b4c6d8e9f0a1b2c3d4e5f",
+               "created_at": "2026-10-31 09:00:00", "requests": 3, "pictures": 3, "last_used": "2026-10-31 09:10:00"}]}
+```
+
+Separate sessions keep ChatGPT from seeing each other's pictures. They do not promise unlike faces when two
+sessions share a reference picture or a near-identical prompt.
 
 ## 3. Download a picture
 
@@ -185,7 +199,7 @@ kind, a list naming the field. A refused request costs nothing and keeps nothing
 
 | Status | When |
 |---|---|
-| `400` | The form itself cannot be read, `provider` is not `chatgpt`, `grok` or `gemini`, a picture was sent to `grok`, more than one to `gemini`, or more than 4 to `chatgpt` |
+| `400` | The form itself cannot be read, `provider` is not `chatgpt`, `grok` or `gemini`, a picture was sent to `grok`, more than one to `gemini`, more than 4 to `chatgpt`, a `session` is blank, or `session` came with `continue_from` |
 | `401` | No key, an unknown or revoked key, or a web login token |
 | `402` | No credit left today |
 | `404` | No such request or picture, it is someone else's, or it was not made through `/v1` (on a read, a cancel, and the request `continue_from` names alike) |

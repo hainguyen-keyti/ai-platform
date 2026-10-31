@@ -8,7 +8,7 @@ it over stdio. It calls the platform with the person's own API key, made on the 
     AIP_API_URL   the platform's api (default http://localhost:3000)
     AIP_SAVE_DIR  where pictures are saved when a call names no folder (default: <temp>/aip-pictures)
 
-Five tools. generate_image sends a prompt (and optionally a reference picture), waits for ChatGPT,
+Six tools. list_sessions lists the key's named sessions; generate_image sends a prompt (and optionally a reference picture), waits for ChatGPT,
 saves every picture it made and answers with their paths; generate_images does the same for a set of
 prompts sent at once; get_image collects a request already sent, for a host that stopped waiting;
 account_status says the credits left and whether ChatGPT is served; cancel_image cancels a request
@@ -76,7 +76,10 @@ mcp = MCPServer("aip-chatgpt-images", instructions=(
     "as continue_from rather than sending the picture back. Every request of one API key goes into that "
     "key's own ChatGPT thread for the day, so ChatGPT sees the key's earlier pictures of the day and "
     "its pictures drift toward one look: for a varied set, name the face angle and the expression in "
-    "every prompt. account_status says the credits left before a set; "
+    "every prompt. For a different person or character, pass a session name of its own, such as "
+    "session=\"woman-a\" and session=\"woman-b\": each session is a ChatGPT thread that sees no other "
+    "session's pictures and lasts across days, so the same name keeps the same character, and "
+    "list_sessions says which there are. account_status says the credits left before a set; "
     "cancel_image cancels a request sent by mistake."))
 
 
@@ -91,13 +94,14 @@ class Picture(TypedDict):
 
 class Answer(TypedDict):
     """A request: done with its pictures, or still queued or running (then call get_image later). The
-    conversation is the key's for the day: every request of this key goes into the same ChatGPT thread."""
+    conversation is its session's, or with no session the key's for the day: one ChatGPT thread."""
     request_id: str
     status: str
     pictures: List[Picture]
     text: str
     message: str
     conversation_id: Optional[str]
+    session: Optional[str]
 
 
 class SetRequest(TypedDict):
@@ -110,8 +114,25 @@ class SetRequest(TypedDict):
 
 
 class SetAnswer(TypedDict):
-    """Every prompt of a set, in the order given."""
+    """Every prompt of a set, in the order given, and the session they were sent to."""
     requests: List[SetRequest]
+    message: str
+    session: Optional[str]
+
+
+class Session(TypedDict):
+    """A named session of this key: its ChatGPT thread's conversation and what has gone into it."""
+    name: str
+    conversation_id: str
+    requests: int
+    pictures: int
+    created_at: str
+    last_used: Optional[str]
+
+
+class Sessions(TypedDict):
+    """This key's sessions on ChatGPT, the last used first."""
+    sessions: List[Session]
     message: str
 
 
@@ -208,13 +229,14 @@ def detail(raw: bytes) -> str:
     return str(said) if said else raw.decode(errors="replace")[:300]
 
 
-def form(prompt: str, references: List[Path], continue_from: Optional[str] = None):
-    """multipart/form-data: the prompt, provider chatgpt, the request it continues if any (#21), and each
-    reference picture as an `image` field, in order (#22)."""
+def form(prompt: str, references: List[Path], continue_from: Optional[str] = None, session: Optional[str] = None):
+    """multipart/form-data: the prompt, provider chatgpt, the request it continues if any (#21), its
+    session if any (#28), and each reference picture as an `image` field, in order (#22)."""
     boundary = uuid.uuid4().hex
     body = b""
     fields = (("prompt", prompt), ("provider", "chatgpt")) + ((("continue_from", continue_from),)
-                                                            if continue_from else ())
+                                                            if continue_from else ()) + (
+        (("session", session),) if session is not None else ())
     for name, value in fields:
         body += ('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n'.format(boundary, name).encode()
                  + value.encode() + b"\r\n")
@@ -226,8 +248,8 @@ def form(prompt: str, references: List[Path], continue_from: Optional[str] = Non
     return body + "--{}--\r\n".format(boundary).encode(), "multipart/form-data; boundary=" + boundary
 
 
-def send(prompt: str, references: List[Path], continue_from: Optional[str] = None):
-    body, content_type = form(prompt, references, continue_from)
+def send(prompt: str, references: List[Path], continue_from: Optional[str] = None, session: Optional[str] = None):
+    body, content_type = form(prompt, references, continue_from, session)
     return call("POST", "/v1/images", body, content_type)
 
 
@@ -284,7 +306,7 @@ def save(state: dict, folder: Path, prompt: Optional[str], given: List[str], wit
         kept.write_text(json.dumps({
             "prompt": prompt, "request_id": state["id"], "reference_path": given[0] if given else None,
             "reference_paths": given,
-            "continued_from": state.get("continued_from"),
+            "continued_from": state.get("continued_from"), "session": state.get("session"),
             "created_at": state.get("created_at"), "finished_at": state.get("finished_at"),
             "text": state.get("text") or "", "picture": path.name,
             "content_type": picture.get("content_type"), "bytes": len(blob)}, ensure_ascii=False, indent=2) + "\n",
@@ -334,11 +356,13 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
                 answering = False
             else:
                 words = "\nChatGPT said: {}".format(state["text"]) if state.get("text") else ""
-                message = "ChatGPT made {} picture(s) for request {}, saved as:\n{}{}".format(
-                    len(saved), request_id, "\n".join(listed(saved, notes)), words)
+                where = ' in session "{}"'.format(state["session"]) if state.get("session") else ""
+                message = "ChatGPT made {} picture(s) for request {}{}, saved as:\n{}{}".format(
+                    len(saved), request_id, where, "\n".join(listed(saved, notes)), words)
                 return answered(message, Answer(request_id=request_id, status="done", pictures=saved,
                                                 text=state.get("text") or "", message=message,
-                                                conversation_id=state.get("conversation_id")), shown)
+                                                conversation_id=state.get("conversation_id"),
+                                                session=state.get("session")), shown)
         if answering and state.get("status") in ("failed", "cancelled"):
             raise ToolError("request {} {}: {} (the credit was given back)".format(
                 request_id, state["status"], state.get("error") or "no reason given"))
@@ -351,7 +375,8 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
                 message = "The platform does not answer just now, so {}".format(message[0].lower() + message[1:])
             return answered(message, Answer(request_id=request_id, status=known.get("status") or "unknown",
                                             pictures=[], text="", message=message,
-                                            conversation_id=known.get("conversation_id")), [])
+                                            conversation_id=known.get("conversation_id"),
+                                            session=known.get("session")), [])
         if ctx is not None:
             await ctx.report_progress(min(waited, wait), wait, message="ChatGPT is {}".format(
                 known.get("status") if answering else "not answering, still waiting"))
@@ -362,21 +387,25 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
 async def generate_image(prompt: str, ctx: Context, reference_path: Optional[str] = None,
                          save_dir: Optional[str] = None, wait_seconds: int = WAIT_SECONDS,
                          preview: bool = True, continue_from: Optional[str] = None,
-                         reference_paths: Optional[List[str]] = None) -> Annotated[CallToolResult, Answer]:
+                         reference_paths: Optional[List[str]] = None,
+                         session: Optional[str] = None) -> Annotated[CallToolResult, Answer]:
     """Make a picture with ChatGPT from a prompt, optionally following reference pictures (PNG, JPEG
     or WEBP; reference_path for one, reference_paths for up to 4 in order, e.g. "put the character of
     the first into the scene of the second"; all together under 10 MB), and save it named by its
     prompt, with a .json record of it beside it.
     To change a picture already made ("brighter", "the same cat, sleeping"), pass its request id as
     continue_from instead of sending the picture back: the prompt goes into the ChatGPT thread that
-    made it, which sees that picture and what was asked before. Waits for it (about a minute, up to
+    made it, which sees that picture and what was asked before. To keep a person or character apart
+    from the others, give it a session name of its own (session="woman-a"): the same name goes into the
+    same ChatGPT thread on any day, another name into a thread that sees none of its pictures; with
+    continue_from it is left out, as the request stays in its own session. Waits for it (about a minute, up to
     wait_seconds) and answers with the saved files' paths and a small preview of each picture
     (preview=False leaves it out); a request still running then is collected with get_image. Each
     request costs one credit on the platform; a failed one gives it back."""
     needs_key()
     given = given_references(reference_path, reference_paths)
     references = checked_references(given)
-    status, raw = await anyio.to_thread.run_sync(send, prompt, references, continue_from)
+    status, raw = await anyio.to_thread.run_sync(send, prompt, references, continue_from, session)
     if status != 202:
         raise ToolError("the platform refused the request ({}): {}".format(status, detail(raw)))
     request_id = json.loads(raw)["id"]
@@ -389,11 +418,13 @@ async def generate_image(prompt: str, ctx: Context, reference_path: Optional[str
 async def generate_images(prompts: List[str], ctx: Context, reference_path: Optional[str] = None,
                           save_dir: Optional[str] = None, wait_seconds: int = SET_WAIT_SECONDS,
                           preview: bool = True, continue_from: Optional[str] = None,
-                          reference_paths: Optional[List[str]] = None) -> Annotated[CallToolResult, SetAnswer]:
+                          reference_paths: Optional[List[str]] = None,
+                          session: Optional[str] = None) -> Annotated[CallToolResult, SetAnswer]:
     """Make a set of pictures with ChatGPT, one request per prompt (1 to 20), all following the same
     reference pictures when given (reference_path, or reference_paths for up to 4), and all continuing
     the request continue_from names when one is given (each then goes into that request's ChatGPT
-    thread, one after another). Sends them all at once; ChatGPT makes them one after another, about a
+    thread, one after another), or all going into the named session when one is given: a set is one
+    session, so a set of different people is one call per person. Sends them all at once; ChatGPT makes them one after another, about a
     minute each. Reports how many are done as it goes, and answers once all have ended or
     wait_seconds has passed (at most 3600) with each prompt's files and preview, its failure reason,
     or its request id for get_image when it is still running. One failed prompt fails only itself; a
@@ -411,7 +442,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
              for prompt in prompts]
     for item in items:
         try:
-            status, raw = await anyio.to_thread.run_sync(send, item["prompt"], references, continue_from)
+            status, raw = await anyio.to_thread.run_sync(send, item["prompt"], references, continue_from, session)
         except Unreachable as exc:
             # Whether this one arrived cannot be told, and those sent before it must not be lost.
             item.update(status="unknown", error=str(exc))
@@ -475,8 +506,27 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
         else:
             lines.append(head + "{}: {}".format(item["status"], item["error"]))
     done = sum(1 for item in items if item["status"] == "done")
-    message = "{} of {} prompts done ({} sent).\n{}".format(done, len(items), len(sent), "\n".join(lines))
-    return answered(message, SetAnswer(requests=items, message=message), shown)
+    where = ' in session "{}"'.format(" ".join(session.split()).casefold()) if session else ""
+    message = "{} of {} prompts done{} ({} sent).\n{}".format(done, len(items), where, len(sent), "\n".join(lines))
+    return answered(message, SetAnswer(requests=items, message=message, session=session), shown)
+
+
+@mcp.tool()
+async def list_sessions() -> Annotated[CallToolResult, Sessions]:
+    """This key's named sessions on ChatGPT, the last used first, with how many requests and pictures
+    each holds. Use it to carry on with a character made earlier, by passing its name as session."""
+    needs_key()
+    status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/sessions?provider=chatgpt")
+    if status != 200:
+        raise ToolError("the sessions could not be read ({}): {}".format(status, detail(raw)))
+    rows = json.loads(raw).get("sessions") or []
+    found = [Session(name=r["name"], conversation_id=r["conversation_id"], requests=r["requests"],
+                     pictures=r["pictures"], created_at=r["created_at"], last_used=r.get("last_used")) for r in rows]
+    lines = ['- "{}": {} picture(s) from {} request(s), last used {}'.format(
+        s["name"], s["pictures"], s["requests"], s["last_used"] or "never") for s in found]
+    message = "\n".join(["{} session(s) on this key:".format(len(found))] + lines) if found else (
+        "This key has no named session yet.")
+    return answered(message, Sessions(sessions=found, message=message), [])
 
 
 @mcp.tool()

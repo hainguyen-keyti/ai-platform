@@ -119,7 +119,9 @@ def _image_request(user_id: str, request_id: str) -> dict:
     made_here = bool(row) and json.loads(row["payload"] or "{}").get("via") == "v1"
     if job["feature"] != "image" or not made_here:
         raise HTTPException(status_code=404, detail="image request not found")
-    job["continued_from"] = json.loads(row["payload"] or "{}").get("continued_from")
+    payload = json.loads(row["payload"] or "{}")
+    job["continued_from"] = payload.get("continued_from")
+    job["session"] = payload.get("session")
     return job
 
 
@@ -151,6 +153,48 @@ def _key_conversation(user: dict, provider: str) -> str:
     return conversation_id
 
 
+def _session_conversation(user: dict, provider: str, name: str) -> str:
+    """The conversation a named session of this key keeps on this provider, on any day (issue #28). Made
+    on the session's first request, or when the person deleted the one it had; two keys never share one."""
+    with db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            kept = one(conn, "SELECT s.conversation_id FROM api_key_sessions s"
+                             " JOIN conversations c ON c.id = s.conversation_id AND c.user_id = ?"
+                             " WHERE s.key_id = ? AND s.provider = ? AND s.name = ?",
+                       (user["id"], user["api_key_id"], provider, name))
+            if kept:
+                conn.execute("COMMIT")
+                return kept["conversation_id"]
+            key = one(conn, "SELECT name FROM api_keys WHERE id = ?", (user["api_key_id"],)) or {}
+            conversation_id = uuid.uuid4().hex
+            conn.execute("INSERT INTO conversations (id, user_id, provider, title) VALUES (?, ?, ?, ?)",
+                         (conversation_id, user["id"], provider,
+                          "API key {}, {}, session {}".format(key.get("name") or "", provider, name)[:80]))
+            conn.execute("INSERT OR REPLACE INTO api_key_sessions (key_id, provider, name, conversation_id)"
+                         " VALUES (?, ?, ?, ?)", (user["api_key_id"], provider, name, conversation_id))
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    return conversation_id
+
+
+@router.get("/sessions")
+def sessions(provider: Optional[str] = None, user: dict = Depends(api_key_user)):
+    """This key's named sessions, the last used first (issue #28)."""
+    with db() as conn:
+        rows = many(conn, "SELECT s.name, s.provider, s.conversation_id, s.created_at,"
+                          " (SELECT COUNT(*) FROM jobs j WHERE j.conversation_id = s.conversation_id) AS requests,"
+                          " (SELECT COUNT(*) FROM media m WHERE m.conversation_id = s.conversation_id"
+                          "  AND m.filename NOT LIKE 'upload-%') AS pictures,"
+                          " (SELECT MAX(j.created_at) FROM jobs j WHERE j.conversation_id = s.conversation_id) AS last_used"
+                          " FROM api_key_sessions s JOIN conversations c ON c.id = s.conversation_id AND c.user_id = ?"
+                          " WHERE s.key_id = ? AND (? IS NULL OR s.provider = ?) ORDER BY last_used DESC, s.name",
+                    (user["id"], user["api_key_id"], provider, provider))
+    return {"sessions": rows}
+
+
 @router.get("/providers")
 def providers(user: dict = Depends(api_key_user)):
     """Which providers a worker serves now, and what each does for /v1/images (issue #16)."""
@@ -173,10 +217,18 @@ def account(user: dict = Depends(api_key_user)):
 def create_image(prompt: str = Form(max_length=8000), image: Optional[List[UploadFile]] = File(default=None),
                  provider: str = Form(default="chatgpt", max_length=40),
                  continue_from: Optional[str] = Form(default=None, max_length=64),
+                 session: Optional[str] = Form(default=None, max_length=64),
                  user: dict = Depends(api_key_user)):
     prompt = prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="a prompt is required")
+    # Issue #28: one name however it is spelled in case or spacing, so "Co Gai A" is not a second character.
+    name = " ".join(session.split()).casefold() if session is not None else None
+    if session is not None and not name:
+        raise HTTPException(status_code=400, detail="a session needs a name")
+    if name and continue_from:
+        raise HTTPException(status_code=400, detail="send session or continue_from, not both: "
+                                                    "a request continued stays in that request's session")
     # Refused before the picture is read or kept: a provider that is not there, and a reference
     # picture to one whose picture turn takes none (issue #16).
     if provider not in PROVIDERS:
@@ -203,6 +255,7 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[List[Uploa
             raise HTTPException(status_code=409, detail="request {} was made by {}; continue it with {}".format(
                 continue_from, earlier["provider"], earlier["provider"]))
         conversation_id = earlier["conversation_id"]
+        name = earlier["session"]
     # Every picture is checked before any is kept; the key's conversation is found only after, so a
     # refused picture opens none.
     uploads, kept = [], []
@@ -222,8 +275,12 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[List[Uploa
                         "metadata": {"source": "upload", "size": len(picture), "width": width, "height": height,
                                      "name": (given.filename or "")[:120]}})
     payload = {"prompt": prompt, "via": "v1"}
+    if name:
+        payload["session"] = name
     if conversation_id:
         payload["continued_from"] = continue_from
+    elif name:
+        conversation_id = _session_conversation(user, provider, name)
     else:
         conversation_id = _key_conversation(user, provider)
     try:
@@ -267,6 +324,7 @@ def image_status(request_id: str, user: dict = Depends(api_key_user)):
         "id": job["id"],
         "provider": job["provider"],
         "continued_from": job["continued_from"],
+        "session": job["session"],
         "conversation_id": job["conversation_id"],
         "status": STATUSES.get(job["status"], job["status"]),
         "text": result.get("text") or "",

@@ -232,7 +232,9 @@ calls the platform's image API (`docs/api-v1-images.md`) with your own API key. 
   when the wait ends answers with its id. Every request of one key goes into that key's own
   ChatGPT thread for the day (UTC). `continue_from=<request id>` changes a picture already made
   ("the same, at night"): the prompt goes into the ChatGPT thread that made it, so the picture is
-  not sent back. `reference_paths=[…]` sends up to 4 reference pictures in order ("the character of
+  not sent back. `session="woman-a"` keeps a person or character apart: the same name goes into the
+  same ChatGPT thread on any day, another name into a thread that sees none of its pictures, and
+  `list_sessions` says which there are. `reference_paths=[…]` sends up to 4 reference pictures in order ("the character of
   the first in the scene of the second"), all together under 10 MB.
 - `generate_images(prompts, reference_path=None, save_dir=None, wait_seconds=1800, preview=True)`:
   a set of 1 to 20 prompts, sent at once, made one after another (ChatGPT makes one picture at a

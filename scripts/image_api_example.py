@@ -7,6 +7,7 @@
     python3 scripts/image_api_example.py --provider grok --prompt "a lighthouse at sunset"
     python3 scripts/image_api_example.py --prompt "the fox of the first in the second's forest" --image fox.png --image forest.png
     python3 scripts/image_api_example.py --prompt "the same fox, asleep" --continue-from 5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a
+    python3 scripts/image_api_example.py --prompt "a woman with short red hair" --session woman-a
     python3 scripts/image_api_example.py --account
     python3 scripts/image_api_example.py --cancel 5f0c2a9e1b8d4c7f9a3e6d2b1c0f8e7a
 
@@ -48,13 +49,13 @@ def detail(raw):
         return raw.decode(errors="replace")
 
 
-def form(prompt, images, provider=None, continue_from=None):
+def form(prompt, images, provider=None, continue_from=None, session=None):
     """A multipart/form-data body with the prompt, the provider if named, the request it continues if
-    any, and each picture given as an `image` file, in order."""
+    any, its session if any, and each picture given as an `image` file, in order."""
     boundary = uuid.uuid4().hex
     body = ('--{}\r\nContent-Disposition: form-data; name="prompt"\r\n\r\n'.format(boundary).encode()
             + prompt.encode() + b"\r\n")
-    for name, value in (("provider", provider), ("continue_from", continue_from)):
+    for name, value in (("provider", provider), ("continue_from", continue_from), ("session", session)):
         if value:
             body += ('--{}\r\nContent-Disposition: form-data; name="{}"\r\n\r\n'.format(boundary, name).encode()
                      + value.encode() + b"\r\n")
@@ -79,6 +80,8 @@ def main():
                         help="a PNG, JPEG or WEBP picture to use as a reference; up to 4 for chatgpt, in order")
     parser.add_argument("--continue-from", metavar="REQUEST_ID",
                         help="an earlier done request to continue, in the same provider thread")
+    parser.add_argument("--session", help="a name of its own for a person or character: the same name keeps the same "
+                                          "provider thread on any day, and another name sees none of its pictures")
     parser.add_argument("--out", type=Path, default=Path("."), help="where to save the pictures (default: here)")
     parser.add_argument("--wait", type=int, default=600, help="seconds to keep asking before giving up")
     args = parser.parse_args()
@@ -105,7 +108,7 @@ def main():
     if not args.prompt:
         parser.error("--prompt is required unless --account or --cancel")
 
-    body, content_type = form(args.prompt, args.image, args.provider, args.continue_from)
+    body, content_type = form(args.prompt, args.image, args.provider, args.continue_from, args.session)
     status, raw = call("POST", api + "/v1/images", key, body, content_type)
     if status != 202:
         sys.exit("refused ({}): {}".format(status, detail(raw)))

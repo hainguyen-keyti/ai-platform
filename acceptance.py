@@ -118,6 +118,9 @@ CHECKS = (
     "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise",
     "a /v1 chatgpt request carries up to four reference pictures in order, and more is refused uncharged",
     "a /v1 key's requests share one conversation and thread a day, apart from other keys and providers",
+    "a named session keeps its own conversation and thread across days, apart from other names, keys and providers",
+    "a session with no name or with continue_from is refused uncharged, and a continued request stays in its session",
+    "a key lists its own sessions only, and a session whose conversation was deleted starts a new one",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "the api tells a worker which threads are the platform's, and only for that provider",
     "a done result with nothing in it fails and refunds",
@@ -134,6 +137,9 @@ V1_JOB_CHECKS = (
     "a /v1 request can continue an earlier one in its thread, and is refused uncharged otherwise",
     "a /v1 chatgpt request carries up to four reference pictures in order, and more is refused uncharged",
     "a /v1 key's requests share one conversation and thread a day, apart from other keys and providers",
+    "a named session keeps its own conversation and thread across days, apart from other names, keys and providers",
+    "a session with no name or with continue_from is refused uncharged, and a continued request stays in its session",
+    "a key lists its own sessions only, and a session whose conversation was deleted starts a new one",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
 )
@@ -1144,10 +1150,12 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
     # the day; another key, another day and another provider each get their own.
     per_key = "a /v1 key's requests share one conversation and thread a day, apart from other keys and providers"
 
-    def sent_with(key, provider=None):
+    def sent_with(key, provider=None, session=None):
         fields = {"prompt": "a square for the key's thread"}
         if provider:
             fields["provider"] = provider
+        if session:
+            fields["session"] = session
         sstatus, sbody = http_form(api + "/v1/images", fields, token=key)
         request_id = sbody.get("id") if sstatus == 202 and isinstance(sbody, dict) else None
         state = poll_v1(request_id, key) if request_id else {}
@@ -1177,6 +1185,80 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
         c[per_key].failed("key one {} then {}; key two {}; grok {}; day moved {}; next day {} then {} "
                           "(request, conversation, thread, answered conversation)".format(
                               one_a, one_b, two, on_grok, moved, next_day, later))
+
+    # Issue #28: a name of its own for a character: one conversation and thread on any day, seen by no other.
+    per_session = "a named session keeps its own conversation and thread across days, apart from other names, keys and providers"
+    k3 = new_key(token, "session key one")[1]
+    k4 = new_key(token, "session key two")[1]
+    a1 = sent_with(k3.get("key"), session="woman-a")
+    b1 = sent_with(k3.get("key"), session="woman-b")
+    a2 = sent_with(k3.get("key"), session="  Woman-A ")
+    no_name = sent_with(k3.get("key"))
+    other_key = sent_with(k4.get("key"), session="woman-a")
+    grok_a = sent_with(k3.get("key"), provider="grok", session="woman-a")
+    try:
+        with sqlite3.connect(db_path) as conn:
+            aged = conn.execute("UPDATE api_key_conversations SET day = '2000-01-01' WHERE key_id = ?",
+                                (k3.get("id"),)).rowcount
+    except sqlite3.Error as exc:
+        aged = "db: {}".format(exc)
+    a3 = sent_with(k3.get("key"), session="woman-a")
+    plain_next = sent_with(k3.get("key"))
+    seen = [state[1] for state in (a1, b1, no_name, other_key, grok_a)]
+    told = (http("GET", api + "/v1/images/{}".format(a1[0]), token=k3.get("key"))[1] or {}) if a1[0] else {}
+    plain_told = (http("GET", api + "/v1/images/{}".format(no_name[0]), token=k3.get("key"))[1] or {}) if no_name[0] else {}
+    if (all(seen) and len(set(seen)) == 5 and a1[2] and a1[2] != b1[2] and a2[1] == a1[1] and a2[2] == a1[2]
+            and aged and a3[1] == a1[1] and plain_next[1] not in seen
+            and told.get("session") == "woman-a" and plain_told.get("session") is None):
+        c[per_session].passed("woman-a in conversation {}… on any day and however spelled, thread {}; woman-b, no name, "
+                              "another key and grok each their own".format(a1[1][:8], a1[2]))
+    else:
+        c[per_session].failed("a {} then {} then next day {}; b {}; no name {} then next day {}; other key {}; grok {}; "
+                              "told {!r} and {!r}".format(a1, a2, a3, b1, no_name, plain_next, other_key, grok_a,
+                                                          told.get("session"), plain_told.get("session")))
+
+    refusals = "a session with no name or with continue_from is refused uncharged, and a continued request stays in its session"
+
+    def credits_of(key):
+        return (http("GET", api + "/v1/account", token=key)[1] or {}).get("credits_left")
+    before = credits_of(k3.get("key"))
+    blank = http_form(api + "/v1/images", {"prompt": "x", "session": "   "}, token=k3.get("key"))[0]
+    too_long = http_form(api + "/v1/images", {"prompt": "x", "session": "n" * 65}, token=k3.get("key"))[0]
+    both = http_form(api + "/v1/images", {"prompt": "x", "session": "woman-a", "continue_from": a1[0] or "x"},
+                     token=k3.get("key"))[0]
+    after = credits_of(k3.get("key"))
+    onward_status, onward = http_form(api + "/v1/images", {"prompt": "the same, at night", "continue_from": a1[0] or "x"},
+                                      token=k3.get("key"))
+    onward_id = onward.get("id") if onward_status == 202 and isinstance(onward, dict) else None
+    onward_state = poll_v1(onward_id, k3.get("key")) if onward_id else {}
+    if (blank == 400 and too_long == 422 and both == 400 and before is not None and after == before
+            and onward_state.get("session") == "woman-a" and onward_state.get("conversation_id") == a1[1]):
+        c[refusals].passed("blank 400, over-long 422, both 400, credits {} unchanged; continued in session {}".format(
+            after, onward_state.get("session")))
+    else:
+        c[refusals].failed("blank {} long {} both {} credits {} then {}; continued {} session {!r}".format(
+            blank, too_long, both, before, after, onward_status, onward_state.get("session")))
+
+    listing = "a key lists its own sessions only, and a session whose conversation was deleted starts a new one"
+    mine = http("GET", api + "/v1/sessions?provider=chatgpt", token=k3.get("key"))
+    names = [row.get("name") for row in (mine[1] or {}).get("sessions") or []] if mine[0] == 200 else []
+    row_a = next((row for row in (mine[1] or {}).get("sessions") or [] if row.get("name") == "woman-a"), {}) if mine[0] == 200 else {}
+    theirs = http("GET", api + "/v1/sessions", token=k4.get("key"))
+    their_rows = (theirs[1] or {}).get("sessions") or [] if theirs[0] == 200 else []
+    grok_only = http("GET", api + "/v1/sessions?provider=grok", token=k3.get("key"))
+    nobody = http("GET", api + "/v1/sessions")[0]
+    login_token = http("GET", api + "/v1/sessions", token=token)[0]
+    gone = http("DELETE", api + "/conversations/{}".format(b1[1]), token=token)[0] if b1[1] else None
+    b2 = sent_with(k3.get("key"), session="woman-b")
+    if (sorted(names) == ["woman-a", "woman-b"] and row_a.get("conversation_id") == a1[1] and row_a.get("requests") == 4
+            and row_a.get("pictures") == 4 and [r.get("conversation_id") for r in their_rows] == [other_key[1]]
+            and [r.get("provider") for r in (grok_only[1] or {}).get("sessions") or []] == ["grok"]
+            and nobody == 401 and login_token == 401 and gone in (200, 204) and b2[1] and b2[1] != b1[1]):
+        c[listing].passed("{} on this key, woman-a {} requests {} pictures; the other key's alone; anonymous and login "
+                          "token 401; deleted woman-b starts anew".format(names, row_a.get("requests"), row_a.get("pictures")))
+    else:
+        c[listing].failed("names {} row {}; other key {}; grok {}; anonymous {} login {}; delete {} then {} after {}".format(
+            names, row_a, their_rows, grok_only[1], nobody, login_token, gone, b2[1], b1[1]))
 
     # The documented example, run as a person would: the key in the environment, never on the line.
     example = "the example script sends a prompt and a picture, waits, and saves the picture made"

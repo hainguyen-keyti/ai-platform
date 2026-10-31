@@ -58,7 +58,8 @@ class FakeV1:
 
     def __init__(self):
         self.posts, self.requests, self.served = [], {}, True
-        self.account_broken = self.providers_broken = False
+        self.account_broken = self.providers_broken = self.sessions_broken = False
+        self.sessions = []
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -97,7 +98,9 @@ class FakeV1:
                 if "refuse" in prompt:
                     return self.answer(402, {"detail": "quota exhausted"})
                 rid = uuid.uuid4().hex
-                fake.requests[rid] = {"prompt": prompt, "reads": 0, "finished": False}
+                named = fields.get("session")
+                fake.requests[rid] = {"prompt": prompt, "reads": 0, "finished": False,
+                                      "session": named.decode().strip().casefold() if named else None}
                 self.answer(202, {"id": rid, "status": "queued"})
 
             def do_GET(self):
@@ -108,6 +111,10 @@ class FakeV1:
                     if fake.account_broken:
                         return self.answer(500, {"detail": "account broken"})
                     return self.answer(200, FakeV1.ACCOUNT)
+                if self.path == "/v1/sessions?provider=chatgpt":
+                    if fake.sessions_broken:
+                        return self.answer(500, {"detail": "sessions broken"})
+                    return self.answer(200, {"sessions": fake.sessions})
                 if self.path == "/v1/providers":
                     if fake.providers_broken:
                         return self.answer(500, {"detail": "providers broken"})
@@ -154,7 +161,7 @@ class FakeV1:
         """GET /v1/images/{rid}'s answer; a read counts toward a plain request's end."""
         state = self.requests[rid]
         state["reads"] += 1 if read else 0
-        body = {"id": rid, "provider": "chatgpt", "text": "", "error": None, "images": [],
+        body = {"id": rid, "provider": "chatgpt", "text": "", "error": None, "images": [], "session": state.get("session"),
                 "created_at": "2026-10-29 10:00:00", "finished_at": None}
         if state.get("cancelled"):
             body.update(status="cancelled", error="cancelled by the user", finished_at="2026-10-29 10:00:30")
@@ -213,8 +220,9 @@ def server_params(api, key=KEY):
 async def run(fake, work):
     async with Client(server_params(fake.url)) as client:
         listed = {tool.name: tool for tool in (await client.list_tools()).tools}
-        record("the server offers account_status, cancel_image, generate_image, generate_images and get_image",
-               sorted(listed) == ["account_status", "cancel_image", "generate_image", "generate_images", "get_image"],
+        record("the server offers account_status, cancel_image, generate_image, generate_images, get_image and list_sessions",
+               sorted(listed) == ["account_status", "cancel_image", "generate_image", "generate_images", "get_image",
+                                  "list_sessions"],
                repr(sorted(listed)))
         schemas = {name: (tool.output_schema or {}).get("properties", {}) for name, tool in listed.items()}
         record("each tool publishes the shape of its answer as its output schema",
@@ -304,6 +312,45 @@ async def run(fake, work):
         record("continue_from is sent with the request, by generate_image and by every prompt of generate_images",
                not result.is_error and once == earlier.encode() and each == [earlier.encode()] * 2
                and "continue_from" not in plain, "once {} each {}".format(once, each))
+
+        # Issue #28: a name of its own for a character.
+        result = await client.call_tool("generate_image", {"prompt": "a woman with short hair", "session": "Woman-A",
+                                                           "save_dir": str(work / "sessions")}, read_timeout_seconds=60)
+        once = fake.posts[-1].get("fields", {}).get("session")
+        data = result.structured_content or {}
+        kept = [kept_record(p.with_suffix(".json")) for p in pictures(work / "sessions")]
+        record("a session is sent with the request, and the answer and the record name it",
+               not result.is_error and once == b"Woman-A" and data.get("session") == "woman-a"
+               and 'in session "woman-a"' in said(result) and [k.get("session") for k in kept] == ["woman-a"],
+               "sent {} answer {!r} records {}".format(once, data.get("session"), [k.get("session") for k in kept]))
+        before = len(fake.posts)
+        result = await client.call_tool("generate_images", {"prompts": ["one", "two"], "session": "woman-b",
+                                                            "save_dir": str(work / "sessions")}, read_timeout_seconds=60)
+        each = [p.get("fields", {}).get("session") for p in fake.posts[before:]]
+        record("every prompt of a set goes into its session, and the answer names it",
+               not result.is_error and each == [b"woman-b"] * 2 and (result.structured_content or {}).get("session") == "woman-b"
+               and 'in session "woman-b"' in said(result), "each {} said {!r}".format(each, said(result)[:60]))
+        record("a request with no session sends none", "session" not in plain and (fake.status(fake.rid("a plain blue square"),
+               read=False).get("session") is None), str(sorted(plain)))
+
+        result = await client.call_tool("list_sessions", {})
+        record("no session yet is said in words", not result.is_error and "no named session" in said(result)
+               and (result.structured_content or {}).get("sessions") == [], said(result))
+        fake.sessions = [{"name": "woman-b", "provider": "chatgpt", "conversation_id": "c2", "requests": 2, "pictures": 2,
+                          "created_at": "2026-10-31 10:00:00", "last_used": "2026-10-31 10:05:00"},
+                         {"name": "woman-a", "provider": "chatgpt", "conversation_id": "c1", "requests": 1, "pictures": 1,
+                          "created_at": "2026-10-31 09:00:00", "last_used": "2026-10-31 09:00:00"}]
+        result = await client.call_tool("list_sessions", {})
+        rows = (result.structured_content or {}).get("sessions") or []
+        record("list_sessions lists them with what they hold", not result.is_error and [r["name"] for r in rows] == ["woman-b", "woman-a"]
+               and rows[0]["pictures"] == 2 and '"woman-a": 1 picture(s)' in said(result), said(result))
+        fake.sessions_broken = True
+        result = await client.call_tool("list_sessions", {})
+        record("sessions that cannot be read are a tool error", result.is_error and "sessions could not be read" in said(result), said(result))
+        fake.sessions_broken = False
+        told = client.instructions or ""
+        record("the server tells an agent to give each character a session", "session=" in told and "different person" in told,
+               told[-120:])
 
         refs = []
         for n in range(5):
