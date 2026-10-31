@@ -16,6 +16,10 @@ open" at the end of the file; what the tests left in the accounts is in
 - **Gemini back on the service, 2026-10-31, the owner's word:** `aip-worker` serves `chatgpt,grok,gemini` on
   :8010. Google's unusual-traffic check stopped Gemini on 2026-10-29: if it returns, take Gemini off again with
   `./scripts/install-worker-service.sh 8010 chatgpt,grok` and a restart, and tell the owner.
+  **OPEN:** its first real picture request on the service, job `bb97bc00`, ended done with Gemini's "Normally I can
+  help with things like this, but I don't seem to have access to that content…", no picture, the credit taken. The
+  same words came on 2026-10-29, and the next try then met the check, so no further try was made. The same
+  afternoon's lighthouse request had a picture. Why it refuses is not known; a refusal reading as done is #18's kind.
 - **Test residue, the owner's to run:** `docs/agent/residue-to-delete-2026-10-31.json` lists the 15 ChatGPT threads
   of throwaway accounts, none shared with a real account (dry run: 15 threads). 60 throwaway accounts and the
   `storage/mcp-*` folders also remain; no hard delete was made by the agent.
