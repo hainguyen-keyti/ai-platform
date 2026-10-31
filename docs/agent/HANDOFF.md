@@ -28,8 +28,10 @@ open" at the end of the file; what the tests left in the accounts is in
   after its host restarts it.
 - **The api did not reload on that merge:** a merge made from Windows left the old code running (`/v1/sessions` 404)
   until `docker compose restart api`. After a merge touching `api/`, check the api actually took it.
-- **#28's check also showed:** a follow-up prompt ("the same woman from your last picture") after a failed first
-  request gets ChatGPT's words and no picture, reported as `unsaved`, its credit taken.
+- **A picture request answered in words alone now fails as `no_picture` with those words, its credit back,** for every
+  provider, in `record_result` (found by #28's check: "Please upload the previous picture...", job `3fe63195`). Gate
+  77/77, a mutant red; met only by the mock so far. No cooldown follows, as the worker saw a success.
+- #28 closed with the owner's yes; no issue is open.
 - **Gemini back on the service, 2026-10-31, the owner's word:** `aip-worker` serves `chatgpt,grok,gemini` on
   :8010. Google's unusual-traffic check stopped Gemini on 2026-10-29: if it returns, take Gemini off again with
   `./scripts/install-worker-service.sh 8010 chatgpt,grok` and a restart, and tell the owner.
