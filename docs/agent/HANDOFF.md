@@ -13,10 +13,15 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
-- **#18's real check, 2026-10-31 03:25 UTC:** one Grok picture turn (job `1704f6d0`) done in 36s, 1 picture,
-  1 credit, on the service worker: the allowance is back and an ordinary turn still reads as before. The refused
-  branch itself has only met the recorded responses in `tests/test_grok_settle.py`. The issue stays open until
-  the owner says to tick and close it. #16's code is also in (2d4be41); it lacks real pictures through `/v1`.
+- **#18 closed, 2026-10-31,** with the owner's yes, on one real Grok picture turn (job `1704f6d0`, 36s). The
+  refused branch itself has only met the recorded responses in `tests/test_grok_settle.py`.
+- **#16's real check done, 2026-10-31:** one request each through `/v1` with a key, one try, no bot check:
+  grok `9c482f87` (48s) and gemini `78d2f204` (36s), a picture each, `storage/mcp-check16/`. Gemini ran on a
+  worker of its own on :8011 and was taken off after: the service still serves `chatgpt,grok`, and whether
+  Gemini returns to it is the owner's call. The issue awaits the owner's yes to close.
+- **#25, read 2026-10-31:** the 13 mock tombstones left have reached the 3 attempts, so they are no longer
+  claimed, and the gate's own stack makes no new ones; none since 2026-10-30 02:57, worker health 0 failed.
+  The issue's cause is gone. Recommended to the owner: close it as obsolete, no code.
 - **The real worker is a systemd user service since 2026-10-30 19:10 UTC** (`aip-worker`, port 8010,
   `chatgpt,grok`, `scripts/install-worker-service.sh`, linger on): no terminal tab any more. `kill -9` came
   back within 40s. NOT tested: a Windows reboot or `wsl --terminate`, since either would stop Studio.

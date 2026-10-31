@@ -128,7 +128,7 @@ def main():
     if state["status"] != "done":
         sys.exit("{}: {}".format(state["status"], state.get("error") or "no reason given"))
     if state.get("text"):
-        print("ChatGPT said:", state["text"])
+        print("{} said:".format(state["provider"]), state["text"])
     if not state["images"]:
         sys.exit("done, but no picture came back")
     args.out.mkdir(parents=True, exist_ok=True)
