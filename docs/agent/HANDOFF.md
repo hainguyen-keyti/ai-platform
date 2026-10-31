@@ -13,6 +13,15 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **The real worker is a systemd user service since 2026-10-30 19:10 UTC** (`aip-worker`, port 8010,
+  `chatgpt,grok`, `scripts/install-worker-service.sh`, linger on): no terminal tab any more. `kill -9` came
+  back within 40s. NOT tested: a Windows reboot or `wsl --terminate`, since either would stop Studio.
+  Take it off before a login or probe: `systemctl --user stop aip-worker`. Port 8000 stays Studio's.
+- **The picture budget survives a restart**: `storage/pacing-<provider>.json`, written only when run-worker.sh
+  sets `PACING_PATH` (real mode), so a mock or a test never touches it. Seeded by hand at install from the
+  database's `chatgpt-*` media rows, 40 of them, the worker's own count.
+- **A drawing turn fetches only what the tool's output names**, not the image call's inputs, so a long
+  thread no longer spends minutes on references. MCP instructions now say to name face angle and expression.
 - **A real set of 20 with one reference, 2026-10-30, found reference pictures returned as results; fixed
   at 312e37e, full gate green, NOT yet proven on the real site.** 17 pictures, plus 30 copies of the
   reference (requests 8, 9, 19). Read in the thread itself: when a turn's model passes the thread's earlier
