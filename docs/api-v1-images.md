@@ -143,6 +143,8 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/5f0
 
 Times are UTC.
 
+A request a provider answers in words alone, with no picture, ends `failed` with those words in `error`, and its credit comes back.
+
 ## Your sessions
 
 `GET /v1/sessions` lists this key's named sessions, the last used first; `?provider=chatgpt` keeps to one provider.

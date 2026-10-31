@@ -469,6 +469,11 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
             if status == "done" and not (text or "").strip() and not media:
                 status, error_kind = "failed", "empty_reply"
                 error = "the provider's turn came back with neither words nor media"
+            # A picture request answered in words alone made no picture, and no picture must not cost a credit
+            # either (2026-10-31: "Please upload the previous picture..."). The words are its reason.
+            elif status == "done" and job["feature"] == "image" and not media:
+                status, error_kind = "failed", "no_picture"
+                error = "the provider made no picture and said: {}".format(" ".join(text.split())[:300])
 
             # The message comes first so its pictures can point at it.
             message_id = None

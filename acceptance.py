@@ -121,6 +121,7 @@ CHECKS = (
     "a named session keeps its own conversation and thread across days, apart from other names, keys and providers",
     "a session with no name or with continue_from is refused uncharged, and a continued request stays in its session",
     "a key lists its own sessions only, and a session whose conversation was deleted starts a new one",
+    "a picture request answered in words alone fails with those words and gives its credit back",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "the api tells a worker which threads are the platform's, and only for that provider",
     "a done result with nothing in it fails and refunds",
@@ -140,6 +141,7 @@ V1_JOB_CHECKS = (
     "a named session keeps its own conversation and thread across days, apart from other names, keys and providers",
     "a session with no name or with continue_from is refused uncharged, and a continued request stays in its session",
     "a key lists its own sessions only, and a session whose conversation was deleted starts a new one",
+    "a picture request answered in words alone fails with those words and gives its credit back",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
 )
@@ -1259,6 +1261,27 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
     else:
         c[listing].failed("names {} row {}; other key {}; grok {}; anonymous {} login {}; delete {} then {} after {}".format(
             names, row_a, their_rows, grok_only[1], nobody, login_token, gone, b2[1], b1[1]))
+
+    # 2026-10-31: asked for a picture, a provider can answer in words alone; that made no picture.
+    words_only = "a picture request answered in words alone fails with those words and gives its credit back"
+    if real:
+        c[words_only].skip("needs a driver that answers in words on command; covered in mock mode")
+    else:
+        spent = credits_of(k3.get("key"))
+        wstatus, wbody = http_form(api + "/v1/images", {"prompt": "answer in words only", "session": "words"}, token=k3.get("key"))
+        wid = wbody.get("id") if wstatus == 202 and isinstance(wbody, dict) else None
+        wstate = poll_v1(wid, k3.get("key")) if wid else {}
+        wjob = (http("GET", api + "/jobs/{}".format(wid), token=token)[1] or {}) if wid else {}
+        wconv = (http("GET", api + "/conversations/{}".format(wstate.get("conversation_id")), token=token)[1] or {}
+                 ) if wstate.get("conversation_id") else {}
+        stored = [m for m in wconv.get("messages") or [] if m.get("role") == "assistant"]
+        if (wstate.get("status") == "failed" and "Please upload the previous picture." in (wstate.get("error") or "")
+                and wjob.get("error_kind") == "no_picture" and credits_of(k3.get("key")) == spent and stored == []):
+            c[words_only].passed("failed as no_picture saying {!r}, credits {} unchanged, no answer stored".format(
+                wstate.get("error"), spent))
+        else:
+            c[words_only].failed("status {} error {!r} kind {} credits {} -> {} answers stored {}".format(
+                wstate.get("status"), wstate.get("error"), wjob.get("error_kind"), spent, credits_of(k3.get("key")), len(stored)))
 
     # The documented example, run as a person would: the key in the environment, never on the line.
     example = "the example script sends a prompt and a picture, waits, and saves the picture made"

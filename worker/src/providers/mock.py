@@ -24,6 +24,8 @@ SILENT_PHRASE = "and say nothing of it"
 LYING_PHRASE = "and call it unsent"
 # A driver that calls a turn done with neither words nor media (the safety plan, 2026-10-21).
 EMPTY_PHRASE = "answer with nothing"
+# A picture request answered in words, as a provider that will not draw answers it.
+WORDS_ONLY_PHRASE = "answer in words only"
 # Gemini makes a video when asked for one (2026-10-06); the mock answers this phrase with a clip.
 VIDEO_PHRASE = "make a short video"
 SLOW_SECONDS = 6.0
@@ -222,6 +224,8 @@ class MockProvider(BaseProvider):
         self._pace()
         if BROKEN_PHRASE in prompt.lower():
             return GenerationResult.failure("mock provider showed its error banner", kind="provider_error")
+        if WORDS_ONLY_PHRASE in prompt.lower():
+            return GenerationResult(success=True, thread_url=thread, text="Please upload the  previous picture.", media=[])
         # Says what reached it, so the gate can tell the exact picture a person sent was handed over.
         seen = ""
         # One name, or a list of them (issue #22): each is said in the order handed over.
