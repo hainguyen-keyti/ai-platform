@@ -811,7 +811,13 @@ class GeminiProvider(BaseProvider):
         if reference_filename:
             instruction = ("Using the attached image as the character reference, generate a new "
                            "image: {}").format(prompt)
-        return self._run(instruction, upload=reference_filename, thread_url=thread_url)
+        result = self._run(instruction, upload=reference_filename, thread_url=thread_url)
+        # Measured 2026-10-29 and 31: asked for a picture, Gemini can answer in words alone ("Normally I can
+        # help with things like this, but I don't seem to have access to that content"). No picture, no credit.
+        if result.success and not result.media:
+            return GenerationResult(success=False, thread_url=result.thread_url, error_kind="provider_error",
+                                    error="gemini made no picture and said: {}".format(self._flat(result.text)[:300]))
+        return result
 
     def generate_video_script(self, image_filename: str, duration: int = 5,
                               thread_url: Optional[str] = None) -> GenerationResult:

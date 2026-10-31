@@ -1301,6 +1301,35 @@ def main():
            result.success and sizes == [12623],
            "success {} sizes {} error {!r}".format(result.success, sizes, result.error))
 
+    # Measured 2026-10-29 and 31, jobs 30a229b5 and bb97bc00: a picture request answered only with these
+    # words came back done, no picture, the credit taken.
+    no_access = ("Normally I can help with things like this, but I don't seem to have access to that content. "
+                 "You can try again or ask me for something else.")
+    page = Page(clock)
+    page.answer, page.replies = no_access, [stream_ok]
+    result = provider_on(page, off()).generate_image("a small orange circle")
+    record("a picture request answered only in words fails as a provider error, with Gemini's words and its thread",
+           not result.success and result.error_kind == "provider_error" and no_access in (result.error or "")
+           and not result.text and (result.thread_url or "").endswith("/app/0123456789abcdef"),
+           "success {} kind {} thread {} error {!r}".format(result.success, result.error_kind, result.thread_url,
+                                                           result.error))
+
+    page = Page(clock)
+    page.answer = "Here is the circle."
+    page.replies = [Response("https://lh3.googleusercontent.com/rd-gg-dl/generated", body=b"G" * 12623,
+                             ctype="image/jpeg", method="GET"), stream_ok]
+    result = provider_on(page, off()).generate_image("a small orange circle")
+    sizes = [m.metadata.get("size") for m in result.media]
+    record("a picture request that got its picture is untouched, words and all",
+           result.success and sizes == [12623] and result.text == "Here is the circle.",
+           "success {} sizes {} text {!r}".format(result.success, sizes, result.text))
+
+    page = Page(clock)
+    page.answer, page.replies = no_access, [stream_ok]
+    result = provider_on(page, off()).chat("hello")
+    record("the same words on a chat turn are an answer", result.success and result.text == no_access,
+           "success {} text {!r}".format(result.success, result.text))
+
     def run_on(page, settings, prompt="hello", **kwargs):
         """(what happened, result): 'blocked forever', 'refused: kind', 'crashed: ...', or 'returned'."""
         try:
