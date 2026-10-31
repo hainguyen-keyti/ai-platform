@@ -56,7 +56,8 @@ gate_compose up -d
 # and ui_smoke died at its first import), though relative reads still work; entering the folder
 # again by its absolute path mends it.
 cd "$ROOT"
-for _ in $(seq 1 60); do
+# Five minutes: measured 2026-10-31, at a load of 13 the web was not up within two, and the gate went red for it.
+for _ in $(seq 1 150); do
   curl -s -m 2 "http://localhost:$GATE_API_PORT/health" >/dev/null \
     && curl -s -m 2 -o /dev/null "http://localhost:$GATE_WEB_PORT/" && break
   sleep 2

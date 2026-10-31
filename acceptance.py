@@ -97,6 +97,9 @@ CHECKS = (
     "the provider's error banner is recognised by shape",
     "grok settles on words or a picture, never on an empty turn",
     "a real account's picture budget outlives the worker",
+    "a job's failures take the right path through the pool and the runner",
+    "a browser that dies under a turn is dropped and cools the provider down",
+    "a busy runner keeps saying it is alive",
     "an api key is shown once, listed without its secret, stored as a hash, and revoked",
     "an api key works only on /v1/images, and a login token not there",
     "a person keeps at most ten live api keys",
@@ -1262,16 +1265,19 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
         c["grok settles on words or a picture, never on an empty turn"].failed(
             "exit {} {}".format(settle.returncode, (summary or (lines[-1] if lines else ""))[:110]))
 
-    pacing = subprocess.run([python, str(ROOT / "tests" / "test_worker_pacing.py")],
-                            capture_output=True, text=True, cwd=str(ROOT))
-    lines = [l for l in ((pacing.stdout or "") + (pacing.stderr or "")).splitlines() if l.strip()]
-    summary = next((l for l in reversed(lines) if "PASSED" in l), "")
-    counted = re.match(r"(\d+)/(\d+) PASSED", summary)
-    if pacing.returncode == 0 and counted and counted.group(1) == counted.group(2) and int(counted.group(2)) >= 8:
-        c["a real account's picture budget outlives the worker"].passed(summary)
-    else:
-        c["a real account's picture budget outlives the worker"].failed(
-            "exit {} {}".format(pacing.returncode, (summary or (lines[-1] if lines else ""))[:110]))
+    for name, script, at_least in (
+            ("a real account's picture budget outlives the worker", "test_worker_pacing.py", 8),
+            ("a job's failures take the right path through the pool and the runner", "test_worker_paths.py", 45),
+            ("a browser that dies under a turn is dropped and cools the provider down", "test_pool_dead_browser.py", 6),
+            ("a busy runner keeps saying it is alive", "test_runner_liveness.py", 4)):
+        suite = subprocess.run([python, str(ROOT / "tests" / script)], capture_output=True, text=True, cwd=str(ROOT))
+        lines = [l for l in ((suite.stdout or "") + (suite.stderr or "")).splitlines() if l.strip()]
+        summary = next((l for l in reversed(lines) if "PASSED" in l), "")
+        counted = re.match(r"(\d+)/(\d+) PASSED", summary)
+        if suite.returncode == 0 and counted and counted.group(1) == counted.group(2) and int(counted.group(2)) >= at_least:
+            c[name].passed(summary)
+        else:
+            c[name].failed("exit {} {}".format(suite.returncode, (summary or (lines[-1] if lines else ""))[:110]))
 
     status, body = http("GET", api + "/health")
     if status == 200 and isinstance(body, dict) and body.get("status") == "ok":
