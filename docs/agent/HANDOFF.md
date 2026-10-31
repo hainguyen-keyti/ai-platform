@@ -16,13 +16,15 @@ open" at the end of the file; what the tests left in the accounts is in
 - **`tests/test_worker_paths.py` (45 checks, 18 of 18 mutants red), in the quick gate at 5ac8d86** with
   `test_pool_dead_browser.py` and `test_runner_liveness.py`, which were in no gate: 73 checks. The gate now waits
   five minutes for its web.
-- **OPEN, the owner's call, two ways a finished picture is lost, neither fixed.** A job's result is posted only at
-  the end of `Runner._handle`. (1) `note_result` raises when the budget file cannot be written (measured with a
-  path that does not exist: the turn ran, 0 results posted), and that write came with 2026-10-30's budget file,
-  this session's regression. (2) `client.post(.../result)` failing, the api restarting say, is the same (a check
-  pins that the runner survives it). Either way the job's lease runs out and `_sweep_stranded` queues it again
-  (read in `api/src/jobs.py`, not run through on the real stack), so the account makes the picture again and the
-  first stays on disk with no row.
+- **Two ways a finished picture was lost, fixed 2026-10-31.** A job's result is posted only at the end of
+  `Runner._handle`. (1) `note_result` raised when the budget file could not be written (measured: the turn ran, 0
+  results posted), a regression of 2026-10-30's budget file: now health's `budget_file_error` says it and memory
+  still counts. (2) A result the api did not take, the api restarting say: now tried for about a minute on no
+  answer or 5xx (`RESULT_RETRY_SECONDS`). Past that the job's lease runs out and `_sweep_stranded` queues it again
+  (read in `api/src/jobs.py`, not run through), as before. A 409 after an unanswered try keeps the files, which
+  may be the job's own, so a rare file with no row is possible. `tests/test_worker_paths.py` 54/54, 10 of 10
+  mutants red, one check with the real http client against a port that opens late; not run against a real api
+  restart. Gate 73/73, ui_smoke 75/75, stress 16/16.
 - **#18 closed, 2026-10-31,** with the owner's yes, on one real Grok picture turn (job `1704f6d0`, 36s). The
   refused branch itself has only met the recorded responses in `tests/test_grok_settle.py`.
 - **#16's real check done, 2026-10-31:** one request each through `/v1` with a key, one try, no bot check:
