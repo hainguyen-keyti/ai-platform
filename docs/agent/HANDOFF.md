@@ -13,6 +13,17 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **#28, named sessions, in at e0975dc, the issue still open.** `session` on `POST /v1/images` and the MCP tools,
+  `GET /v1/sessions`, `list_sessions`, table `api_key_sessions`; a named session lasts across days (the owner's
+  choice). Gate 76/76, ui_smoke 75/75, MCP test 48/48, 9 of 9 mutants red. Real check, 2026-10-31 10:52 UTC, one key:
+  two threads (`6ae5c887`, `6ae5c89c`). **woman-a's first request met `cloudflare_challenge` in ChatGPT's banner**
+  (job `7eaaa16a`), so that session has no picture and the two faces were not compared; woman-b's two came and kept
+  one woman. Nothing further was sent: the re-run is the owner's call. A running MCP server knows `session` only
+  after its host restarts it.
+- **The api did not reload on that merge:** a merge made from Windows left the old code running (`/v1/sessions` 404)
+  until `docker compose restart api`. After a merge touching `api/`, check the api actually took it.
+- **#28's check also showed:** a follow-up prompt ("the same woman from your last picture") after a failed first
+  request gets ChatGPT's words and no picture, reported as `unsaved`, its credit taken.
 - **Gemini back on the service, 2026-10-31, the owner's word:** `aip-worker` serves `chatgpt,grok,gemini` on
   :8010. Google's unusual-traffic check stopped Gemini on 2026-10-29: if it returns, take Gemini off again with
   `./scripts/install-worker-service.sh 8010 chatgpt,grok` and a restart, and tell the owner.
