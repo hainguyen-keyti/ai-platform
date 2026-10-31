@@ -17,6 +17,12 @@ open" at the end of the file; what the tests left in the accounts is in
   `chatgpt,grok`, `scripts/install-worker-service.sh`, linger on): no terminal tab any more. `kill -9` came
   back within 40s. NOT tested: a Windows reboot or `wsl --terminate`, since either would stop Studio.
   Take it off before a login or probe: `systemctl --user stop aip-worker`. Port 8000 stays Studio's.
+- **OPEN, the owner's call: the first turn after a long idle can fail on `Page.goto`.** Under the service,
+  jobs `f197e8eb` and `a9b4e2fe` (2026-10-30 19:44, 19:46) and `8089ca2f` (2026-10-31 01:17) timed out at 90s,
+  `23793361` (19:44) said `ERR_NAME_NOT_RESOLVED`; each refunded, no retry. `e4db7a5d` at 01:24 was done under
+  the same service, so the service is not the cause. The DNS error names the network at that moment; for the
+  timeouts the records name nothing more (the same timeout met a plain shell at 15:30, when the network was
+  slow). A cold browser's retry of that one goto is the fix to weigh.
 - **The picture budget survives a restart**: `storage/pacing-<provider>.json`, written only when run-worker.sh
   sets `PACING_PATH` (real mode), so a mock or a test never touches it. Seeded by hand at install from the
   database's `chatgpt-*` media rows, 40 of them, the worker's own count.
