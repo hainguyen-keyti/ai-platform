@@ -20,7 +20,7 @@ services:
       # The rest of what api/src/config.py reads, from the shell or .env; each
       # default is config.py's own, so leaving one unset changes nothing.
       TOKEN_TTL_HOURS: ${TOKEN_TTL_HOURS:-24}
-      DEFAULT_QUOTA: ${DEFAULT_QUOTA:-100}
+      DEFAULT_QUOTA: ${DEFAULT_QUOTA:-500}
       JOB_LEASE_SECONDS: ${JOB_LEASE_SECONDS:-420}
       JOB_MAX_ATTEMPTS: ${JOB_MAX_ATTEMPTS:-3}
       CLOCK_OFFSET_SECONDS: ${CLOCK_OFFSET_SECONDS:-0}

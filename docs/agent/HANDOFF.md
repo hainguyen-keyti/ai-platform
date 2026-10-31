@@ -13,6 +13,12 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **Every account has 500 credits a day since 2026-10-31 11:04 UTC** (the owner): `DEFAULT_QUOTA` in `.env`, the
+  compose and code defaults, and an UPDATE of the 66 accounts, each balance raised by what its cap rose (one had a cap of 7).
+  The worker's budget of 40 pictures in three hours is unchanged and is now the real limit.
+- **#28's faces, 2026-10-31 11:05 UTC:** one picture each in sessions woman-a and woman-b, nearly the same prompt, two
+  threads: two women that look different, `storage/mcp-check28b/`. One pair, looked at by eye, with no control run in
+  one thread. A Cloudflare challenge had met this account 13 minutes earlier; none met these two.
 - **#28, named sessions, in at e0975dc, the issue still open.** `session` on `POST /v1/images` and the MCP tools,
   `GET /v1/sessions`, `list_sessions`, table `api_key_sessions`; a named session lasts across days (the owner's
   choice). Gate 76/76, ui_smoke 75/75, MCP test 48/48, 9 of 9 mutants red. Real check, 2026-10-31 10:52 UTC, one key:
