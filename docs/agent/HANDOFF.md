@@ -13,6 +13,12 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **Gemini back on the service, 2026-10-31, the owner's word:** `aip-worker` serves `chatgpt,grok,gemini` on
+  :8010. Google's unusual-traffic check stopped Gemini on 2026-10-29: if it returns, take Gemini off again with
+  `./scripts/install-worker-service.sh 8010 chatgpt,grok` and a restart, and tell the owner.
+- **Test residue, the owner's to run:** `docs/agent/residue-to-delete-2026-10-31.json` lists the 15 ChatGPT threads
+  of throwaway accounts, none shared with a real account (dry run: 15 threads). 60 throwaway accounts and the
+  `storage/mcp-*` folders also remain; no hard delete was made by the agent.
 - **`tests/test_worker_paths.py` (45 checks, 18 of 18 mutants red), in the quick gate at 5ac8d86** with
   `test_pool_dead_browser.py` and `test_runner_liveness.py`, which were in no gate: 73 checks. The gate now waits
   five minutes for its web.
