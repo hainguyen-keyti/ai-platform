@@ -13,6 +13,15 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **#29, several accounts of a provider, in at fd2b17b, on the real api and worker; the issue stays open** until the
+  owner has logged in the second account: `scripts/login_provider.py chatgpt --account a2`, then restart the worker.
+  Provider = driver, account = a logged-in profile. One runner and browser per account; budget, cooldown, Library
+  cleanup and holds per account; a conversation is pinned at its first claim, and only its account takes its jobs and
+  deletes its thread. `tests/test_provider_accounts.py` 24/24, gate 78/78, ui_smoke 75/75, stress 16/16; 17 of 17
+  mutants red, two only after the test's gaps were closed. With one account: a real picture done, 83 old ChatGPT threads
+  pinned to the default account. NOT real yet: two accounts at once, and whether one IP draws Cloudflare's checks;
+  `IMAGE_TOTAL_3H` is 0, no cap. A failed start of one account still claims and fails jobs (follow-up). No web page
+  for `/admin/accounts`. The 6 browser launches that died with SIGTRAP on 2026-10-31 12:55 were not explained.
 - **Every account has 500 credits a day since 2026-10-31 11:04 UTC** (the owner): `DEFAULT_QUOTA` in `.env`, the
   compose and code defaults, and an UPDATE of the 66 accounts, each balance raised by what its cap rose (one had a cap of 7).
   The worker's budget of 40 pictures in three hours is unchanged and is now the real limit.
