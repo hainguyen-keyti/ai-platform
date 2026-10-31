@@ -258,7 +258,11 @@ class Page:
         # What each sent turn carried along.
         self.sent_with = []
 
+    goto_fails = ()
+
     def goto(self, url, *args, **kwargs):
+        if self.goto_fails:
+            raise self.goto_fails.pop(0)
         # Measured 2026-10-22 (the probe's second run): a chip attached on a thread's own page is
         # there again when that thread is loaded again (a per-conversation draft), and gone at any
         # other load (the home page, another thread, a home draft at a reload).
@@ -583,6 +587,48 @@ def main():
             return False, str(exc)
         except Exception as exc:
             return False, "{}: {}".format(type(exc).__name__, exc)
+
+    # Measured 2026-10-30 and 31: after a long idle turns failed on the load itself, and the next were done.
+    timed_out = TimeoutError("Page.goto: Timeout 90000ms exceeded.")
+    no_name = RuntimeError("Page.goto: net::ERR_NAME_NOT_RESOLVED at https://chatgpt.com/")
+
+    page = Page(clock, has={PROSEMIRROR})
+    page.goto_fails = [timed_out]
+    started = clock.now
+    opened, said = open_on(page)
+    record("a load that times out is tried once more", opened and page.loads == 1 and clock.now - started >= 20,
+           "opened {} loads {} after {:.0f}s said {!r}".format(opened, page.loads, clock.now - started, said[:60]))
+
+    page = Page(clock, has={PROSEMIRROR})
+    page.goto_fails = [no_name]
+    opened, said = open_on(page)
+    record("a load that cannot resolve the name is tried once more", opened and page.loads == 1,
+           "opened {} loads {} said {!r}".format(opened, page.loads, said[:60]))
+
+    page = Page(clock, has={PROSEMIRROR})
+    page.goto_fails = [timed_out, timed_out, timed_out]
+    opened, said = open_on(page)
+    record("a load that fails twice fails the turn, with no third try",
+           not opened and "TimeoutError" in said and len(page.goto_fails) == 1,
+           "said {!r}, {} left".format(said[:60], len(page.goto_fails)))
+
+    page = Page(clock, has={PROSEMIRROR})
+    page.goto_fails = [RuntimeError("Target page, context or browser has been closed"), timed_out]
+    opened, said = open_on(page)
+    record("a browser that is gone is not loaded again", not opened and "has been closed" in said
+           and len(page.goto_fails) == 1, "said {!r}, {} left".format(said[:60], len(page.goto_fails)))
+
+    page = Page(clock, has={PROSEMIRROR})
+    page.goto_fails = [timed_out]
+    driver = provider_on(page)
+    driver.bind(None, lambda: True)
+    try:
+        driver._open()
+        said = "opened"
+    except JobCancelled:
+        said = "cancelled"
+    record("a job taken away while it waits to load again is not loaded", said == "cancelled" and page.loads == 0,
+           "{} loads {}".format(said, page.loads))
 
     page = Page(clock, has=(), token="token", composer_on_load=2)
     opened, said = open_on(page)

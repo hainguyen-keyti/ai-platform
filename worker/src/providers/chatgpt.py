@@ -54,6 +54,7 @@ SERVER_POLL_MAX = 30
 # when the site bounces the thread because the backend is throttling.
 OPEN_ATTEMPTS = 3
 OPEN_RETRY_SECONDS = 15
+GOTO_RETRY_SECONDS = 20
 # How long the page must stay quiet and unchanged before the answer counts as
 # over. Two seconds was thin: a reply that runs several tools puts the stop
 # button away between them, and a pause there reads as an ending.
@@ -365,6 +366,23 @@ class ChatGPTProvider(BaseProvider):
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         return self._page
 
+    def _goto(self, page, url: str):
+        """Load a page, once more if the load itself failed.
+
+        Measured 2026-10-30 and 31: after a long idle, turns failed on the load (90s timeouts,
+        ERR_NAME_NOT_RESOLVED) and the next ones on the same session were done. A page or browser
+        that is gone is not a failed load and goes up as it is.
+        """
+        try:
+            page.goto(url, timeout=90000, wait_until="domcontentloaded")
+        except Exception as exc:
+            if type(exc).__name__ != "TimeoutError" and "net::ERR_" not in str(exc):
+                raise
+            self._phase("waiting for the provider")
+            page.wait_for_timeout(GOTO_RETRY_SECONDS * 1000)
+            self._check_stop()
+            page.goto(url, timeout=90000, wait_until="domcontentloaded")
+
     def _keep_picture(self, page):
         """The page as it stood when the driver gave up, beside the run's media, for the diagnosis."""
         folder = self.media_path.parent / "diagnostics"
@@ -406,7 +424,7 @@ class ChatGPTProvider(BaseProvider):
             wanted = thread_url.rsplit("/c/", 1)[-1].split("?")[0].split("#")[0]
             reloaded = False
             for attempt in range(OPEN_ATTEMPTS):
-                page.goto(thread_url, timeout=90000, wait_until="domcontentloaded")
+                self._goto(page, thread_url)
                 ready = self._composer_ready(page, 45)
                 # A composer is not enough: the site can bounce a slow thread to
                 # the root page, where a composer is also waiting, in a brand
@@ -439,7 +457,7 @@ class ChatGPTProvider(BaseProvider):
         # Measured 2026-09-29: a freshly launched browser mounted the composer at 7.8 to 34.9s, and once
         # not within the wait; a second load comes from a warm cache.
         for _ in range(2):
-            page.goto(HOME, timeout=90000, wait_until="domcontentloaded")
+            self._goto(page, HOME)
             if self._composer_ready(page, 45):
                 return page
         self._keep_picture(page)
