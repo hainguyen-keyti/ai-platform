@@ -122,11 +122,20 @@ def create_job(user, provider, feature, payload, conversation_id=None,
             # anything is written or charged: a turn that would only fail is refused now, one
             # into an account its admin must fix, or one nobody would pick up (no_worker minutes
             # later).
-            if _held(conn, provider):
+            if _all_held(conn, provider):
                 raise HTTPException(
                     status_code=503,
                     detail="{} is unavailable right now: its account needs its admin; try again later".format(
                         provider),
+                )
+            # A thread opens only on the account that made it (issue #29): a conversation on an account
+            # that cannot serve is refused rather than left waiting. Say so without naming the account.
+            pinned = one(conn, "SELECT account FROM conversations WHERE id = ?", (conversation_id,)) if conversation_id else None
+            if pinned and not account_can_serve(conn, provider, pinned["account"]):
+                raise HTTPException(
+                    status_code=503,
+                    detail="the {} account holding this conversation cannot serve it right now; try again "
+                           "later, or start a new conversation or session".format(provider),
                 )
             if not _served(conn, provider):
                 raise HTTPException(
@@ -215,41 +224,76 @@ def _sweep_stranded(conn):
             )
 
 
-def _note_worker(conn, providers, pacing=None):
+def _note_worker(conn, providers, pacing=None, account=None):
     for name in providers:
         conn.execute(
             "INSERT INTO worker_pings (provider, last_seen) VALUES (?, datetime('now'))"
             " ON CONFLICT(provider) DO UPDATE SET last_seen = datetime('now')",
             (name,),
         )
+        asking = account or name
+        conn.execute(
+            "INSERT INTO provider_accounts (account, provider, last_seen) VALUES (?, ?, datetime('now'))"
+            " ON CONFLICT(account) DO UPDATE SET last_seen = datetime('now'), provider = excluded.provider",
+            (asking, name),
+        )
         if pacing:
             free_in = pacing.get("budget_free_in") or 0
             conn.execute(
-                "UPDATE worker_pings SET images_3h = ?, image_budget = ?,"
-                " budget_free_at = CASE WHEN ? > 0 THEN datetime('now', ?) END WHERE provider = ?",
-                (pacing["images_last_3h"], pacing["image_budget"], free_in, "+{} seconds".format(int(free_in)), name),
+                "UPDATE provider_accounts SET images_3h = ?, image_budget = ?,"
+                " budget_free_at = CASE WHEN ? > 0 THEN datetime('now', ?) END WHERE account = ?",
+                (pacing["images_last_3h"], pacing["image_budget"], free_in, "+{} seconds".format(int(free_in)), asking),
             )
 
 
-def _held(conn, provider):
-    """Whether this provider is held out because its account needs its admin."""
+def _held(conn, account):
+    """Whether this account is held out because it needs its admin."""
     return one(
-        conn, "SELECT 1 FROM provider_holds WHERE provider = ? AND until > datetime('now')", (provider,)
+        conn, "SELECT 1 FROM provider_holds WHERE provider = ? AND until > datetime('now')", (account,)
     ) is not None
 
 
-def _hold(conn, provider, reason):
-    """Inside the caller's transaction: hold a provider out whose account needs its admin.
+def _accounts_seen(conn, provider):
+    """The accounts of this provider a worker has asked with, within the window the sweep below uses."""
+    return [row["account"] for row in many(
+        conn, "SELECT account FROM provider_accounts WHERE provider = ? AND last_seen >= datetime('now', ?)",
+        (provider, "-{} seconds".format(settings.no_worker_seconds)))]
 
-    Every turn would fail the same way until the account is fixed, so the jobs already waiting for it
-    are failed now, each refunded once, instead of one after another.
+
+def _all_held(conn, provider):
+    """Whether accounts of this provider are held and none is left to serve it."""
+    seen = _accounts_seen(conn, provider)
+    return any(_held(conn, name) for name in seen + [provider]) and all(_held(conn, name) for name in seen)
+
+
+def account_can_serve(conn, provider, account):
+    """Whether a conversation on this account can run now. One on no account yet can, on any. One whose
+    account nobody asks with can only be refused while another account is there to start a new one."""
+    if not account:
+        return True
+    if _held(conn, account):
+        return False
+    seen = _accounts_seen(conn, provider)
+    return account in seen or not seen
+
+
+def _hold(conn, account, provider, reason):
+    """Inside the caller's transaction: hold out an account that needs its admin.
+
+    Every turn on it would fail the same way until it is fixed, so the jobs already waiting for it are
+    failed now, each refunded once, instead of one after another: those of conversations on it, and
+    with no other account left to serve, all of the provider's.
     """
     conn.execute(
         "INSERT INTO provider_holds (provider, until, reason) VALUES (?, datetime('now', ?), ?)"
         " ON CONFLICT(provider) DO UPDATE SET until = excluded.until, reason = excluded.reason",
-        (provider, "+{} seconds".format(settings.provider_hold_seconds), reason),
+        (account, "+{} seconds".format(settings.provider_hold_seconds), reason),
     )
-    waiting = many(conn, "SELECT id, user_id FROM jobs WHERE provider = ? AND status = 'pending'", (provider,))
+    if _all_held(conn, provider):
+        waiting = many(conn, "SELECT id, user_id FROM jobs WHERE provider = ? AND status = 'pending'", (provider,))
+    else:
+        waiting = many(conn, "SELECT j.id, j.user_id FROM jobs j JOIN conversations c ON c.id = j.conversation_id"
+                             " WHERE j.provider = ? AND j.status = 'pending' AND c.account = ?", (provider, account))
     for job in waiting:
         changed = conn.execute(
             "UPDATE jobs SET status = 'failed', error = ?, error_kind = 'provider_misconfigured',"
@@ -262,14 +306,14 @@ def _hold(conn, provider, reason):
 
 
 def _served(conn, provider):
-    """Whether a worker has asked for this provider within the window the sweep below uses, and its
-    account is not held out for its admin."""
+    """Whether a worker has asked for this provider within the window the sweep below uses, and not
+    every account of it is held out for its admin."""
     pinged = one(
         conn,
         "SELECT 1 FROM worker_pings WHERE provider = ? AND last_seen >= datetime('now', ?)",
         (provider, "-{} seconds".format(settings.no_worker_seconds)),
     ) is not None
-    return pinged and not _held(conn, provider)
+    return pinged and not _all_held(conn, provider)
 
 
 def provider_status():
@@ -280,16 +324,27 @@ def provider_status():
 
 
 def provider_load():
-    """Per provider: the requests waiting, and what its worker last said of its picture budget. A job
-    behind a spent budget just waits (40 pictures in three hours by default), and looks served."""
+    """Per provider: the requests waiting, and what its accounts last said of their picture budgets, in
+    total. A job behind a spent budget just waits (40 pictures in three hours by default), and looks
+    served; the budget is free again when the first account's is."""
     with db() as conn:
-        pings = {row["provider"]: row for row in many(conn, "SELECT * FROM worker_pings")}
+        accounts = {}
+        for row in many(conn, "SELECT * FROM provider_accounts WHERE last_seen >= datetime('now', ?)",
+                        ("-{} seconds".format(settings.no_worker_seconds),)):
+            accounts.setdefault(row["provider"], []).append(row)
         waiting = {row["provider"]: row["n"] for row in many(
             conn, "SELECT provider, COUNT(*) AS n FROM jobs WHERE status = 'pending' GROUP BY provider")}
+
+    def total(rows, column):
+        said = [row[column] for row in rows if row[column] is not None]
+        return sum(said) if said else None
+
     return {name: {"waiting": waiting.get(name, 0),
-                   "pictures_last_3h": (pings.get(name) or {}).get("images_3h"),
-                   "picture_budget": (pings.get(name) or {}).get("image_budget"),
-                   "budget_free_at": (pings.get(name) or {}).get("budget_free_at")} for name in PROVIDERS}
+                   "pictures_last_3h": total(accounts.get(name, []), "images_3h"),
+                   "picture_budget": total(accounts.get(name, []), "image_budget"),
+                   "budget_free_at": (min(row["budget_free_at"] for row in accounts[name])
+                                      if accounts.get(name) and all(row["budget_free_at"] for row in accounts[name])
+                                      else None)} for name in PROVIDERS}
 
 
 def _sweep_unserved(conn, job_id=None):
@@ -317,9 +372,28 @@ def _sweep_unserved(conn, job_id=None):
         ).rowcount
         if changed == 1:
             _refund(conn, job["user_id"])
+    # A conversation's thread opens on its account alone: with that account gone, nobody will take it,
+    # whoever else serves the provider.
+    sql = ("SELECT j.id, j.user_id, j.provider FROM jobs j JOIN conversations c ON c.id = j.conversation_id"
+           " LEFT JOIN provider_accounts a ON a.account = c.account"
+           " WHERE j.status = 'pending' AND c.account IS NOT NULL AND j.created_at < datetime('now', ?)"
+           " AND (a.last_seen IS NULL OR a.last_seen < datetime('now', ?))")
+    params = [window, window]
+    if job_id:
+        sql += " AND j.id = ?"
+        params.append(job_id)
+    for job in many(conn, sql, params):
+        changed = conn.execute(
+            "UPDATE jobs SET status = 'failed', error = ?, error_kind = 'no_worker',"
+            " lease_expires_at = NULL, phase = NULL, finished_at = datetime('now')"
+            " WHERE id = ? AND status = 'pending'",
+            ("the {} account holding this conversation is not being served right now".format(job["provider"]), job["id"]),
+        ).rowcount
+        if changed == 1:
+            _refund(conn, job["user_id"])
 
 
-def note_workers(providers, pacing=None):
+def note_workers(providers, pacing=None, account=None):
     """Record that a worker serving these providers is alive right now.
 
     Claiming is not the only proof of life: a runner deliberately pausing
@@ -329,11 +403,14 @@ def note_workers(providers, pacing=None):
     if not serves:
         return {"noted": []}
     with db() as conn:
-        _note_worker(conn, serves, pacing)
+        _note_worker(conn, serves, pacing, account)
     return {"noted": serves}
 
 
-def claim_next_job(providers=None, pacing=None):
+def claim_next_job(providers=None, pacing=None, account=None):
+    """The oldest job this account can take: of a provider it serves, and on no account yet or on this
+    one (issue #29). Claiming pins a conversation to the account, so a follow-up queued before the first
+    turn has made its thread still lands on it. An account with room is what rotates the work."""
     lease = "+{} seconds".format(settings.job_lease_seconds)
     serves = [p for p in (providers or []) if p in PROVIDERS]
     if not serves:
@@ -343,15 +420,16 @@ def claim_next_job(providers=None, pacing=None):
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            _note_worker(conn, serves, pacing)
+            asking = account or serves[0]
+            _note_worker(conn, serves, pacing, asking)
             _sweep_stranded(conn)
             _sweep_unserved(conn)
-            where = "j.status = 'pending' AND j.provider IN ({})".format(
+            where = "j.status = 'pending' AND j.provider IN ({}) AND (c.account IS NULL OR c.account = ?)".format(
                 ", ".join("?" * len(serves)))
-            params = list(serves)
-            row = one(
+            params = list(serves) + [asking]
+            row = None if _held(conn, asking) else one(
                 conn,
-                "SELECT j.id, j.provider, j.feature, j.payload, j.attempts,"
+                "SELECT j.id, j.provider, j.feature, j.payload, j.attempts, j.conversation_id,"
                 " c.provider_thread_url AS thread_url"
                 " FROM jobs j LEFT JOIN conversations c ON c.id = j.conversation_id"
                 " WHERE {} ORDER BY j.created_at, j.rowid LIMIT 1".format(where),
@@ -360,11 +438,13 @@ def claim_next_job(providers=None, pacing=None):
             if row:
                 row["attempts"] += 1
                 conn.execute(
-                    "UPDATE jobs SET status = 'running', attempts = ?, phase = 'claimed',"
+                    "UPDATE jobs SET status = 'running', attempts = ?, phase = 'claimed', account = ?,"
                     " started_at = COALESCE(started_at, datetime('now')),"
                     " lease_expires_at = datetime('now', ?) WHERE id = ?",
-                    (row["attempts"], lease, row["id"]),
+                    (row["attempts"], asking, lease, row["id"]),
                 )
+                conn.execute("UPDATE conversations SET account = ? WHERE id = ? AND account IS NULL",
+                             (asking, row.pop("conversation_id")))
             conn.execute("COMMIT")
         except Exception:
             _rollback(conn)
@@ -399,7 +479,7 @@ def heartbeat(job_id, attempt):
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            job = one(conn, "SELECT status, attempts, provider FROM jobs WHERE id = ?", (job_id,))
+            job = one(conn, "SELECT status, attempts, provider, account FROM jobs WHERE id = ?", (job_id,))
             if not job:
                 raise HTTPException(status_code=404, detail="job not found")
             alive = job["status"] == "running" and job["attempts"] == attempt
@@ -411,7 +491,7 @@ def heartbeat(job_id, attempt):
                 # A worker in the middle of a turn stops asking for work, so its
                 # heartbeat is the proof it is alive. Without this, one five
                 # minute picture made every job queued behind it look unserved.
-                _note_worker(conn, [job["provider"]])
+                _note_worker(conn, [job["provider"]], account=job["account"])
             conn.execute("COMMIT")
         except Exception:
             _rollback(conn)
@@ -446,7 +526,7 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
                 conv = one(conn, "SELECT id, provider_thread_url FROM conversations WHERE id = ?",
                            (cancelled["conversation_id"],)) if cancelled["conversation_id"] else None
                 if conv is None:
-                    leave_tombstone(conn, cancelled["provider"], thread_url)
+                    leave_tombstone(conn, cancelled["provider"], thread_url, cancelled["account"])
                 elif not conv["provider_thread_url"]:
                     conn.execute("UPDATE conversations SET provider_thread_url = ? WHERE id = ?",
                                  (thread_url, conv["id"]))
@@ -518,7 +598,7 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
             if status == "failed":
                 _refund(conn, job["user_id"])
             if status == "failed" and error_kind == "provider_misconfigured":
-                _hold(conn, job["provider"], error)
+                _hold(conn, job["account"] or job["provider"], job["provider"], error)
             conn.execute("COMMIT")
         except Exception:
             _rollback(conn)

@@ -25,29 +25,31 @@ def browser_gone(exc) -> bool:
     return "has been closed" in said or "target closed" in said
 
 
-def build_provider(name: str):
+def build_provider(name: str, account: str = None):
+    """The driver of a provider, on one of its accounts. A new provider is a BaseProvider and a line here."""
     if settings.provider_mode == "mock":
-        return MockProvider(settings.media_path, settings.sessions_path, name=name)
+        return MockProvider(settings.media_path, settings.sessions_path, name=name, account=account)
     if name == "chatgpt":
         from src.providers.chatgpt import ChatGPTProvider
 
-        return ChatGPTProvider(settings.media_path, settings.sessions_path)
+        return ChatGPTProvider(settings.media_path, settings.sessions_path, account)
     if name == "grok":
         from src.providers.grok import GrokProvider
 
-        return GrokProvider(settings.media_path, settings.sessions_path)
+        return GrokProvider(settings.media_path, settings.sessions_path, account)
     if name == "gemini":
         from src.providers.gemini import GeminiProvider
 
-        return GeminiProvider(settings.media_path, settings.sessions_path)
+        return GeminiProvider(settings.media_path, settings.sessions_path, account)
     raise ValueError("provider {} has no real implementation yet".format(name))
 
 
 class ProviderHealth:
-    """What one provider has been doing lately, and whether to leave it alone."""
+    """What one account of a provider has been doing lately, and whether to leave it alone."""
 
-    def __init__(self, provider="chatgpt"):
+    def __init__(self, provider="chatgpt", account=None):
         self.provider = provider
+        self.account = account or provider
         self.pacing = settings.pacing(provider)
         self.consecutive_errors = 0
         self.cooldown_until = 0.0
@@ -55,7 +57,7 @@ class ProviderHealth:
         # A real account's budget outlives the worker: counted in memory, a restart gave it all back.
         # Only a worker told where keeps it (run-worker.sh, in real mode): a mock's or a test's pictures
         # spend no account and must not count against the real one's file.
-        self.budget_file = (Path(settings.pacing_path) / "pacing-{}.json".format(provider)
+        self.budget_file = (Path(settings.pacing_path) / "pacing-{}.json".format(self.account)
                             if settings.pacing_path else None)
         self.budget_file_error = None
         self.image_times = deque(self._stored_image_times())
@@ -128,27 +130,35 @@ class ProviderHealth:
 
 
 class BrowserPool:
-    """Owns one browser session per provider, serialised by a lock.
+    """Owns one browser session per account, serialised by a lock.
 
-    Two requests must never share a page, so every provider gets its own lock and
-    a job waits rather than interleaving.
+    Two requests must never share a page, so every account gets its own lock and
+    a job waits rather than interleaving. Everything here is keyed by account; a
+    provider's default account has the provider's own name.
     """
 
     def __init__(self):
         self._providers = {}
         self._locks = {}
         self._errors = {}
-        self._health = {name: ProviderHealth(name) for name in settings.providers}
+        self._provider_of = {account: name for name in settings.providers for account in settings.accounts(name)}
+        self._health = {account: ProviderHealth(name, account) for account, name in self._provider_of.items()}
+        self._used_at = {}
+
+    @property
+    def accounts(self) -> dict:
+        """Every account this pool serves, and its provider."""
+        return dict(self._provider_of)
 
     def start(self):
-        for name in settings.providers:
+        for account, name in self._provider_of.items():
             try:
-                provider = build_provider(name)
+                provider = build_provider(name, account)
                 provider.start()
-                self._providers[name] = provider
-                self._locks[name] = threading.Lock()
+                self._providers[account] = provider
+                self._locks[account] = threading.Lock()
             except Exception as exc:
-                self._errors[name] = "{}: {}".format(type(exc).__name__, exc)
+                self._errors[account] = "{}: {}".format(type(exc).__name__, exc)
 
     def stop(self):
         for provider in self._providers.values():
@@ -158,25 +168,51 @@ class BrowserPool:
                 pass
         self._providers.clear()
 
-    def hold_seconds(self, provider: str = None) -> float:
-        """How long this provider's runner should wait before claiming anything.
+    def _total_wait(self, health) -> float:
+        """How long the cap across a provider's accounts holds: they share one machine and one IP."""
+        total = health.pacing.get("image_total")
+        if not total:
+            return 0.0
+        same = [other for other in self._health.values() if other.provider == health.provider]
+        for other in same:
+            other.images_in_window()
+        times = sorted(at for other in same for at in other.image_times)
+        return max(0.0, times[len(times) - total] + IMAGE_WINDOW_SECONDS - time.time()) if len(times) >= total else 0.0
 
-        Per provider on purpose: the longest wait of any provider used to be
-        returned to everyone, so one provider's cooldown parked the rest.
+    def hold_seconds(self, provider: str = None) -> float:
+        """How long this account's runner should wait before claiming anything.
+
+        Per account on purpose: the longest wait of any used to be returned to
+        everyone, so one provider's cooldown parked the rest.
         """
         if provider is not None:
             health = self._health.get(provider)
-            return health.hold_seconds() if health else 0.0
+            return max(health.hold_seconds(), self._total_wait(health)) if health else 0.0
         return max([h.hold_seconds() for h in self._health.values()] or [0.0])
 
     def pacing_report(self, provider: str) -> dict:
-        """What this provider has spent of its picture budget, for the api to tell whoever asks."""
+        """What this account has spent of its picture budget, for the api to tell whoever asks."""
         health = self._health.get(provider)
         if health is None:
             return {}
         used, budget = health.images_in_window(), health.pacing["image_budget"]
         free_in = health.image_times[0] + IMAGE_WINDOW_SECONDS - time.time() if budget and used >= budget else 0
-        return {"images_last_3h": used, "image_budget": int(budget), "budget_free_in": max(0.0, free_in)}
+        return {"images_last_3h": used, "image_budget": int(budget),
+                "budget_free_in": max(0.0, free_in, self._total_wait(health))}
+
+    def close_idle(self, account: str):
+        """Close a browser no job has used for BROWSER_IDLE_SECONDS; its next job opens it again. Never
+        waits on a turn: a browser in use is not idle."""
+        used = self._used_at.get(account)
+        limit = settings.browser_idle_seconds
+        lock = self._locks.get(account)
+        if not limit or used is None or lock is None or time.time() - used < limit or not lock.acquire(blocking=False):
+            return
+        try:
+            self._providers[account].stop()
+            self._used_at.pop(account, None)
+        finally:
+            lock.release()
 
     def cooling_down(self, provider: str) -> bool:
         """An error cooldown, as opposed to a pacing gap: the site is unwell now."""
@@ -209,6 +245,7 @@ class BrowserPool:
             )
 
         with self._locks[provider_name]:
+            self._used_at[provider_name] = time.time()
             provider.bind(phase_hook, stop_hook)
             try:
                 if feature == "chat":
@@ -250,6 +287,7 @@ class BrowserPool:
                     "{}: {}".format(type(exc).__name__, exc), kind="worker_error")
             finally:
                 provider.bind(None, None)
+                self._used_at[provider_name] = time.time()
         return GenerationResult.failure("unknown feature {}".format(feature), kind="worker_error")
 
     def delete_thread(self, provider_name: str, thread_url: str) -> GenerationResult:
@@ -261,6 +299,7 @@ class BrowserPool:
                     provider_name, self._errors.get(provider_name, "not enabled on this worker")),
                 kind="provider_error")
         with self._locks[provider_name]:
+            self._used_at[provider_name] = time.time()
             try:
                 return GenerationResult(success=bool(provider.delete_thread(thread_url)))
             except ProviderError as exc:
@@ -287,6 +326,7 @@ class BrowserPool:
         """One page of the nightly cleanup, under the same lock as turns, so it never meets one."""
         provider = self._providers[provider_name]
         with self._locks[provider_name]:
+            self._used_at[provider_name] = time.time()
             try:
                 return provider.clean_library_page(cursor, day, known)
             except Exception as exc:
@@ -299,9 +339,10 @@ class BrowserPool:
 
     def status(self) -> dict:
         out = {}
-        for name in settings.providers:
+        for name, of in self._provider_of.items():
             provider = self._providers.get(name)
             entry = {
+                "provider": of,
                 "ready": provider is not None,
                 "features": sorted(f.value for f in provider.supported_features) if provider else [],
                 "error": self._errors.get(name),

@@ -10,12 +10,12 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 
 @router.post("/workers/ping")
 def ping(body: WorkerClaim = WorkerClaim(), _: bool = Depends(require_worker)):
-    return note_workers(body.providers, body.pacing.model_dump() if body.pacing else None)
+    return note_workers(body.providers, body.pacing.model_dump() if body.pacing else None, body.account)
 
 
 @router.post("/jobs/claim")
 def claim(body: WorkerClaim = WorkerClaim(), _: bool = Depends(require_worker)):
-    job = claim_next_job(body.providers, body.pacing.model_dump() if body.pacing else None)
+    job = claim_next_job(body.providers, body.pacing.model_dump() if body.pacing else None, body.account)
     if job is None:
         return Response(status_code=204)
     return job
@@ -33,7 +33,7 @@ def progress(job_id: str, body: WorkerProgress, _: bool = Depends(require_worker
 
 @router.post("/tombstones/claim")
 def claim_thread_to_delete(body: WorkerClaim = WorkerClaim(), _: bool = Depends(require_worker)):
-    stone = claim_tombstone(body.providers)
+    stone = claim_tombstone(body.providers, body.account)
     if stone is None:
         return Response(status_code=204)
     return stone

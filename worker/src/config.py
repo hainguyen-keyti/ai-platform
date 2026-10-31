@@ -24,9 +24,25 @@ class Settings:
         # When the worker cleans ChatGPT's Library each day, as HH:MM in UTC (issue #27). The default is
         # 23:30 in Vietnam. Empty turns it off.
         self.library_cleanup_at = os.environ.get("LIBRARY_CLEANUP_AT", "16:30").strip()
+        # A browser no job has used for this long is closed, and opened again by the next (issue #29):
+        # every account's Chromium held open is memory the machine is short of. 0 keeps them open.
+        self.browser_idle_seconds = float(os.environ.get("BROWSER_IDLE_SECONDS", "1800"))
         self.providers = [
             p.strip() for p in os.environ.get("PROVIDERS", "chatgpt").split(",") if p.strip()
         ]
+
+    def accounts(self, provider: str) -> list:
+        """A provider's accounts (issue #29): ACCOUNTS__CHATGPT=chatgpt,chatgpt-a2 if given, or else the
+        profiles a login has made on disk. With none, the default account, which says how to log in."""
+        given = os.environ.get("ACCOUNTS__{}".format(provider.upper()), "")
+        names = [name.strip() for name in given.split(",") if name.strip()]
+        if names:
+            return names
+        if self.provider_mode == "mock":
+            return [provider]
+        from src.providers.session import accounts_on_disk
+
+        return accounts_on_disk(self.sessions_path, provider) or [provider]
 
     def pacing(self, provider: str) -> dict:
         """The pacing for one provider, with per-provider overrides.
@@ -48,6 +64,8 @@ class Settings:
             "image_budget": int(value("IMAGE_BUDGET_3H", self.image_budget)),
             "cooldown_base": value("COOLDOWN_BASE_SECONDS", self.cooldown_base),
             "cooldown_max": value("COOLDOWN_MAX_SECONDS", self.cooldown_max),
+            # Across all of this provider's accounts, which share one machine and one IP. 0 is no cap.
+            "image_total": int(value("IMAGE_TOTAL_3H", float(os.environ.get("IMAGE_TOTAL_3H") or 0))),
         }
 
 

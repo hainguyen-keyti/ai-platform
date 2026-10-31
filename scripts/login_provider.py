@@ -2,7 +2,9 @@
 """Open the provider's own browser so it can be logged in by hand; the session stays in its profile.
 
     ~/cloakbrowser-env/bin/python scripts/login_provider.py grok
+    ~/cloakbrowser-env/bin/python scripts/login_provider.py chatgpt --account a2     # another account
 
+--account makes a profile of its own, storage/sessions/<provider>-<name>/; a worker started afterwards serves it too.
 A window opens on the provider's own site, in the profile the worker opens afterwards
 (storage/sessions/<provider>/) and as the same device. Log in there. The script watches the
 browser and closes it by itself the moment the login is real, so there is no terminal step to
@@ -19,7 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "worker"))
 
 from src.providers.base import ProviderError  # noqa: E402
-from src.providers.session import open_session, profile_of  # noqa: E402
+from src.providers.session import account_profile, open_session, profile_of  # noqa: E402
 
 # Where to land, and the cookie that only exists once the login is real. A
 # provider that redirects (x.com/i/grok sends you to grok.com) must be opened at
@@ -159,15 +161,26 @@ def summarise(context, spec):
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in PROVIDERS:
-        sys.exit("usage: login_provider.py [{}]".format("|".join(PROVIDERS)))
+    args = sys.argv[1:]
+    account = None
+    if "--account" in args:
+        at = args.index("--account")
+        account = args[at + 1] if len(args) > at + 1 else ""
+        del args[at:at + 2]
+    if not args or args[0] not in PROVIDERS or account == "":
+        sys.exit("usage: login_provider.py [{}] [--account NAME]".format("|".join(PROVIDERS)))
 
-    provider = sys.argv[1]
+    provider = args[0]
     spec = PROVIDERS[provider]
-    sessions = Path(sys.argv[2]) if len(sys.argv) > 2 else ROOT / "storage" / "sessions"
+    sessions = Path(args[1]) if len(args) > 1 else ROOT / "storage" / "sessions"
 
     try:
-        context = open_session(sessions, provider, headless=False, create=True)
+        profile = account_profile(provider, account)
+    except ValueError as exc:
+        sys.exit(str(exc))
+    print("profile: {}".format(profile_of(sessions, profile)))
+    try:
+        context = open_session(sessions, profile, headless=False, create=True)
     except ProviderError as exc:
         print(exc)
         return 1

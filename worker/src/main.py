@@ -29,7 +29,7 @@ def running_code_sha() -> str:
 
 CODE_SHA = running_code_sha()
 pool = BrowserPool()
-runners = [Runner(pool, name) for name in settings.providers]
+runners = [Runner(pool, provider, account) for account, provider in pool.accounts.items()]
 
 
 @asynccontextmanager
@@ -63,7 +63,7 @@ def health():
             "holding_for_seconds": round(pool.hold_seconds(), 1),
             "per_provider": {name: pool.pacing(name) for name in settings.providers},
         },
-        "runners": {r.provider: r.snapshot() for r in runners},
+        "runners": {r.account: r.snapshot() for r in runners},
         # The totals stay at the top so anything reading them keeps working.
         "current_job": next((r.current_job for r in runners if r.current_job), None),
         "jobs_processed": sum(r.processed for r in runners),

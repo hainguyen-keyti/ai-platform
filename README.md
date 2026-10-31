@@ -194,6 +194,31 @@ time, so stop the worker, or take that provider off it, first. Never copy a prof
 machines, and never delete its `device-seed` alone. `storage/` is git-ignored: a new machine logs
 in again.
 
+### More than one account
+
+A provider can have several accounts, each its own login in its own profile, so that requests go to one with
+room:
+
+```bash
+~/cloakbrowser-env/bin/python scripts/login_provider.py chatgpt --account a2
+```
+
+That makes `storage/sessions/chatgpt-a2/`. Log in by hand; the first window's profile stays the default account.
+For ChatGPT turn the account's memory off first, or the worker refuses to speak into it. Restart the worker and it
+serves every profile it finds (`ACCOUNTS__CHATGPT=chatgpt,chatgpt-a2` names them instead).
+
+- An account with room takes the next request, so the work spreads by itself, and two accounts run at once.
+- A thread opens only on the account that made it. A conversation, a session or a `continue_from` stays on its
+  account and waits for it. If that account needs its admin, or no worker serves it, such a request is refused
+  with a clear reason; a key's thread for the day starts anew on another account.
+- The picture budget (`IMAGE_BUDGET_3H`), the backing off and the nightly Library cleanup are per account, and
+  the budget's count is in `storage/pacing-<account>.json`. `IMAGE_TOTAL_3H` caps a provider's accounts
+  together, as they share one machine and one IP.
+- `GET /admin/accounts` shows each account. Everything else shows totals and names no account.
+
+To add a provider, write a `BaseProvider` that takes `account`, add it to `build_provider` in
+`worker/src/pool.py` and to `PROVIDERS`/`FEATURES` in `api/src/models.py`; its accounts then work the same way.
+
 ## 10. Running it
 
 ```bash

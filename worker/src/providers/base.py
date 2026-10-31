@@ -68,7 +68,9 @@ class BaseProvider(ABC):
     name: str = "base"
     supported_features: tuple = ()
 
-    def __init__(self, media_path: Path, sessions_path: Path):
+    def __init__(self, media_path: Path, sessions_path: Path, account: Optional[str] = None):
+        # The logged-in profile this driver runs on; the provider's own name is its default account.
+        self.account = account or self.name
         self.media_path = Path(media_path)
         self.sessions_path = Path(sessions_path)
         self.media_path.mkdir(parents=True, exist_ok=True)

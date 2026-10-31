@@ -28,13 +28,14 @@ class Runner(threading.Thread):
     job runs, a heartbeat keeps its lease alive and carries back the one thing
     the worker needs to know mid-flight: that the job is no longer its to finish.
 
-    One runner per provider, because a provider's browser belongs to the thread
+    One runner per account, because an account's browser belongs to the thread
     that created it: two stealth browsers cannot be launched from one thread, and
-    a provider paused by its own cooldown must not park anybody else.
+    an account paused by its own cooldown must not park anybody else.
     """
 
-    def __init__(self, pool, provider):
-        super().__init__(name="job-runner-{}".format(provider), daemon=True)
+    def __init__(self, pool, provider, account=None):
+        self.account = account or provider
+        super().__init__(name="job-runner-{}".format(self.account), daemon=True)
         self.pool = pool
         self.provider = provider
         # Not _stop: threading.Thread calls its own _stop() once the thread has ended.
@@ -73,7 +74,7 @@ class Runner(threading.Thread):
         headers = {"X-Worker-Token": settings.worker_token}
         with httpx.Client(base_url=settings.api_url, headers=headers, timeout=30.0) as client:
             while not self._halt.is_set():
-                hold = self.pool.hold_seconds(self.provider)
+                hold = self.pool.hold_seconds(self.account)
                 if hold > 0:
                     # Pausing on purpose is not being dead: say so, or the api
                     # fails the jobs waiting for this provider as unserved.
@@ -83,8 +84,9 @@ class Runner(threading.Thread):
                         pass
                     # A thread deletion is one call, not a turn: a pacing gap
                     # must not starve it. An error cooldown still does.
-                    if not self.pool.cooling_down(self.provider):
+                    if not self.pool.cooling_down(self.account):
                         self._maybe_delete_one_thread(client)
+                    self.pool.close_idle(self.account)
                     self._halt.wait(min(hold, 5.0))
                     continue
 
@@ -97,6 +99,7 @@ class Runner(threading.Thread):
                 if job is None:
                     self._maybe_delete_one_thread(client)
                     self._maybe_clean_library(client)
+                    self.pool.close_idle(self.account)
                     self._halt.wait(settings.poll_interval)
                     continue
 
@@ -108,10 +111,14 @@ class Runner(threading.Thread):
                 finally:
                     self.current_job = None
 
+    def _who(self):
+        """Who this runner serves; the default account needs no name of its own."""
+        return {"providers": [self.provider], **({"account": self.account} if self.account != self.provider else {})}
+
     def _ping_body(self):
         """Who this runner serves, and what it has spent of its picture budget."""
-        pacing = self.pool.pacing_report(self.provider)
-        return {"providers": [self.provider], "pacing": pacing or None}
+        pacing = self.pool.pacing_report(self.account)
+        return {**self._who(), "pacing": pacing or None}
 
     def _claim(self, client):
         response = client.post("/internal/jobs/claim", json=self._ping_body())
@@ -128,7 +135,7 @@ class Runner(threading.Thread):
         """One page of the day's Library cleanup, when the runner has no job (issue #27): a person's
         request is served between pages. Only from LIBRARY_CLEANUP_AT, once a day; a failed page ends
         the day's run and says why."""
-        if not settings.library_cleanup_at or not self.pool.can_clean_library(self.provider):
+        if not settings.library_cleanup_at or not self.pool.can_clean_library(self.account):
             return
         now = self._utcnow()
         day = now.date().isoformat()
@@ -140,7 +147,7 @@ class Runner(threading.Thread):
                                     "failed": 0, "error": None}
         report = self.library_cleanup
         try:
-            page = self.pool.clean_library_page(self.provider, self._cleaning["cursor"], self._cleaning["day"],
+            page = self.pool.clean_library_page(self.account, self._cleaning["cursor"], self._cleaning["day"],
                                                 lambda urls: self._known_threads(client, urls))
         except Exception as exc:
             report["error"] = "{}: {}".format(type(exc).__name__, exc)
@@ -175,7 +182,7 @@ class Runner(threading.Thread):
             self.last_error = "tombstone failed, {}: {}".format(type(exc).__name__, exc)
 
     def _delete_one_thread(self, client):
-        response = client.post("/internal/tombstones/claim", json={"providers": [self.provider]})
+        response = client.post("/internal/tombstones/claim", json=self._who())
         if response.status_code != 200:
             return
         stone = response.json()
@@ -185,7 +192,7 @@ class Runner(threading.Thread):
                                   name="alive-{}".format(self.provider), daemon=True)
         pinger.start()
         try:
-            result = self.pool.delete_thread(stone["provider"], stone["thread_url"])
+            result = self.pool.delete_thread(self.account, stone["thread_url"])
         finally:
             done.set()
             pinger.join(timeout=5)
@@ -216,7 +223,7 @@ class Runner(threading.Thread):
         """Ping for this provider until done is set, or the api counts the busy runner as gone."""
         while not done.wait(BUSY_PING_SECONDS):
             try:
-                client.post("/internal/workers/ping", json={"providers": [self.provider]})
+                client.post("/internal/workers/ping", json=self._who())
             except Exception:
                 pass
 
@@ -271,13 +278,13 @@ class Runner(threading.Thread):
         started = time.time()
         try:
             result = self.pool.execute(
-                job["provider"], job["feature"], job.get("payload") or {},
+                self.account, job["feature"], job.get("payload") or {},
                 job.get("thread_url"), phase_hook, lost.is_set,
             )
         finally:
             finished.set()
             beat.join(timeout=5)
-        self.pool.note_result(job["provider"], result, time.time() - started)
+        self.pool.note_result(self.account, result, time.time() - started)
 
         body = {
             "status": "done" if result.success else "failed",

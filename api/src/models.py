@@ -78,6 +78,8 @@ class WorkerPacing(BaseModel):
 class WorkerClaim(BaseModel):
     providers: list[str] = Field(default_factory=list, max_length=8)
     pacing: Optional[WorkerPacing] = None
+    # Which of the provider's accounts asks (issue #29); none means its default account, named as it is.
+    account: Optional[str] = Field(default=None, max_length=80)
 
 
 class WorkerHeartbeat(BaseModel):

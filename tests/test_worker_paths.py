@@ -25,6 +25,7 @@ from playwright._impl._errors import TargetClosedError  # noqa: E402
 from src import pool as pool_module, runner as runner_module  # noqa: E402
 from src.config import settings  # noqa: E402
 from src.pool import BrowserPool, ProviderHealth  # noqa: E402
+from src.providers import session  # noqa: E402
 from src.providers.base import FeatureType, GenerationResult, JobCancelled, MediaArtifact, ProviderError  # noqa: E402
 
 results = []
@@ -154,6 +155,9 @@ class Pool:
 
     def can_clean_library(self, provider):
         return False
+
+    def close_idle(self, account):
+        pass
 
     def execute(self, provider, feature, payload, thread_url, phase_hook, should_stop):
         self.executed.append((provider, feature, payload, thread_url))
@@ -286,7 +290,7 @@ def pool_answers():
     built = pool_module.build_provider
     settings.providers = ["chatgpt", "grok"]
 
-    def build(name):
+    def build(name, account=None):
         if name == "grok":
             raise RuntimeError("no profile for grok")
         return Provider()
@@ -299,6 +303,45 @@ def pool_answers():
            str({n: (s["ready"], s["error"]) for n, s in status.items()}))
     pool_module.build_provider = built
     settings.providers = ["chatgpt"]
+
+    # Issue #29: every account's browser held open is memory the machine is short of.
+    provider = Provider()
+    pool = pool_with(provider)
+    settings.browser_idle_seconds = 0.2
+    pool.execute("chatgpt", "chat", {"message": "m"})
+    pool.close_idle("chatgpt")
+    record("a browser just used stays open", provider.stops == 0)
+    time.sleep(0.3)
+    pool.close_idle("chatgpt")
+    pool.close_idle("chatgpt")
+    record("a browser idle long enough is closed, once", provider.stops == 1, "stops {}".format(provider.stops))
+    pool.execute("chatgpt", "chat", {"message": "m"})
+    time.sleep(0.3)
+    with pool._locks["chatgpt"]:
+        pool.close_idle("chatgpt")
+    record("a browser in use is not closed", provider.stops == 1, "stops {}".format(provider.stops))
+    settings.browser_idle_seconds = 0
+    time.sleep(0.1)
+    pool.close_idle("chatgpt")
+    record("no limit, no closing", provider.stops == 1, "stops {}".format(provider.stops))
+    settings.browser_idle_seconds = 1800
+
+    profiles = Path(tempfile.mkdtemp(prefix="worker-accounts-", dir=str(Path.home() / ".cache")))
+    for name, seeded in (("chatgpt", True), ("chatgpt-a2", True), ("chatgpt-empty", False), ("chatgptish", True), ("grok-x", True)):
+        (profiles / name).mkdir()
+        if seeded:
+            (profiles / name / session.SEED_FILE).write_text("12345")
+    record("a provider's accounts are its logged-in profiles on disk, the default first",
+           session.accounts_on_disk(profiles, "chatgpt") == ["chatgpt", "chatgpt-a2"],
+           str(session.accounts_on_disk(profiles, "chatgpt")))
+    record("an account's profile has a checked name", session.account_profile("chatgpt") == "chatgpt"
+           and session.account_profile("chatgpt", "a2") == "chatgpt-a2")
+    try:
+        session.account_profile("chatgpt", "../up")
+        said = "taken"
+    except ValueError:
+        said = "refused"
+    record("a name that is not a plain one makes no profile", said == "refused", said)
 
 
 def health_answers():
@@ -348,6 +391,30 @@ def health_answers():
     pool._health["grok"].note(failure, 1.0)
     record("one provider's cooldown does not hold another", pool.hold_seconds("chatgpt") == 0.0
            and pool.hold_seconds("grok") > 0 and pool.cooling_down("grok") and not pool.cooling_down("chatgpt"))
+    pool = BrowserPool()
+    pool._health = {"chatgpt": ProviderHealth("chatgpt"), "chatgpt-b": ProviderHealth("chatgpt", "chatgpt-b"),
+                    "grok": ProviderHealth("grok")}
+    for health in pool._health.values():
+        health.pacing.update(image_budget=0, min_gap=0.0, image_total=3)
+    picture = GenerationResult(success=True, media=[MediaArtifact(filename="a.png", type="image")])
+    pool._health["chatgpt"].note(picture, 1.0)
+    pool._health["chatgpt-b"].note(picture, 1.0)
+    pool._health["grok"].note(picture, 1.0)
+    record("under the cap across accounts nothing holds", pool.hold_seconds("chatgpt") == 0.0)
+    pool._health["chatgpt-b"].note(picture, 1.0)
+    record("the cap across a provider's accounts holds them all, and no other provider",
+           pool.hold_seconds("chatgpt") > 3600 and pool.hold_seconds("chatgpt-b") > 3600 and pool.hold_seconds("grok") == 0.0,
+           "{:.0f}s {:.0f}s {:.0f}s".format(pool.hold_seconds("chatgpt"), pool.hold_seconds("chatgpt-b"), pool.hold_seconds("grok")))
+    record("the budget's report says when the cap frees", pool.pacing_report("chatgpt")["budget_free_in"] > 3600)
+    settings.pacing_path = str(Path(tempfile.mkdtemp(prefix="worker-pacing-", dir=str(Path.home() / ".cache"))))
+    kept = ProviderHealth("chatgpt", "chatgpt-b")
+    kept.note(picture, 1.0)
+    record("an account's budget is kept in a file of its own",
+           (Path(settings.pacing_path) / "pacing-chatgpt-b.json").exists() and not (Path(settings.pacing_path) / "pacing-chatgpt.json").exists())
+    settings.pacing_path = ""
+
+    pool = BrowserPool()
+    pool._health = {"chatgpt": ProviderHealth("chatgpt"), "grok": ProviderHealth("grok")}
     record("a provider not here reports nothing", pool.pacing_report("nobody") == {} and pool.pacing("nobody") == {}
            and pool.hold_seconds("nobody") == 0.0)
 

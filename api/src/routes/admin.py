@@ -20,6 +20,26 @@ def list_users(user: dict = Depends(current_user)):
     return {"items": rows}
 
 
+@router.get("/accounts")
+def accounts(user: dict = Depends(current_user)):
+    """Each provider account a worker has asked with: when, its picture budget, whether it is held out and
+    why, and how much is on it (issue #29). Account names stop here: /v1 and the web show totals."""
+    require_admin(user)
+    with db() as conn:
+        rows = many(
+            conn,
+            "SELECT a.account, a.provider, a.last_seen, a.images_3h, a.image_budget, a.budget_free_at,"
+            " CASE WHEN h.until > datetime('now') THEN h.until END AS held_until,"
+            " CASE WHEN h.until > datetime('now') THEN h.reason END AS held_because,"
+            " (SELECT COUNT(*) FROM conversations c WHERE c.account = a.account) AS conversations,"
+            " (SELECT COUNT(*) FROM jobs j WHERE j.account = a.account AND j.status = 'done') AS jobs_done,"
+            " (SELECT COUNT(*) FROM jobs j WHERE j.account = a.account AND j.status = 'failed') AS jobs_failed"
+            " FROM provider_accounts a LEFT JOIN provider_holds h ON h.provider = a.account"
+            " ORDER BY a.provider, a.account",
+        )
+    return {"items": rows}
+
+
 @router.get("/usage")
 def usage(days: int = Query(default=30, ge=1, le=365), user: dict = Depends(current_user)):
     """Who spent what, read from the jobs that already record every charge and refund."""

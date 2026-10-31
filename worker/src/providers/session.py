@@ -17,6 +17,7 @@ does not undo a build some other launch already fetched: cloakbrowser then picks
 
 import os
 import random
+import re
 from pathlib import Path
 
 from src.providers.base import ProviderError
@@ -36,6 +37,26 @@ def saved(sessions_path, name: str) -> bool:
     """Whether a login has made this provider's profile: the directory and the seed drawn for it."""
     profile = profile_of(sessions_path, name)
     return profile.is_dir() and (profile / SEED_FILE).is_file()
+
+
+def account_profile(provider: str, name: str = None) -> str:
+    """The profile an account lives in: the provider's own name for its default account, or <provider>-<name>."""
+    if not name:
+        return provider
+    if not re.fullmatch(r"[a-z0-9]{1,32}", name):
+        raise ValueError("an account name is 1 to 32 lower case letters and digits, not {!r}".format(name))
+    return "{}-{}".format(provider, name)
+
+
+def accounts_on_disk(sessions_path, provider: str) -> list:
+    """The accounts a login has made for this provider, the default one first (issue #29)."""
+    root = Path(sessions_path)
+    if not root.is_dir():
+        return []
+    found = [entry.name for entry in root.iterdir()
+             if (entry.name == provider or re.fullmatch(re.escape(provider) + r"-[a-z0-9]{1,32}", entry.name))
+             and saved(root, entry.name)]
+    return sorted(found, key=lambda name: (name != provider, name))
 
 
 def device_seed(profile: Path, draw: bool = False) -> int:

@@ -61,6 +61,8 @@ def get_conversation(conversation_id: str, user: dict = Depends(current_user)):
         )
         if not conv:
             raise HTTPException(status_code=404, detail="conversation not found")
+        # Which account holds a thread is for admins (issue #29).
+        conv.pop("account", None)
         messages = many(
             conn,
             "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ?"
@@ -183,7 +185,7 @@ def delete_conversation(conversation_id: str, user: dict = Depends(current_user)
         try:
             conv = one(
                 conn,
-                "SELECT id, provider, provider_thread_url FROM conversations"
+                "SELECT id, provider, provider_thread_url, account FROM conversations"
                 " WHERE id = ? AND user_id = ?",
                 (conversation_id, user["id"]),
             )
@@ -199,7 +201,7 @@ def delete_conversation(conversation_id: str, user: dict = Depends(current_user)
             cancel_open_jobs(conn, conversation_id)
             conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
             if conv["provider_thread_url"]:
-                leave_tombstone(conn, conv["provider"], conv["provider_thread_url"])
+                leave_tombstone(conn, conv["provider"], conv["provider_thread_url"], conv.get("account"))
             conn.execute("COMMIT")
         except Exception:
             try:

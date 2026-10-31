@@ -107,8 +107,19 @@ CREATE TABLE IF NOT EXISTS worker_pings (
     budget_free_at TEXT
 );
 
--- A provider whose account needs its admin (signed out, memory on) is held out until `until`: not
--- offered and no turn taken, since every turn would fail the same way until then.
+-- One row per account a worker has asked for work with (issue #29): one logged-in profile of a
+-- provider, its name the provider's for the default account. What it last said of its picture budget.
+CREATE TABLE IF NOT EXISTS provider_accounts (
+    account        TEXT PRIMARY KEY,
+    provider       TEXT NOT NULL,
+    last_seen      TEXT NOT NULL DEFAULT (datetime('now')),
+    images_3h      INTEGER,
+    image_budget   INTEGER,
+    budget_free_at TEXT
+);
+
+-- An account that needs its admin (signed out, memory on) is held out until `until`: not offered and
+-- no turn taken, since every turn would fail the same way until then. The column names the account.
 CREATE TABLE IF NOT EXISTS provider_holds (
     provider TEXT PRIMARY KEY,
     until    TEXT NOT NULL,

@@ -46,10 +46,17 @@ def init_db():
             ("worker_pings", "images_3h", "INTEGER"),
             ("worker_pings", "image_budget", "INTEGER"),
             ("worker_pings", "budget_free_at", "TEXT"),
+            ("conversations", "account", "TEXT"),
+            ("jobs", "account", "TEXT"),
+            ("thread_tombstones", "account", "TEXT"),
         ):
             existing = {row["name"] for row in conn.execute("PRAGMA table_info({})".format(table))}
             if column not in existing:
                 conn.execute("ALTER TABLE {} ADD COLUMN {} {}".format(table, column, definition))
+        # A thread lives on the account that made it (issue #29), and every thread from before
+        # accounts was made by the one profile there was, now its provider's default account.
+        conn.execute("UPDATE conversations SET account = provider"
+                     " WHERE account IS NULL AND provider_thread_url IS NOT NULL")
 
 
 def one(conn, sql, params=()):

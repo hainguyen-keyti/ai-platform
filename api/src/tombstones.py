@@ -31,8 +31,9 @@ def _rollback(conn):
         pass
 
 
-def leave_tombstone(conn, provider: str, thread_url: str):
-    """Inside the caller's transaction: note a thread the worker must remove, once per thread."""
+def leave_tombstone(conn, provider: str, thread_url: str, account: str = None):
+    """Inside the caller's transaction: note a thread the worker must remove, once per thread, by the
+    account that holds it, the only one that can open it (issue #29)."""
     pending = one(
         conn,
         "SELECT id FROM thread_tombstones WHERE thread_url = ? AND deleted_at IS NULL",
@@ -41,16 +42,17 @@ def leave_tombstone(conn, provider: str, thread_url: str):
     if pending:
         return
     conn.execute(
-        "INSERT INTO thread_tombstones (id, provider, thread_url) VALUES (?, ?, ?)",
-        (uuid.uuid4().hex, provider, thread_url),
+        "INSERT INTO thread_tombstones (id, provider, thread_url, account) VALUES (?, ?, ?, ?)",
+        (uuid.uuid4().hex, provider, thread_url, account),
     )
 
 
-def claim_tombstone(providers=None):
+def claim_tombstone(providers=None, account=None):
     """Hand the worker one thread to remove, oldest first, at most once per attempt.
 
     A worker is only offered threads of the providers it serves: it is the one
-    holding that provider's browser session.
+    holding that provider's browser session. A runner of a provider's account is
+    offered that account's; a tombstone naming none is the default account's.
     """
     serves = [p for p in (providers or []) if isinstance(p, str)]
     with db() as conn:
@@ -67,6 +69,8 @@ def claim_tombstone(providers=None):
             if serves:
                 where += " AND provider IN ({})".format(", ".join("?" * len(serves)))
                 params += serves
+                where += " AND COALESCE(account, provider) = ?"
+                params.append(account or serves[0])
             stone = one(
                 conn,
                 "SELECT id, provider, thread_url FROM thread_tombstones"

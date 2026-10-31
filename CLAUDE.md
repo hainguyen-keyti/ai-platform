@@ -63,10 +63,13 @@ SPECIFIC to this repo, and a repo rule wins on conflict.
 
 - All providers use cloakbrowser, not API: browser sessions are the source of truth for auth state.
 - Media files live on local disk (`storage/media`); Cloudflare R2 is deferred (DECISIONS section 3).
-- One browser session per provider at a time: a session is the profile `storage/sessions/<provider>/`
-  with its own device seed, made only by the login script, and Chromium opens it for one browser at a
-  time. Take a provider off the host worker before a gate, a probe or a login uses it; never copy a
-  profile, never delete its `device-seed` alone.
+- One browser session per account at a time: a session is the profile `storage/sessions/<provider>/` or
+  `<provider>-<name>/` with its own device seed, made only by the login script, and Chromium opens it for
+  one browser at a time. Take an account off the host worker before a gate, a probe or a login uses it;
+  never copy a profile, never delete its `device-seed` alone.
+- A provider thread belongs to the account that made it: a conversation is pinned to its account from its
+  first claim (`conversations.account`), and only that account's runner may take its jobs or delete its
+  thread. A new provider is a `BaseProvider` taking `account` and a line in `build_provider`.
 - Name a failure's cause only from the failing run's own record: run real gates with `--keep` and
   read the worker's error (the api's `thread_tombstones.error`, the job's error) before fixing; a
   defect measured elsewhere is a suspect until that record names it (paid for twice, 2026-09-27).

@@ -85,9 +85,9 @@ class MockProvider(BaseProvider):
 
     supported_features = (FeatureType.CHAT, FeatureType.IMAGE, FeatureType.VIDEO_SCRIPT)
 
-    def __init__(self, media_path, sessions_path, name="chatgpt"):
-        super().__init__(media_path, sessions_path)
+    def __init__(self, media_path, sessions_path, name="chatgpt", account=None):
         self.name = name
+        super().__init__(media_path, sessions_path, account)
         # The account-level switch the real provider reads before every turn.
         # A message can flip it on; the next ordinary message flips it back.
         self.memory = "off"
@@ -124,7 +124,9 @@ class MockProvider(BaseProvider):
     def _thread(self, thread_url: Optional[str]) -> str:
         # Reuse what the caller was given, otherwise open one. This is the whole
         # behaviour under test: same conversation, same thread.
-        return thread_url or "mock-thread-{}".format(uuid.uuid4().hex[:12])
+        # An account other than the default marks its threads, so a gate sees which browser ran the turn.
+        on = "on-{}-".format(self.account.rsplit("-", 1)[-1]) if self.account != self.name else ""
+        return thread_url or "mock-thread-{}{}".format(on, uuid.uuid4().hex[:12])
 
     def _store(self, blob: bytes, suffix: str, kind: str, prompt: str) -> MediaArtifact:
         filename = "mock-{}{}".format(uuid.uuid4().hex, suffix)

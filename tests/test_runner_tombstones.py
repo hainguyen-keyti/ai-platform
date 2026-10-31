@@ -56,6 +56,9 @@ class Pool:
         self.hold = hold
         self.cooling = cooling
 
+    def close_idle(self, account):
+        pass
+
     def hold_seconds(self, provider=None):
         return self.hold
 

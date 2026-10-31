@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 
 from src.config import settings
 from src.db.client import db, many, one
-from src.jobs import cancel_job, create_job, get_job, provider_load, provider_status
+from src.jobs import account_can_serve, cancel_job, create_job, get_job, provider_load, provider_status
 from src.models import FEATURES, MAX_REFERENCES, PROVIDERS, TAKES_REFERENCE
 from src.quota import today
 from src.routes.media import CONTENT_TYPES, _safe_path
@@ -133,10 +133,12 @@ def _key_conversation(user: dict, provider: str) -> str:
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            kept = one(conn, "SELECT k.day, k.conversation_id FROM api_key_conversations k"
+            kept = one(conn, "SELECT k.day, k.conversation_id, c.account FROM api_key_conversations k"
                              " JOIN conversations c ON c.id = k.conversation_id AND c.user_id = ?"
                              " WHERE k.key_id = ? AND k.provider = ?", (user["id"], user["api_key_id"], provider))
-            if kept and kept["day"] == day:
+            # The day's thread promises no character: on an account that cannot serve, a new one starts on
+            # another (issue #29). A named session stays with its account and is refused instead.
+            if kept and kept["day"] == day and account_can_serve(conn, provider, kept["account"]):
                 conn.execute("COMMIT")
                 return kept["conversation_id"]
             named = one(conn, "SELECT name FROM api_keys WHERE id = ?", (user["api_key_id"],)) or {}

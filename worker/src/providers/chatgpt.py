@@ -324,8 +324,8 @@ class ChatGPTProvider(BaseProvider):
     name = "chatgpt"
     supported_features = (FeatureType.CHAT, FeatureType.IMAGE, FeatureType.VIDEO_SCRIPT)
 
-    def __init__(self, media_path, sessions_path):
-        super().__init__(media_path, sessions_path)
+    def __init__(self, media_path, sessions_path, account=None):
+        super().__init__(media_path, sessions_path, account)
         self._context = None
         self._page = None
         self._access_token = None
@@ -348,8 +348,8 @@ class ChatGPTProvider(BaseProvider):
     def start(self) -> None:
         # The browser itself is created on first use: the sync driver is bound to
         # the thread that creates it, and that must be the runner thread.
-        if not saved(self.sessions_path, self.name):
-            raise RuntimeError(NO_SESSION.format(profile_of(self.sessions_path, self.name), self.name))
+        if not saved(self.sessions_path, self.account):
+            raise RuntimeError(NO_SESSION.format(profile_of(self.sessions_path, self.account), self.account))
 
     def stop(self) -> None:
         if self._context is not None:
@@ -362,7 +362,7 @@ class ChatGPTProvider(BaseProvider):
     def _ensure_page(self):
         if self._page is not None:
             return self._page
-        self._context = open_session(self.sessions_path, self.name)
+        self._context = open_session(self.sessions_path, self.account)
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
         return self._page
 
