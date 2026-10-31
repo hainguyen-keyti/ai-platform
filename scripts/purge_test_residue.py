@@ -52,14 +52,15 @@ def main():
         print("dry run: no request made; add --yes to delete them")
         return 0
 
-    from src.providers.chatgpt import SESSION_TOKEN, ChatGPTProvider
+    from src.providers.chatgpt import ChatGPTProvider
 
     provider = ChatGPTProvider(Path(tempfile.mkdtemp(prefix="purge-")), ROOT / "storage" / "sessions")
     provider.start()
     removed = failed = 0
     try:
         page = provider._open()
-        token = page.evaluate(SESSION_TOKEN)
+        # A fresh browser's first read answers empty (2026-10-31: this script said log in, signed in all along).
+        token = provider._session_token(page, 20)
         if not token:
             sys.exit("no session token: log in first with scripts/login_provider.py chatgpt")
         work = [("thread", i, "/backend-api/conversation/{}".format(i), "PATCH",

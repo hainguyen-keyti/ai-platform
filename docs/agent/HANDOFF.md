@@ -20,9 +20,13 @@ open" at the end of the file; what the tests left in the accounts is in
   help with things like this, but I don't seem to have access to that content…", no picture, the credit taken. The
   same words came on 2026-10-29, and the next try then met the check, so no further try was made. The same
   afternoon's lighthouse request had a picture. Why it refuses is not known; a refusal reading as done is #18's kind.
-- **Test residue, the owner's to run:** `docs/agent/residue-to-delete-2026-10-31.json` lists the 15 ChatGPT threads
-  of throwaway accounts, none shared with a real account (dry run: 15 threads). 60 throwaway accounts and the
-  `storage/mcp-*` folders also remain; no hard delete was made by the agent.
+- **Test residue:** the owner ran `scripts/purge_test_residue.py` on `docs/agent/residue-to-delete-2026-10-31.json`:
+  15 throwaway threads hidden, all 200. Its first run said "log in first" on a signed-in session: it read the token
+  once, as the worker used to; it now waits for it. 60 throwaway accounts and the `storage/mcp-*` folders remain; the
+  folders are the owner's to delete, no hard delete was made by the agent.
+- **The full gate went red twice on "the gate's web does not answer" with the machine loaded** (load 13, then a
+  2m2s web build against the usual 7 to 11s), the second time past a five-minute wait, and green on the next run,
+  at load 15 to 19. So load is a suspect, not the whole of it; the web's log of a failing run was not caught.
 - **`tests/test_worker_paths.py` (45 checks, 18 of 18 mutants red), in the quick gate at 5ac8d86** with
   `test_pool_dead_browser.py` and `test_runner_liveness.py`, which were in no gate: 73 checks. The gate now waits
   five minutes for its web.
