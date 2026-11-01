@@ -59,6 +59,9 @@ GOTO_RETRY_SECONDS = 20
 LIMIT_REACHED = re.compile(r"you(?:['’]ve| have) hit (?:the|your) [^.]{0,60}limit", re.IGNORECASE)
 LIMIT_RESETS = re.compile(r"\bin (\d+) (hour|minute)s?\b", re.IGNORECASE)
 CHECK_POLL_SECONDS, CHECK_RELOAD_SECONDS, CHECK_WAIT_SECONDS = 5, 30, 120
+CHECK_RETRY_SECONDS = 60
+# The request that carries a turn: measured 2026-11-01 as POST /backend-api/f/conversation.
+SEND_PATH = "/backend-api/f/conversation"
 # How long the page must stay quiet and unchanged before the answer counts as
 # over. Two seconds was thin: a reply that runs several tools puts the stop
 # button away between them, and a pause there reads as an ending.
@@ -313,6 +316,10 @@ SNAPSHOT_DOWNLOADS = """
 """
 
 
+class SendRefused(ProviderError):
+    """Cloudflare answered this turn's send with its check, so the turn never reached ChatGPT."""
+
+
 class ChatGPTProvider(BaseProvider):
     """Drives a logged-in chatgpt.com session through cloakbrowser.
 
@@ -351,6 +358,7 @@ class ChatGPTProvider(BaseProvider):
         # The site's refusals since the browser opened, and when it opened: the record of a Cloudflare check.
         self._refused = deque(maxlen=40)
         self._opened_at = None
+        self._sent_at = float("inf")
 
     def start(self) -> None:
         # The browser itself is created on first use: the sync driver is bound to
@@ -668,9 +676,14 @@ class ChatGPTProvider(BaseProvider):
         # counted, not just the first in the page.
         fresh = list((Counter(self._banner(page)) - Counter(seen_before or [])).elements())
         if fresh:
+            said = "the provider showed its error banner: {}".format(fresh[0])
             if "cloudflare" in fresh[0].lower():
                 self._keep_check(page, fresh[0])
-            raise ProviderError("the provider showed its error banner: {}".format(fresh[0]))
+                # Only on the site's own word that this send was refused: a turn it may have taken is not sent again.
+                if any(r["cf_mitigated"] and r["method"] == "POST" and r["url"].endswith(SEND_PATH) and r["at"] >= self._sent_at
+                       for r in self._refused):
+                    raise SendRefused(said)
+            raise ProviderError(said)
 
     def _thread_nodes(self, page, thread_id: str):
         """The thread as the server sees it.
@@ -1042,6 +1055,24 @@ class ChatGPTProvider(BaseProvider):
         return False
 
     def _run(self, prompt: str, upload=None, thread_url: Optional[str] = None):
+        """A turn, tried once more if Cloudflare refused its very send.
+
+        Measured 2026-11-01: the check comes and goes within a minute, and the turn after a refused one went
+        through each time. A send answered 403 never reached ChatGPT, so nothing is made twice or charged twice.
+        A second refusal goes up as any provider error does, and the pool backs off.
+        """
+        try:
+            return self._turn(prompt, upload, thread_url)
+        except SendRefused:
+            self._phase("waiting for the provider")
+            waited = 0
+            while waited < CHECK_RETRY_SECONDS:
+                self._page.wait_for_timeout(CHECK_POLL_SECONDS * 1000)
+                waited += CHECK_POLL_SECONDS
+                self._check_stop()
+            return self._turn(prompt, upload, thread_url)
+
+    def _turn(self, prompt: str, upload=None, thread_url: Optional[str] = None):
         """One turn; `upload` is a file name in media_path, or a list of them (issue #22)."""
         uploads = [upload] if isinstance(upload, str) else list(upload or [])
         # Never let a cancel report the previous turn's thread as this one's.
@@ -1081,7 +1112,7 @@ class ChatGPTProvider(BaseProvider):
             raise ProviderError("chatgpt left the conversation's thread before sending, so nothing was sent")
         # The last moment a job taken away can stay unsent: once typed, the turn is the site's.
         self._stop_unsent()
-        started = time.time()
+        started = self._sent_at = time.time()
         self.last_cancelled_thread = thread_url
         self._send(page, prompt)
 

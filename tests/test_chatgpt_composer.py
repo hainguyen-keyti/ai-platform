@@ -790,6 +790,78 @@ def main():
         said = "cancelled"
     record("a job taken away during the wait is not sent", said == "cancelled" and page.sent == [], said)
 
+    # Measured 2026-11-01, job 0e2d7cc4: the send itself refused, and the next turn went through.
+    class RefusedSend(DrawingPage):
+        driver, refuse, says_refused, shown = None, 1, True, False
+
+        def goto(self, url, *args, **kwargs):
+            self.shown = False
+            return super().goto(url, *args, **kwargs)
+
+        def evaluate(self, script, *args):
+            sends = len(self.sent)
+            if script == chatgpt.ERROR_BANNER_PRESENT and sends > self.seen_sends and self.refuse > 0:
+                self.seen_sends, self.shown = sends, True
+                self.refuse -= 1
+                if self.says_refused:
+                    self.driver._note_response(Refused(403, "https://chatgpt.com" + self.refused_path, {"cf-mitigated": "challenge"}))
+            if script == chatgpt.ERROR_BANNER_PRESENT and self.shown:
+                return ["cloudflare_challengeRetry"]
+            return super().evaluate(script, *args)
+
+        seen_sends, refused_path = 0, chatgpt.SEND_PATH
+
+    def refused_on(earlier_refusal=False, **settings):
+        page = RefusedSend(clock, tool_after=22, words_after=27, words_text="")
+        for name, value in settings.items():
+            setattr(page, name, value)
+        driver = provider_on(page)
+        page.driver = driver
+        if earlier_refusal:
+            driver._note_response(Refused(403, "https://chatgpt.com" + chatgpt.SEND_PATH, {"cf-mitigated": "challenge"}))
+            clock.now += 1
+        driver.media_path = driver.media_path / uuid.uuid4().hex / "media"
+        driver.media_path.mkdir(parents=True)
+        started = clock.now
+        try:
+            got = driver._run("vẽ một hình vuông")
+            said = "success" if got.success else "failed"
+        except ProviderError as exc:
+            said = str(exc)
+        return said, page, clock.now - started
+
+    said, page, took = refused_on()
+    record("a send Cloudflare refused is tried once more after a wait", said == "success" and len(page.sent) == 2 and took >= 60,
+           "{} sent {} after {:.0f}s".format(said, len(page.sent), took))
+    said, page, took = refused_on(refuse=5)
+    record("a second refusal fails the turn, with no third send", "cloudflare_challenge" in said and len(page.sent) == 2,
+           "{!r} sent {}".format(said[:60], len(page.sent)))
+    said, page, took = refused_on(says_refused=False)
+    record("a Cloudflare banner with no refused send on record is not sent again: the site may have taken it",
+           "cloudflare_challenge" in said and len(page.sent) == 1, "{!r} sent {}".format(said[:60], len(page.sent)))
+    said, page, took = refused_on(refused_path="/backend-api/f/conversation/prepare")
+    record("a refused call other than the send itself does not send again",
+           "cloudflare_challenge" in said and len(page.sent) == 1, "{!r} sent {}".format(said[:60], len(page.sent)))
+    said, page, took = refused_on(earlier_refusal=True, says_refused=False)
+    record("a send refused before this turn's own does not send it again",
+           "cloudflare_challenge" in said and len(page.sent) == 1, "{!r} sent {}".format(said[:60], len(page.sent)))
+
+    page = RefusedSend(clock, tool_after=22, words_after=27, words_text="")
+    driver = provider_on(page)
+    page.driver = driver
+    driver.media_path = driver.media_path / uuid.uuid4().hex / "media"
+    driver.media_path.mkdir(parents=True)
+    driver.bind(None, lambda: len(page.sent) >= 1 and page.shown)
+    try:
+        driver._run("vẽ một hình vuông")
+        said = "returned"
+    except JobCancelled:
+        said = "cancelled"
+    except ProviderError as exc:
+        said = str(exc)
+    record("a job taken away during the wait is not sent again", said == "cancelled" and len(page.sent) == 1,
+           "{!r} sent {}".format(said[:60], len(page.sent)))
+
     # Measured 2026-11-01: a Free account's answer once its pictures are spent.
     def limit_on(words):
         page = DrawingPage(clock, words_after=27, words_text=words)
