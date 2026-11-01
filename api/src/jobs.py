@@ -277,7 +277,7 @@ def account_can_serve(conn, provider, account):
     return account in seen or not seen
 
 
-def _hold(conn, account, provider, reason):
+def _hold(conn, account, provider, reason, seconds=None):
     """Inside the caller's transaction: hold out an account that needs its admin.
 
     Every turn on it would fail the same way until it is fixed, so the jobs already waiting for it are
@@ -287,7 +287,7 @@ def _hold(conn, account, provider, reason):
     conn.execute(
         "INSERT INTO provider_holds (provider, until, reason) VALUES (?, datetime('now', ?), ?)"
         " ON CONFLICT(provider) DO UPDATE SET until = excluded.until, reason = excluded.reason",
-        (account, "+{} seconds".format(settings.provider_hold_seconds), reason),
+        (account, "+{} seconds".format(seconds or settings.provider_hold_seconds), reason),
     )
     if _all_held(conn, provider):
         waiting = many(conn, "SELECT id, user_id FROM jobs WHERE provider = ? AND status = 'pending'", (provider,))
@@ -510,7 +510,7 @@ def record_progress(job_id, attempt, phase):
     return {"phase": phase}
 
 
-def record_result(job_id, attempt, status, text, media, error, error_kind=None, thread_url=None):
+def record_result(job_id, attempt, status, text, media, error, error_kind=None, thread_url=None, hold_seconds=None):
     media_ids = []
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -599,8 +599,10 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
             # A job that produced nothing must not cost the user a credit.
             if status == "failed":
                 _refund(conn, job["user_id"])
-            if status == "failed" and error_kind == "provider_misconfigured":
-                _hold(conn, job["account"] or job["provider"], job["provider"], error)
+            # An account at its provider's limit is left alone until the limit resets: an account that
+            # answers at once takes the next job at once, and would fail nearly every one (2026-11-01).
+            if status == "failed" and error_kind in ("provider_misconfigured", "provider_limit"):
+                _hold(conn, job["account"] or job["provider"], job["provider"], error, hold_seconds)
             conn.execute("COMMIT")
         except Exception:
             _rollback(conn)

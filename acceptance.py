@@ -1373,7 +1373,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
 
     for name, script, at_least in (
             ("a real account's picture budget outlives the worker", "test_worker_pacing.py", 8),
-            ("several accounts of a provider share the work, and a thread stays on its account", "test_provider_accounts.py", 25),
+            ("several accounts of a provider share the work, and a thread stays on its account", "test_provider_accounts.py", 28),
             ("a job's failures take the right path through the pool and the runner", "test_worker_paths.py", 68),
             ("a browser that dies under a turn is dropped and cools the provider down", "test_pool_dead_browser.py", 6),
             ("a busy runner keeps saying it is alive", "test_runner_liveness.py", 4)):

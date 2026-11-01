@@ -52,6 +52,8 @@ class GenerationResult:
     # Where the provider ended up. Stored against the conversation so the next
     # turn lands in the same thread instead of starting from nothing.
     thread_url: Optional[str] = None
+    # How long the account should be left alone, when the provider said.
+    hold_seconds: Optional[int] = None
 
     @classmethod
     def failure(cls, message: str, kind: Optional[str] = None) -> "GenerationResult":

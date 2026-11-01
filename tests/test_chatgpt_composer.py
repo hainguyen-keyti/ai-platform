@@ -790,6 +790,27 @@ def main():
         said = "cancelled"
     record("a job taken away during the wait is not sent", said == "cancelled" and page.sent == [], said)
 
+    # Measured 2026-11-01: a Free account's answer once its pictures are spent.
+    def limit_on(words):
+        page = DrawingPage(clock, words_after=27, words_text=words)
+        driver = provider_on(page)
+        driver.media_path = driver.media_path / uuid.uuid4().hex / "media"
+        driver.media_path.mkdir(parents=True)
+        return driver.generate_image("a square")
+
+    spent = ("You've hit the Free plan limit for image generations requests. You can create more images "
+             "when the limit resets in 11 hours. I was not able to make it.")
+    got = limit_on(spent)
+    record("an account at its limit fails the turn as provider_limit, for as long as the site says",
+           not got.success and got.error_kind == "provider_limit" and got.hold_seconds == 39600 and "Free plan limit" in got.error
+           and got.thread_url, "{} {} {} {!r}".format(got.success, got.error_kind, got.hold_seconds, got.error))
+    got = limit_on("You’ve hit your plan limit for images. Try later.")
+    record("a limit that says no time holds for an hour", got.error_kind == "provider_limit" and got.hold_seconds == 3600,
+           "{} {}".format(got.error_kind, got.hold_seconds))
+    got = limit_on("I could not draw that: the speed limit sign is not clear.")
+    record("other words without a picture are left to the api", got.success and got.error_kind is None and got.hold_seconds is None,
+           "{} {}".format(got.success, got.error_kind))
+
     # Measured 2026-10-30: a fresh worker's first picture failed with "logged out" at the memory read
     # that opens the turn (job f9cb16ab); the next job, on the same session, was done.
     def memory_on(page):

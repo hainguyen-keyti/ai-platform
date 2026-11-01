@@ -301,6 +301,7 @@ class Runner(threading.Thread):
             "error": result.error,
             "error_kind": result.error_kind,
             "thread_url": result.thread_url,
+            "hold_seconds": getattr(result, "hold_seconds", None),
         }
         response, retried = self._post_result(client, job_id, body)
         if response.status_code == 409:

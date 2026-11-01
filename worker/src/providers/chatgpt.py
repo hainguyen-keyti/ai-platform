@@ -56,6 +56,8 @@ SERVER_POLL_MAX = 30
 OPEN_ATTEMPTS = 3
 OPEN_RETRY_SECONDS = 15
 GOTO_RETRY_SECONDS = 20
+LIMIT_REACHED = re.compile(r"you(?:['’]ve| have) hit (?:the|your) [^.]{0,60}limit", re.IGNORECASE)
+LIMIT_RESETS = re.compile(r"\bin (\d+) (hour|minute)s?\b", re.IGNORECASE)
 CHECK_POLL_SECONDS, CHECK_RELOAD_SECONDS, CHECK_WAIT_SECONDS = 5, 30, 120
 # How long the page must stay quiet and unchanged before the answer counts as
 # over. Two seconds was thin: a reply that runs several tools puts the stop
@@ -1228,6 +1230,14 @@ class ChatGPTProvider(BaseProvider):
             instruction = "Use the attached image as the reference and generate a new image: {}".format(prompt)
         result = self._run(instruction, upload=reference_filename, thread_url=thread_url)
         self._read_storage(self._page)
+        # Measured 2026-11-01: "You've hit the Free plan limit for image generations requests. You can create
+        # more images when the limit resets in 11 hours." An ordinary closed turn, the words the only sign.
+        if result.success and not result.media and LIMIT_REACHED.search(result.text or ""):
+            resets = LIMIT_RESETS.search(result.text)
+            seconds = int(resets.group(1)) * (3600 if resets.group(2).lower() == "hour" else 60) if resets else 3600
+            return GenerationResult(success=False, thread_url=result.thread_url, error_kind="provider_limit",
+                                    hold_seconds=seconds, error="the chatgpt account is at its limit: {}".format(
+                                        self._flat(result.text)[:300]))
         return result
 
     def _read_storage(self, page):

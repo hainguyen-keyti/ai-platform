@@ -306,6 +306,37 @@ def scenario_account_needs_admin(stack, key):
         conn.execute("DELETE FROM provider_holds")
 
 
+def scenario_account_at_limit(stack, key):
+    """A provider's limit holds the account for as long as the provider said, and the others go on."""
+    rid = send(stack, key, session="at-limit")[1]["id"]
+    settled(stack, [rid])
+    _, account, conversation, _, _ = job_row(stack, rid)
+    keeper = A if account == B else B
+    with sqlite3.connect(stack.db_path) as conn:
+        user = conn.execute("SELECT user_id FROM jobs WHERE id = ?", (rid,)).fetchone()[0]
+        conn.execute("INSERT OR REPLACE INTO provider_holds (provider, until, reason) VALUES (?, '2999-01-01 00:00:00', 'the test')", (account,))
+        conn.execute("INSERT INTO jobs (id, user_id, conversation_id, provider, feature, payload, status, attempts, account)"
+                     " VALUES ('job-limited', ?, ?, 'chatgpt', 'image', '{\"prompt\": \"x\"}', 'running', 1, ?)", (user, conversation, account))
+        before = conn.execute("SELECT quota_remaining FROM users WHERE id = ?", (user,)).fetchone()[0]
+    request = urllib.request.Request(stack.api + "/internal/jobs/job-limited/result", method="POST", headers={
+        "Content-Type": "application/json", "X-Worker-Token": WORKER_TOKEN}, data=json.dumps({
+            "status": "failed", "attempt": 1, "text": "", "media": [], "error": "at its limit",
+            "error_kind": "provider_limit", "hold_seconds": 39600}).encode())
+    with urllib.request.urlopen(request, timeout=10) as response:
+        posted = response.status
+    left = stack.sql("SELECT (julianday(until) - julianday('now')) * 86400 FROM provider_holds WHERE provider = ?", (account,))
+    after = stack.sql("SELECT quota_remaining FROM users WHERE id = ?", (user,))[0][0]
+    record("an account at its limit is held for as long as the site said, and the credit comes back",
+           posted == 200 and left and 39500 < left[0][0] <= 39600 and after == before + 1, (posted, left, before, after))
+    fresh = send(stack, key, session="after-limit")[1]["id"]
+    settled(stack, [fresh])
+    record("the other account takes what comes next", job_row(stack, fresh)[:2] == ("done", keeper), job_row(stack, fresh))
+    code, body = send(stack, key, session="at-limit")
+    record("a session on the account at its limit is refused clearly", code == 503 and "start a new conversation or session" in json.dumps(body), (code, body))
+    with sqlite3.connect(stack.db_path) as conn:
+        conn.execute("DELETE FROM provider_holds")
+
+
 def scenario_gone_account(stack, key, account):
     rid = send(stack, key, session="on-gone")[1]["id"]
     settled(stack, [rid])
@@ -404,6 +435,7 @@ def main():
         scenario_hold(stack, key, token, admin)
         scenario_default_thread_moves(stack, key)
         scenario_account_needs_admin(stack, key)
+        scenario_account_at_limit(stack, key)
         scenario_gone_account(stack, key, account)
         scenario_budgets(stack, key)
         scenario_old_threads(stack)

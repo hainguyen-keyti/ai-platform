@@ -66,6 +66,8 @@ class WorkerResult(BaseModel):
     error: Optional[str] = None
     error_kind: Optional[str] = Field(default=None, max_length=40)
     thread_url: Optional[str] = Field(default=None, max_length=500)
+    # How long the account should be left alone, when the provider said (issue #29).
+    hold_seconds: Optional[int] = Field(default=None, ge=0, le=604800)
 
 
 class WorkerPacing(BaseModel):
