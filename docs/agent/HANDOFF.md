@@ -18,6 +18,9 @@ open" at the end of the file; what the tests left in the accounts is in
   and sent anyway. Now `_past_check` sends nothing while the settings answer 403: waits up to 120s, loads the page again each 30s, then fails
   unsent with a record. It answers no check. NOT met on the real site yet: read the next `chatgpt-check-*`. Why the check fell on `chatgpt`
   and not `chatgpt-a2` at the same minute is not known.
+- **A send Cloudflare refused is tried once more after 60s:** only on the site's own word, a `POST /backend-api/f/conversation` answered 403
+  `cf-mitigated` since this turn's send, so a turn it may have taken is never sent twice. Tested on a fake page, 7 of 7 mutants red, not yet
+  met on the site. Each such event leaves `storage/diagnostics/chatgpt-check-*`: count them against pictures before any load test.
 - **`_past_check` does not end the banners, measured 2026-11-01 06:27, job `0e2d7cc4`:** on a browser 62s old, `/backend-api` answered 403
   `cf-mitigated` at 06:26:31 to :41, a picture still came through at 06:27:10, the settings read 403 at :13 and :14 then passed, and
   `POST /f/conversation` got 403 at :29. So the check comes and goes within a minute. Testing stopped there: 4 banners in 8 hours, all on
