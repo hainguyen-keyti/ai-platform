@@ -1,9 +1,10 @@
 import base64
 import hashlib
+import json
 import re
 import time
 import uuid
-from collections import Counter
+from collections import Counter, deque
 from pathlib import PurePosixPath
 from typing import Optional
 from urllib.parse import unquote
@@ -344,6 +345,9 @@ class ChatGPTProvider(BaseProvider):
         self.last_cancelled_thread = None
         # The last stop: whether its turn had been sent and the site's stop pressed. Shown in health.
         self.last_stop = None
+        # The site's refusals since the browser opened, and when it opened: the record of a Cloudflare check.
+        self._refused = deque(maxlen=40)
+        self._opened_at = None
 
     def start(self) -> None:
         # The browser itself is created on first use: the sync driver is bound to
@@ -364,7 +368,41 @@ class ChatGPTProvider(BaseProvider):
             return self._page
         self._context = open_session(self.sessions_path, self.account)
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        self._opened_at = time.time()
+        self._refused.clear()
+        self._page.on("response", self._note_response)
         return self._page
+
+    def _note_response(self, response):
+        """Keep the site's refusals, for the record of a Cloudflare check: never a query string or a body."""
+        try:
+            mitigated = response.headers.get("cf-mitigated")
+            if response.status >= 400 or mitigated:
+                self._refused.append({"at": round(time.time(), 1), "status": response.status, "method": response.request.method,
+                                      "url": response.url.split("?")[0].split("#")[0][:200], "cf_mitigated": mitigated})
+        except Exception:
+            pass
+
+    def _keep_check(self, page, banner: str):
+        """What can be seen when the site shows a Cloudflare check (2026-10-31: four, and only their words were
+        kept): a picture of the page and a record beside it. The turn has already failed; this cannot fail it worse."""
+        folder = self.media_path.parent / "diagnostics"
+        stem = "chatgpt-check-{}-{}-{}".format(self.account, int(time.time()), uuid.uuid4().hex[:6])
+        record = {"account": self.account, "at": round(time.time(), 1), "banner": banner,
+                  "browser_open_seconds": round(time.time() - self._opened_at, 1) if self._opened_at else None,
+                  "refused_responses": list(self._refused)}
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            record["url"] = page.url.split("?")[0]
+            record["title"] = page.title()
+            record["challenge_frames"] = sum("challenges.cloudflare.com" in frame.url for frame in page.frames)
+        except Exception as exc:
+            record["unread"] = type(exc).__name__
+        try:
+            (folder / (stem + ".json")).write_text(json.dumps(record, indent=1), encoding="utf-8")
+            page.screenshot(path=str(folder / (stem + ".png")))
+        except Exception:
+            pass
 
     def _goto(self, page, url: str):
         """Load a page, once more if the load itself failed.
@@ -596,6 +634,8 @@ class ChatGPTProvider(BaseProvider):
         # counted, not just the first in the page.
         fresh = list((Counter(self._banner(page)) - Counter(seen_before or [])).elements())
         if fresh:
+            if "cloudflare" in fresh[0].lower():
+                self._keep_check(page, fresh[0])
             raise ProviderError("the provider showed its error banner: {}".format(fresh[0]))
 
     def _thread_nodes(self, page, thread_id: str):

@@ -19,6 +19,7 @@ Prints N/N PASSED.
 """
 
 import base64
+import json
 import re
 import sys
 import uuid
@@ -681,6 +682,60 @@ def main():
     record("a thread deletion with no session is still called logged out and sends nothing",
            not gone and "logged out" in said and page.deletions == [],
            "deletions {} said {!r}".format(len(page.deletions), said[:60]))
+
+    # Measured 2026-10-31: four Cloudflare checks, and only the banner's words were kept of them.
+    class Refused:
+        def __init__(self, status, url, headers=None):
+            self.status, self.url, self.headers = status, url, headers or {}
+            self.request = type("Request", (), {"method": "POST"})
+
+    class Checked(Page):
+        banner, title_raises = "cloudflare_challengeRetry", False
+        frames = [type("Frame", (), {"url": "https://challenges.cloudflare.com/x"}), type("Frame", (), {"url": "https://chatgpt.com/"})]
+
+        def title(self):
+            if self.title_raises:
+                raise RuntimeError("the page went away")
+            return "ChatGPT"
+
+        def evaluate(self, script, *args):
+            return [self.banner] if script == chatgpt.ERROR_BANNER_PRESENT else super().evaluate(script, *args)
+
+    def banner_on(page):
+        driver = provider_on(page)
+        driver.media_path = driver.media_path / uuid.uuid4().hex / "media"
+        driver._opened_at = clock.now - 90
+        driver._note_response(Refused(200, "https://chatgpt.com/fine?secret=1"))
+        driver._note_response(Refused(403, "https://chatgpt.com/backend-api/conversation?secret=1", {"cf-mitigated": "challenge"}))
+        try:
+            driver._fail_on_banner(page, [])
+            said = "no error"
+        except ProviderError as exc:
+            said = str(exc)
+        folder = driver.media_path.parent / "diagnostics"
+        records = [json.loads(path.read_text()) for path in folder.glob("*.json")] if folder.exists() else []
+        return said, records, page
+
+    said, records, page = banner_on(Checked(clock, has={PROSEMIRROR}, url="https://chatgpt.com/c/1?x=1"))
+    kept = records[0] if records else {}
+    record("a Cloudflare check keeps a record and a picture, and still fails the turn with the banner's words",
+           "cloudflare_challenge" in said and len(records) == 1 and len(page.pictures) == 1 and kept.get("account") == "chatgpt"
+           and kept.get("browser_open_seconds") == 90 and kept.get("challenge_frames") == 1 and kept.get("url") == "https://chatgpt.com/c/1"
+           and kept.get("title") == "ChatGPT", "{!r} {}".format(said[:50], kept))
+    refused = kept.get("refused_responses") or []
+    record("the record holds the site's refusals, with no query string", len(refused) == 1 and refused[0]["status"] == 403
+           and refused[0]["cf_mitigated"] == "challenge" and "secret" not in json.dumps(kept), str(refused))
+
+    other = Checked(clock, has={PROSEMIRROR})
+    other.banner = "Something went wrong"
+    said, records, page = banner_on(other)
+    record("another banner keeps no such record", "Something went wrong" in said and records == [] and page.pictures == [], str(records))
+
+    broken = Checked(clock, has={PROSEMIRROR}, screenshot_fails=True)
+    broken.title_raises = True
+    said, records, page = banner_on(broken)
+    record("a page that cannot be read still fails the turn with the banner, and says what it could",
+           "cloudflare_challenge" in said and len(records) == 1 and records[0].get("unread") == "RuntimeError", "{!r} {}".format(said[:50], records))
 
     # Measured 2026-10-30: a fresh worker's first picture failed with "logged out" at the memory read
     # that opens the turn (job f9cb16ab); the next job, on the same session, was done.
