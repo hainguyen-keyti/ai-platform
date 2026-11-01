@@ -18,6 +18,10 @@ open" at the end of the file; what the tests left in the accounts is in
   and sent anyway. Now `_past_check` sends nothing while the settings answer 403: waits up to 120s, loads the page again each 30s, then fails
   unsent with a record. It answers no check. NOT met on the real site yet: read the next `chatgpt-check-*`. Why the check fell on `chatgpt`
   and not `chatgpt-a2` at the same minute is not known.
+- **`_past_check` does not end the banners, measured 2026-11-01 06:27, job `0e2d7cc4`:** on a browser 62s old, `/backend-api` answered 403
+  `cf-mitigated` at 06:26:31 to :41, a picture still came through at 06:27:10, the settings read 403 at :13 and :14 then passed, and
+  `POST /f/conversation` got 403 at :29. So the check comes and goes within a minute. Testing stopped there: 5 banners in 8 hours, all on
+  `chatgpt` (1151 MB profile, about 500 turns), and 3 of them by the agent's own tests. #29 closed. The owner decides what next.
 - **`chatgpt-a2` is a Free account** (the owner may change the plan): "You've hit the Free plan limit for image generations requests... resets
   in 11 hours" after about 5 pictures. An account answering at once took job after job, so `provider_limit` now holds it for the time
   the site says, others go on; a limit stated with no time holds an hour. Plus: no limit met yet, about 140 pictures on 10-30.
