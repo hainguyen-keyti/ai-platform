@@ -349,6 +349,22 @@ def provider_load():
                                       else None)} for name in PROVIDERS}
 
 
+def budget_free_at(conversation_id, provider):
+    """When a queued request's wait for a spent picture budget ends, or None if it is not waiting for one:
+    its conversation's account (issue #29), whose budget /v1/providers' totals cannot show while another
+    account has room; or, on no account yet, the first of the accounts that could take it, all spent."""
+    with db() as conn:
+        pinned = one(conn, "SELECT account FROM conversations WHERE id = ?", (conversation_id,))
+        names = [pinned["account"]] if pinned and pinned["account"] else [
+            name for name in _accounts_seen(conn, provider) if not _held(conn, name)]
+        if not names:
+            return None
+        said = many(conn, "SELECT budget_free_at FROM provider_accounts WHERE account IN ({})".format(
+            ", ".join("?" * len(names))), names)
+    free = [row["budget_free_at"] for row in said]
+    return min(free) if free and all(free) else None
+
+
 def _sweep_unserved(conn, job_id=None):
     """Fail and refund pending jobs whose provider no worker has asked for.
 
