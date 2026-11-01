@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 
 from src.config import settings
 from src.db.client import db, many, one
-from src.jobs import account_can_serve, cancel_job, create_job, get_job, provider_load, provider_status
+from src.jobs import account_can_serve, budget_free_at, cancel_job, create_job, get_job, provider_load, provider_status
 from src.models import FEATURES, MAX_REFERENCES, PROVIDERS, TAKES_REFERENCE, ScriptRequest
 from src.quota import today
 from src.routes.media import CONTENT_TYPES, _safe_path
@@ -343,6 +343,8 @@ def image_status(request_id: str, user: dict = Depends(api_key_user)):
         "text": result.get("text") or "",
         "error": job["error"],
         "images": images,
+        "budget_free_at": (budget_free_at(job["conversation_id"], job["provider"])
+                           if job["status"] == "pending" else None),
         "created_at": job["created_at"],
         "finished_at": job["finished_at"],
     }

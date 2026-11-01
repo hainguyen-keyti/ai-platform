@@ -196,6 +196,8 @@ class FakeV1:
         elif "fail" in state["prompt"]:
             body.update(status="failed", error="chatgpt returned nothing after 300s",
                         finished_at="2026-10-29 10:05:00")
+        elif "behind the budget" in state["prompt"] and not state["finished"]:
+            body.update(status="queued", budget_free_at="2026-10-29 13:44:25")
         elif ("slow" in state["prompt"] and not state["finished"]) or state["reads"] < 2:
             body["status"] = "running"
         elif "noimage" in state["prompt"]:
@@ -472,10 +474,30 @@ async def run(fake, work):
         record("a request still running when the wait ends says so with its id, and is no error",
                not result.is_error and rid and rid in said(result) and "get_image" in said(result)
                and answer.get("request_id") == rid and answer.get("status") == "running"
-               and answer.get("pictures") == [],
+               and answer.get("pictures") == [] and "picture budget" not in said(result),
                "error {} said {!r} answer {}".format(result.is_error, said(result)[:200], answer))
         if rid:
             fake.finish(rid)
+
+        steps = []
+
+        async def waiting(done, total, message):
+            steps.append(message or "")
+
+        result = await client.call_tool("generate_image", {"prompt": "one behind the budget", "save_dir": str(work / "budget"),
+                                                           "wait_seconds": 1}, read_timeout_seconds=30, progress_callback=waiting)
+        behind = fake.rid("one behind the budget")
+        record("a request behind the spent budget says so, until when, and not to send it again",
+               not result.is_error and "picture budget" in said(result) and "2026-10-29 13:44:25" in said(result)
+               and "sending it again" in said(result) and behind in said(result)
+               and any("2026-10-29 13:44:25" in step for step in steps),
+               "said {!r} steps {}".format(said(result)[:300], steps))
+        result = await client.call_tool("generate_images", {"prompts": ["a set's one behind the budget"], "save_dir": str(work / "budget"),
+                                                            "wait_seconds": 1}, read_timeout_seconds=30)
+        record("so does one of a set", not result.is_error and "picture budget" in said(result)
+               and "2026-10-29 13:44:25" in said(result), "said {!r}".format(said(result)[:300]))
+        fake.finish(behind or "")
+        fake.finish(fake.rid("a set's one behind the budget") or "")
         result = await client.call_tool("get_image", {"request_id": rid or "none", "save_dir": str(work / "slow")},
                                         read_timeout_seconds=30)
         later = pictures(work / "slow")

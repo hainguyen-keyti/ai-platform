@@ -18,6 +18,17 @@ open" at the end of the file; what the tests left in the accounts is in
   `mcp_server/aip_server.py` with `write_video_script`, `get_video_script`, `list_script_targets`, `list_presets`, `generate`, presets in `mcp_server/presets/`;
   `chatgpt_images.py` stays as the name configs run. Gate 81/81, ui_smoke 75/75, MCP test 61/61, stress 16/16, 11 of 11 mutants red. To do on the owner's word:
   merge, restart api and worker when idle, then one real script per target on Grok. Next after that: a tool that turns a script's scenes into pictures in one session.
+- **The picture budget is 1000 in three hours on this machine, the owner's call, 2026-11-01 18:17 UTC:** set in
+  `~/.config/systemd/user/aip-worker.service.d/budget.conf`, which wins over `.env`; `./scripts/run-worker.sh` by hand still takes `.env`'s
+  value. The 40 was this project's own pace, from a comment that "Plus allows roughly 50 images per rolling 3 hours" with no source; no real
+  limit has met Plus and nothing above 40 in 3h has been measured here. If one comes, `provider_limit` holds the account and fails what waits
+  on it, refunded. Watch the first runs past 40 for that and for `chatgpt-check-*`.
+- **A request behind a spent budget says so, until when (`budget_free_at` on `GET /v1/images/{id}`, and in the MCP's answers):** measured
+  2026-11-01: 3 requests waited 16:06 to 17:44 on thread `dd4c4722`, pinned to `chatgpt` at 40/40, while `chatgpt-a2` had room, which
+  `/v1/providers`' totals cannot show; the first was claimed at 17:44:26, a second after the budget freed. Merged, NOT live until the owner
+  allows `docker compose restart api` and the agent's MCP server reconnects; an old api just gives the old message.
+- **Not looked into:** job `bf7f3e97` failed at 17:46:07, `Locator.inner_text` timed out on the prompt box (twice ever). `search filters the
+  sidebar` in ui_smoke failed once at 1 row after its fixed 700ms under load, and passed on the two other runs of the same web code.
 - **The Cloudflare banners explained as far as measured, 2026-11-01, job `d6e42ca5`, its record in `storage/diagnostics/`:** a browser opened
   after 3h idle, `GET /` 403 `cf-mitigated`, page up, then every `/backend-api` call 403 for at least 23s, and the driver read that 403
   and sent anyway. Now `_past_check` sends nothing while the settings answer 403: waits up to 120s, loads the page again each 30s, then fails

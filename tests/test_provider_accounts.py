@@ -365,6 +365,50 @@ def scenario_gone_account(stack, key, account):
     return queued
 
 
+def budget_said(stack, key, rid, seconds=20):
+    """A request's status once the api can say what it waits for: the worker reports between its turns."""
+    deadline = time.time() + seconds
+    while True:
+        state = http("GET", stack.api + "/v1/images/" + rid, token=key)[1]
+        if state.get("budget_free_at") or time.time() > deadline:
+            return state
+        time.sleep(0.3)
+
+
+def scenario_waiting_reason(stack, key):
+    """A request behind its account's spent budget is told so, though another account has room."""
+    stack.kill(stack.worker_proc)
+    stack.start_worker(IMAGE_BUDGET_3H="2", MOCK_DELAY_SECONDS="2")
+    spent = [send(stack, key, session="spent")[1]["id"] for _ in range(3)]
+    settled(stack, spent[:2])
+    state = budget_said(stack, key, spent[2])
+    said = next(p for p in http("GET", stack.api + "/v1/providers", token=key)[1]["providers"] if p["name"] == "chatgpt")
+    record("a request on an account whose budget is spent says until when, while the provider's totals cannot",
+           state.get("status") == "queued" and state.get("budget_free_at") and said["budget_free_at"] is None
+           and said["picture_budget"] == 4, (state.get("status"), state.get("budget_free_at"), said))
+
+    first = send(stack, key, session="has-room")[1]["id"]
+    deadline = time.time() + 10
+    while time.time() < deadline and job_row(stack, first)[0] != "running":
+        time.sleep(0.1)
+    behind = send(stack, key, session="has-room")[1]["id"]
+    state = http("GET", stack.api + "/v1/images/" + behind, token=key)[1]
+    record("a request only queued behind another on an account with room names no budget",
+           state.get("status") == "queued" and state.get("budget_free_at") is None, (state.get("status"), state.get("budget_free_at")))
+    fresh = send(stack, key, session="both-spent")[1]["id"]
+    state = http("GET", stack.api + "/v1/images/" + fresh, token=key)[1]
+    record("nor does one on no account yet while one account still has room",
+           state.get("status") == "queued" and state.get("budget_free_at") is None, (state.get("status"), state.get("budget_free_at")))
+    settled(stack, [first, behind])
+    state = budget_said(stack, key, fresh)
+    record("a request on no account yet says it too once every account's budget is spent",
+           state.get("status") == "queued" and state.get("budget_free_at"), (state.get("status"), state.get("budget_free_at")))
+    state = http("GET", stack.api + "/v1/images/" + first, token=key)[1]
+    record("a finished request names no budget", state.get("status") == "done" and state.get("budget_free_at") is None, state)
+    for rid in (spent[2], fresh):
+        http("POST", stack.api + "/v1/images/{}/cancel".format(rid), token=key)
+
+
 def scenario_budgets(stack, key):
     stack.kill(stack.worker_proc)
     stack.start_worker(IMAGE_BUDGET_3H="2", MOCK_DELAY_SECONDS="0.1")
@@ -437,6 +481,7 @@ def main():
         scenario_account_needs_admin(stack, key)
         scenario_account_at_limit(stack, key)
         scenario_gone_account(stack, key, account)
+        scenario_waiting_reason(stack, key)
         scenario_budgets(stack, key)
         scenario_old_threads(stack)
     finally:

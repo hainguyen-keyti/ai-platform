@@ -337,7 +337,12 @@ def listed(saved: List[Picture], notes: List[str]) -> List[str]:
     return lines + ["  ({})".format(note) for note in notes]
 
 
-def later(request_id: str) -> str:
+def later(request_id: str, budget_free_at: Optional[str] = None) -> str:
+    if budget_free_at:
+        return ("it waits for the platform's own picture budget (a pace this platform keeps, not a limit ChatGPT "
+                "reported): the account it runs on has made all the pictures allowed in three hours, and has room "
+                "again at about {} (UTC). Nothing is wrong and sending it again would only queue another; call "
+                "get_image with request_id \"{}\" after that to collect its pictures".format(budget_free_at, request_id))
     return "call get_image with request_id \"{}\" in a minute to collect its pictures".format(request_id)
 
 
@@ -377,7 +382,7 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
         waited = time.monotonic() - began
         if waited >= wait:
             message = "Request {} is still {} after {:.0f}s: {}.".format(
-                request_id, known.get("status") or "not known", waited, later(request_id))
+                request_id, known.get("status") or "not known", waited, later(request_id, known.get("budget_free_at")))
             if not answering:
                 message = "The platform does not answer just now, so {}".format(message[0].lower() + message[1:])
             return answered(message, Answer(request_id=request_id, status=known.get("status") or "unknown",
@@ -386,7 +391,9 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
                                             session=known.get("session")), [])
         if ctx is not None:
             await ctx.report_progress(min(waited, wait), wait, message="ChatGPT is {}".format(
-                known.get("status") if answering else "not answering, still waiting"))
+                ("{}, waiting for the picture budget until about {} (UTC)".format(
+                    known.get("status"), known["budget_free_at"]) if known.get("budget_free_at") else known.get("status"))
+                if answering else "not answering, still waiting"))
         await anyio.sleep(POLL_SECONDS)
 
 
@@ -464,7 +471,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
 
     sent = [item for item in items if item["request_id"]]
     wait = max(1, min(int(wait_seconds), MAX_SET_WAIT_SECONDS))
-    shown, notes = [], {}
+    shown, notes, budget = [], {}, {}
     began = time.monotonic()
     while True:
         for item in [item for item in sent if item["status"] in LIVE]:
@@ -491,6 +498,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
                             error="{} (the credit was given back)".format(state.get("error") or "no reason given"))
             else:
                 item["status"] = state.get("status") or item["status"]
+                budget[item["request_id"]] = state.get("budget_free_at")
         ended = sum(1 for item in sent if item["status"] not in LIVE)
         if ended == len(sent) or time.monotonic() - began >= wait:
             break
@@ -504,7 +512,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
             lines += [head + "done, saved as:"] + listed(item["pictures"], notes.get(item["request_id"], []))
         elif item["status"] in LIVE:
             lines.append(head + "still {} as request {}: {}".format(item["status"], item["request_id"],
-                                                                  later(item["request_id"])))
+                                                                  later(item["request_id"], budget.get(item["request_id"]))))
         elif item["status"] == "unread":
             lines.append(head + "request {}: {}; {}".format(item["request_id"], item["error"],
                                                             later(item["request_id"])))

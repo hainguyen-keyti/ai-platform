@@ -128,10 +128,15 @@ curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/5f0
       "bytes": 1843201
     }
   ],
+  "budget_free_at": null,
   "created_at": "2026-10-09 04:44:17",
   "finished_at": "2026-10-09 04:45:21"
 }
 ```
+
+`budget_free_at` (UTC) is set only on a `queued` request held back by the worker's own picture budget
+(`IMAGE_BUDGET_3H`, not a limit the provider reported): that of the account its conversation is on, even
+while another account has room, or on no account yet, once every account's is spent. It waits until then.
 
 | `status` | Meaning |
 |---|---|
