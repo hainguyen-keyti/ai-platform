@@ -17,6 +17,13 @@ open" at the end of the file; what the tests left in the accounts is in
   `chatgpt`), with 0 pictures in the three hours before it, so not a burst; 1 picture made, 1 failed, nothing else sent. Suspect,
   not proven: all three challenges seen (10-31 10:52, 16:08, 22:57) came soon after a browser was freshly opened, though others
   opened with none, and `BROWSER_IDLE_SECONDS` (1800) now makes more fresh opens. The limit itself was not measured.
+  Read after: 4 such banners (10-31 10:34, 10:52, 22:57; 11-01 01:51) against 593 done since 10-27, all on `chatgpt`. The 10:34 one
+  came on a warm browser with 30 turns in three hours, so a fresh open does not explain them all; cause not known.
+- **A Cloudflare banner now leaves `storage/diagnostics/chatgpt-check-<account>-*.png` and `.json`** (url, title, browser age, challenge
+  frames, the site's refusals with `cf-mitigated`; no query string, no body). Read the next one before changing anything.
+- **CloakBrowser stays at 0.5.10 and Chromium 146, the owner's choice: free.** 0.6.5 without a key still runs 146; 155 needs a key, and the
+  free key gives one concurrent session against 4 accounts. The vendor's FAQ says it does not solve CAPTCHAs. v146 is free
+  "no redistribution (OEM/SaaS license required to serve third parties)": look again before serving customers.
 - **#29's real check passed, two accounts on the service:** `chatgpt-a2` is logged in (the owner), memory off. Two sessions
   sent together ran at once, woman-a on `chatgpt-a2` (thread `6ae61ffe`), woman-b on `chatgpt` (`6ae61fd3`); each one's
   follow-up stayed on its account and thread, all 4 done with pictures, no Cloudflare check, `storage/mcp-check29/`. Earlier the
