@@ -60,6 +60,7 @@ class FakeV1:
         self.posts, self.requests, self.served = [], {}, True
         self.account_broken = self.providers_broken = self.sessions_broken = False
         self.sessions = []
+        self.scripts, self.script_posts = {}, []
         fake = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -85,6 +86,14 @@ class FakeV1:
                 fake.posts.append({"path": self.path, "auth": self.headers.get("Authorization"), "fields": fields,
                                    "images": images})
                 parts = self.path.strip("/").split("/")
+                if self.path == "/v1/scripts":
+                    asked = json.loads(body)
+                    fake.script_posts.append(asked)
+                    if asked["target"] == "nosuch":
+                        return self.answer(400, {"detail": "unknown target 'nosuch'; one of flow, minimax_h3, wan"})
+                    rid = uuid.uuid4().hex
+                    fake.scripts[rid] = dict(asked, reads=0)
+                    return self.answer(202, {"id": rid, "status": "queued"})
                 if len(parts) == 4 and parts[:2] == ["v1", "images"] and parts[3] == "cancel":
                     state = fake.requests.get(parts[2])
                     if not state:
@@ -107,6 +116,25 @@ class FakeV1:
                 if self.headers.get("Authorization") != "Bearer " + KEY:
                     return self.answer(401, {"detail": "invalid api key"})
                 parts = self.path.strip("/").split("/")
+                if self.path == "/v1/script-targets":
+                    return self.answer(200, {"targets": [{"name": "flow", "label": "Google Flow (Veo)", "min_seconds": 8, "max_seconds": 8,
+                                                          "dialogue": True, "negative_prompt": False, "source": "a page"}]})
+                if len(parts) == 3 and parts[:2] == ["v1", "scripts"]:
+                    held = fake.scripts.get(parts[2])
+                    if held is None:
+                        return self.answer(404, {"detail": "script request not found"})
+                    held["reads"] += 1
+                    state = {"id": parts[2], "target": held["target"], "session": held.get("session"), "script": None, "error": None}
+                    if "badscript" in held["brief"]:
+                        return self.answer(200, dict(state, status="failed", error="the script does not fit: scene 1 lasts 99s"))
+                    if "slowscript" in held["brief"]:
+                        return self.answer(200, dict(state, status="running"))
+                    if held["reads"] < 2:
+                        return self.answer(200, dict(state, status="running"))
+                    return self.answer(200, dict(state, status="done", script={
+                        "title": "Về nhà", "target": held["target"], "total_seconds": 8, "characters": [{"name": "Lan", "description": "a red coat"}],
+                        "scenes": [{"number": 1, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "dialogue": "Xin chào",
+                                    "image_prompt": "a still of Lan", "video_prompt": "Lan walks home", "negative_prompt": "blurry"}]}))
                 if self.path == "/v1/account":
                     if fake.account_broken:
                         return self.answer(500, {"detail": "account broken"})
@@ -221,8 +249,8 @@ async def run(fake, work):
     async with Client(server_params(fake.url)) as client:
         listed = {tool.name: tool for tool in (await client.list_tools()).tools}
         record("the server offers account_status, cancel_image, generate_image, generate_images, get_image and list_sessions",
-               sorted(listed) == ["account_status", "cancel_image", "generate_image", "generate_images", "get_image",
-                                  "list_sessions"],
+               sorted(listed) == ["account_status", "cancel_image", "generate", "generate_image", "generate_images", "get_image",
+                                  "get_video_script", "list_presets", "list_script_targets", "list_sessions", "write_video_script"],
                repr(sorted(listed)))
         schemas = {name: (tool.output_schema or {}).get("properties", {}) for name, tool in listed.items()}
         record("each tool publishes the shape of its answer as its output schema",
@@ -348,6 +376,52 @@ async def run(fake, work):
         result = await client.call_tool("list_sessions", {})
         record("sessions that cannot be read are a tool error", result.is_error and "sessions could not be read" in said(result), said(result))
         fake.sessions_broken = False
+        # Issue #30: video scripts for a video model, and recipes kept as files.
+        result = await client.call_tool("write_video_script", {"brief": "Lan goes home", "target": "flow", "scenes": 1, "session": "lan",
+                                                               "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+        data, asked = result.structured_content or {}, fake.script_posts[-1]
+        markdown = Path(data.get("markdown_path") or "/nowhere")
+        text = markdown.read_text(encoding="utf-8") if markdown.exists() else ""
+        record("a script goes to Grok unless told, and comes back saved to read and to paste from",
+               not result.is_error and asked["provider"] == "grok" and asked["scenes"] == 1 and asked["session"] == "lan" and data.get("status") == "done"
+               and data["script"]["title"] == "Về nhà" and json.loads(Path(data["json_path"]).read_text(encoding="utf-8"))["scenes"][0]["video_prompt"] == "Lan walks home"
+               and "Lan walks home" in text and "a still of Lan" in text and "Xin chào" in text and "blurry" in text and data.get("session") == "lan",
+               "{} {} {!r}".format(result.is_error, asked, said(result)[:90]))
+        result = await client.call_tool("write_video_script", {"brief": "x", "target": "nosuch"}, read_timeout_seconds=60)
+        record("a target the platform does not know is a tool error saying which there are", result.is_error and "flow" in said(result), said(result)[:90])
+        result = await client.call_tool("write_video_script", {"brief": "badscript", "target": "flow"}, read_timeout_seconds=60)
+        record("a script that did not fit is a tool error saying why and that the credit came back",
+               result.is_error and "99s" in said(result) and "credit" in said(result), said(result)[:90])
+        result = await client.call_tool("write_video_script", {"brief": "slowscript", "target": "wan", "wait_seconds": 1}, read_timeout_seconds=60)
+        waiting = (result.structured_content or {})
+        record("a script still running says to collect it later", not result.is_error and waiting.get("status") == "running" and "get_video_script" in said(result), said(result)[:90])
+        result = await client.call_tool("get_video_script", {"request_id": waiting.get("request_id") or "x"}, read_timeout_seconds=60)
+        record("get_video_script reads it again", not result.is_error and (result.structured_content or {}).get("status") == "running", said(result)[:90])
+        result = await client.call_tool("list_script_targets", {})
+        record("list_script_targets says what each video model takes", not result.is_error and (result.structured_content or {})["targets"][0]["name"] == "flow", said(result)[:90])
+
+        result = await client.call_tool("list_presets", {})
+        ids = [p["id"] for p in (result.structured_content or {}).get("presets") or []]
+        record("list_presets reads the recipes kept as files", not result.is_error and {"character-portrait", "short-film-flow", "short-film-minimax", "short-film-wan"} <= set(ids), ids)
+        before = len(fake.posts)
+        result = await client.call_tool("generate", {"preset": "character-portrait", "inputs": {"character": "Lan", "description": "a woman in a red coat"},
+                                                     "save_dir": str(work / "presets")}, read_timeout_seconds=60)
+        sent = fake.posts[before].get("fields", {}) if len(fake.posts) > before else {}
+        record("an image preset fills its template, its defaults, and takes its session from the character",
+               not result.is_error and b"a woman in a red coat" in sent.get("prompt", b"") and b"A gentle smile" in sent.get("prompt", b"") and sent.get("session") == b"Lan",
+               "{} {} {!r}".format(result.is_error, sent, said(result)[:80]))
+        result = await client.call_tool("generate", {"preset": "short-film-wan", "inputs": {"story": "Lan goes home"}, "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+        asked = fake.script_posts[-1]
+        record("a script preset names its video model and its writer", not result.is_error and asked["target"] == "wan" and asked["provider"] == "grok" and asked["brief"] == "Lan goes home",
+               "{} {}".format(asked, said(result)[:80]))
+        for name, arguments, word in (("a missing input", {"preset": "character-scene", "inputs": {"character": "Lan"}}, "needs"),
+                                      ("an input it does not take", {"preset": "short-film-wan", "inputs": {"story": "x", "mood": "y"}}, "no input mood"),
+                                      ("a preset that is not there", {"preset": "nosuch", "inputs": {}}, "no preset"),
+                                      ("a reference picture to a script", {"preset": "short-film-wan", "inputs": {"story": "x"}, "reference_path": "/x.png"}, "no reference")):
+            before = len(fake.posts) + len(fake.script_posts)
+            result = await client.call_tool("generate", arguments, read_timeout_seconds=60)
+            record("{} is refused and nothing is sent".format(name), result.is_error and word in said(result) and len(fake.posts) + len(fake.script_posts) == before, said(result)[:90])
+
         told = client.instructions or ""
         record("the server tells an agent to give each character a session", "session=" in told and "different person" in told,
                told[-120:])

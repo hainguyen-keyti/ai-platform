@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from src.config import settings
 from src.db.client import db, many, one
 from src.models import FEATURES, PROVIDERS
+from src.scripts import ScriptError, checked_script
 from src.tombstones import leave_tombstone
 
 HISTORY_LIMIT = 10
@@ -556,6 +557,13 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
             elif status == "done" and job["feature"] == "image" and not media:
                 status, error_kind = "failed", "no_picture"
                 error = "the provider made no picture and said: {}".format(" ".join(text.split())[:300])
+            # A script is only worth its credit if it fits the video model it was written for (issue #30).
+            elif status == "done" and job["feature"] == "script":
+                asked = json.loads(job["payload"]) or {}
+                try:
+                    text = json.dumps(checked_script(text, asked.get("target"), asked.get("scenes")), ensure_ascii=False)
+                except ScriptError as exc:
+                    status, error_kind, error = "failed", "bad_script", "the script does not fit: {}".format(exc)
 
             # The message comes first so its pictures can point at it.
             message_id = None

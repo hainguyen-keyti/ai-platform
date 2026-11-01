@@ -1,6 +1,8 @@
 import base64
 import hashlib
 import io
+import json
+import re
 import struct
 import time
 import uuid
@@ -24,6 +26,8 @@ SILENT_PHRASE = "and say nothing of it"
 LYING_PHRASE = "and call it unsent"
 # A driver that calls a turn done with neither words nor media (the safety plan, 2026-10-21).
 EMPTY_PHRASE = "answer with nothing"
+BROKEN_SCRIPT_PHRASE = "answer with a broken script"
+LONG_SCENE_PHRASE = "answer with a scene too long"
 # A picture request answered in words, as a provider that will not draw answers it.
 WORDS_ONLY_PHRASE = "answer in words only"
 # Gemini makes a video when asked for one (2026-10-06); the mock answers this phrase with a clip.
@@ -83,7 +87,7 @@ def two_file_zip() -> bytes:
 class MockProvider(BaseProvider):
     """Stands in for a real service so the rest of the stack can be exercised."""
 
-    supported_features = (FeatureType.CHAT, FeatureType.IMAGE, FeatureType.VIDEO_SCRIPT)
+    supported_features = (FeatureType.CHAT, FeatureType.IMAGE, FeatureType.VIDEO_SCRIPT, FeatureType.SCRIPT)
 
     def __init__(self, media_path, sessions_path, name="chatgpt", account=None):
         self.name = name
@@ -244,6 +248,28 @@ class MockProvider(BaseProvider):
             text="mock image for: {}{} [thread={}]".format(prompt.strip()[:200], seen, thread),
             media=[self._store(solid_png(64, 64, (220, 60, 60)), ".png", "image", prompt)],
         )
+
+    def write_script(self, message: str, thread_url: Optional[str] = None) -> GenerationResult:
+        """A script that fits the target the instruction names; "answer with a broken script" gets one that does not."""
+        self._refuse_if_memory_on()
+        thread = self._thread(thread_url)
+        self.last_cancelled_thread = thread
+        self._pace()
+        asked = re.search(r"target=(\w+) scenes=(\w+) seconds=(\d+)-(\d+)", message)
+        target, count, low = asked.group(1), asked.group(2), int(asked.group(3))
+        scenes = int(count) if count.isdigit() else 2
+        words = " ".join(["lighthouse"] * 90)
+        negative = {"negative_prompt": "blurry textures"} if target == "wan" else {}
+        script = {"title": "mock film", "characters": [{"name": "Lan", "description": "a woman in a red coat"}], "scenes": [dict(
+            {"number": n + 1, "duration_seconds": low, "description": "a shot", "camera": "dolly in", "dialogue": "", "image_prompt": "a still",
+             "video_prompt": words}, **negative) for n in range(scenes)]}
+        text = json.dumps(script)
+        if BROKEN_SCRIPT_PHRASE in message.lower():
+            text = "Here is your script, sorry, no JSON today."
+        elif LONG_SCENE_PHRASE in message.lower():
+            script["scenes"][0]["duration_seconds"] = 999
+            text = "```json\n{}\n```".format(json.dumps(script))
+        return GenerationResult(success=True, thread_url=thread, text=text)
 
     def generate_video_script(self, image_filename: str, duration: int = 5,
                               thread_url: Optional[str] = None) -> GenerationResult:

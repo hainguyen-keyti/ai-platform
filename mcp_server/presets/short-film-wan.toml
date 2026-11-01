@@ -1,0 +1,10 @@
+id = "short-film-wan"
+mode = "script"
+target = "wan"
+provider = "grok"
+title = "Short film for Wan"
+description = "A script of silent clips under 5 seconds for Wan 2.2, written by Grok."
+template = "{story}"
+
+[inputs.story]
+description = "the story, its characters and its mood"

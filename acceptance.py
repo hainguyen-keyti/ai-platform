@@ -96,6 +96,7 @@ CHECKS = (
     "health shows code version and pacing",
     "the provider's error banner is recognised by shape",
     "grok settles on words or a picture, never on an empty turn",
+    "a script is held to what its video model takes",
     "a real account's picture budget outlives the worker",
     "several accounts of a provider share the work, and a thread stays on its account",
     "a job's failures take the right path through the pool and the runner",
@@ -123,6 +124,8 @@ CHECKS = (
     "a session with no name or with continue_from is refused uncharged, and a continued request stays in its session",
     "a key lists its own sessions only, and a session whose conversation was deleted starts a new one",
     "a picture request answered in words alone fails with those words and gives its credit back",
+    "a /v1 script is checked against its video model, on Grok unless told, and one that does not fit gives its credit back",
+    "a /v1 script for an unknown target or provider is refused uncharged, and its answers name no account",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "the api tells a worker which threads are the platform's, and only for that provider",
     "a done result with nothing in it fails and refunds",
@@ -143,6 +146,8 @@ V1_JOB_CHECKS = (
     "a session with no name or with continue_from is refused uncharged, and a continued request stays in its session",
     "a key lists its own sessions only, and a session whose conversation was deleted starts a new one",
     "a picture request answered in words alone fails with those words and gives its credit back",
+    "a /v1 script is checked against its video model, on Grok unless told, and one that does not fit gives its credit back",
+    "a /v1 script for an unknown target or provider is refused uncharged, and its answers name no account",
     "the example script sends a prompt and a picture, waits, and saves the picture made",
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
 )
@@ -1284,6 +1289,59 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
             c[words_only].failed("status {} error {!r} kind {} credits {} -> {} answers stored {}".format(
                 wstate.get("status"), wstate.get("error"), wjob.get("error_kind"), spent, credits_of(k3.get("key")), len(stored)))
 
+    # Issue #30: a video script through /v1, checked against the video model it is for.
+    scripts_ok = "a /v1 script is checked against its video model, on Grok unless told, and one that does not fit gives its credit back"
+    scripts_refused = "a /v1 script for an unknown target or provider is refused uncharged, and its answers name no account"
+    if real:
+        c[scripts_ok].skip("needs a driver that answers on command; covered in mock mode")
+        c[scripts_refused].skip("covered in mock mode")
+    else:
+        k5 = new_key(token, "script key")[1]
+
+        def script_for(**fields):
+            sstatus, body = http("POST", api + "/v1/scripts", dict({"brief": "Lan goes home", "target": "flow"}, **fields), token=k5.get("key"))
+            rid = body.get("id") if sstatus == 202 and isinstance(body, dict) else None
+            deadline = time.time() + job_timeout
+            state = {}
+            while rid and time.time() < deadline:
+                state = http("GET", api + "/v1/scripts/" + rid, token=k5.get("key"))[1] or {}
+                if state.get("status") in ("done", "failed", "cancelled"):
+                    break
+                time.sleep(0.3)
+            return sstatus, state, (http("GET", api + "/jobs/" + rid, token=token)[1] or {}) if rid else {}
+
+        before = credits_of(k5.get("key"))
+        code, flow, flow_job = script_for(scenes=2, session="Lan")
+        _, wan, _ = script_for(target="wan")
+        _, h3, _ = script_for(target="minimax_h3")
+        mid = credits_of(k5.get("key"))
+        _, broken, broken_job = script_for(brief="answer with a broken script")
+        _, too_long, _ = script_for(brief="answer with a scene too long")
+        after = credits_of(k5.get("key"))
+        flow_scenes = (flow.get("script") or {}).get("scenes") or []
+        if (code == 202 and flow.get("status") == "done" and flow.get("provider") == "grok" and flow.get("session") == "lan" and len(flow_scenes) == 2
+                and flow_scenes[0]["duration_seconds"] == 8 and (wan.get("script") or {}).get("scenes", [{}])[0].get("negative_prompt")
+                and h3.get("status") == "done" and before - mid == 3 and broken.get("status") == "failed" and "fit" in (broken.get("error") or "")
+                and broken_job.get("error_kind") == "bad_script" and too_long.get("status") == "failed" and "999" in (too_long.get("error") or "") and after == mid):
+            c[scripts_ok].passed("flow, wan and minimax_h3 done on grok; a broken one and a long one failed, credits {} then {} then {}".format(before, mid, after))
+        else:
+            c[scripts_ok].failed("flow {} {}; wan {}; h3 {}; broken {} {}; long {}; credits {} {} {}".format(
+                code, flow, wan.get("status"), h3.get("status"), broken, broken_job.get("error_kind"), too_long, before, mid, after))
+
+        spent = credits_of(k5.get("key"))
+        unknown = http("POST", api + "/v1/scripts", {"brief": "x", "target": "nosuch"}, token=k5.get("key"))[0]
+        nobody = http("POST", api + "/v1/scripts", {"brief": "x", "target": "flow", "provider": "nosuch"}, token=k5.get("key"))[0]
+        anon = http("POST", api + "/v1/scripts", {"brief": "x", "target": "flow"})[0]
+        targets = http("GET", api + "/v1/script-targets", token=k5.get("key"))
+        shown = json.dumps(flow)
+        not_a_script = http("GET", api + "/v1/scripts/{}".format(one_a[0]), token=k1.get("key"))[0]
+        if (unknown == 400 and nobody == 400 and anon == 401 and credits_of(k5.get("key")) == spent and targets[0] == 200
+                and [t["name"] for t in targets[1]["targets"]] == ["flow", "minimax_h3", "wan"] and "account" not in shown and not_a_script == 404):
+            c[scripts_refused].passed("unknown target 400, unknown provider 400, anonymous 401, credits {} unchanged".format(spent))
+        else:
+            c[scripts_refused].failed("target {} provider {} anon {} credits {} then {}; targets {}; picture read as a script {}".format(
+                unknown, nobody, anon, spent, credits_of(k5.get("key")), targets, not_a_script))
+
     # The documented example, run as a person would: the key in the environment, never on the line.
     example = "the example script sends a prompt and a picture, waits, and saves the picture made"
     out = Path(tempfile.mkdtemp(prefix="acceptance-example-"))
@@ -1372,6 +1430,7 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             "exit {} {}".format(settle.returncode, (summary or (lines[-1] if lines else ""))[:110]))
 
     for name, script, at_least in (
+            ("a script is held to what its video model takes", "test_scripts.py", 30),
             ("a real account's picture budget outlives the worker", "test_worker_pacing.py", 8),
             ("several accounts of a provider share the work, and a thread stays on its account", "test_provider_accounts.py", 28),
             ("a job's failures take the right path through the pool and the runner", "test_worker_paths.py", 68),

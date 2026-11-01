@@ -1,0 +1,10 @@
+id = "short-film-minimax"
+mode = "script"
+target = "minimax_h3"
+provider = "grok"
+title = "Short film for MiniMax H3"
+description = "A script of 5 to 15 second clips for MiniMax H3, written by Grok."
+template = "{story}"
+
+[inputs.story]
+description = "the story, its characters and its mood"

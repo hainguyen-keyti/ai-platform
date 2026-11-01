@@ -333,7 +333,7 @@ class ChatGPTProvider(BaseProvider):
     """
 
     name = "chatgpt"
-    supported_features = (FeatureType.CHAT, FeatureType.IMAGE, FeatureType.VIDEO_SCRIPT)
+    supported_features = (FeatureType.CHAT, FeatureType.IMAGE, FeatureType.VIDEO_SCRIPT, FeatureType.SCRIPT)
 
     def __init__(self, media_path, sessions_path, account=None):
         super().__init__(media_path, sessions_path, account)

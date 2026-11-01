@@ -1,0 +1,21 @@
+# A preset is a file like this one: adding a recipe needs no code. {name} is filled from [inputs].
+id = "character-portrait"
+mode = "image"
+title = "Character portrait"
+description = "A natural portrait of one character, kept in a session of its own so it does not take another's face."
+session_input = "character"
+template = "A natural portrait photograph of {description}. {angle}. {expression}. Soft natural light. One single photograph, not a collage."
+
+[inputs.character]
+description = "a short name for this character, used as its session"
+
+[inputs.description]
+description = "who it is: age, face, hair, clothes"
+
+[inputs.angle]
+description = "the face angle"
+default = "Face turned straight to the camera"
+
+[inputs.expression]
+description = "the expression"
+default = "A gentle smile"

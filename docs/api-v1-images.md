@@ -194,6 +194,23 @@ picture was kept.
 Only requests made through `/v1` can be cancelled here, by their owner: another person's request, a
 picture made on the web and a chat turn answer `404`, as they do on a read.
 
+## Video scripts
+
+`POST /v1/scripts` with JSON writes a shot-by-shot script for an AI video model; `GET /v1/script-targets` lists the models and what each takes.
+
+| Field | Required | What |
+|---|---|---|
+| `brief` | yes | The story, up to 8000 characters |
+| `target` | yes | `flow`, `minimax_h3` or `wan` |
+| `provider` | no | Who writes it: `grok` (the default), `chatgpt` or `gemini` |
+| `scenes`, `total_seconds` | no | How many scenes, and about how long in all |
+| `language` | no | The language of the dialogue, `vi` by default. The prompts are in English |
+| `session` | no | A name, as for pictures: the same name goes into the same provider thread |
+
+It answers `202` with an `id`. `GET /v1/scripts/{id}` gives `status` and, once `done`, `script`: `title`, `target`, `total_seconds`, `characters`, and `scenes`, each with
+`number`, `duration_seconds`, `description`, `camera`, `dialogue`, `image_prompt`, `video_prompt`, and `negative_prompt` for `wan`. A reply that is not valid or does not fit the target ends `failed`
+with the reason in `error`, and its credit comes back. `POST /v1/scripts/{id}/cancel` cancels one.
+
 ## Errors
 
 Every error answers JSON with a `detail`: a sentence, or, when a field is missing or of the wrong

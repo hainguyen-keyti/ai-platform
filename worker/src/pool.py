@@ -265,6 +265,8 @@ class BrowserPool:
                         payload.get("prompt", ""),
                         payload.get("reference_filenames") or payload.get("reference_filename"), thread_url
                     )
+                if feature == "script":
+                    return provider.write_script(payload.get("message", ""), thread_url)
                 if feature == "video_script":
                     return provider.generate_video_script(
                         payload.get("filename", ""), int(payload.get("duration", 5)), thread_url

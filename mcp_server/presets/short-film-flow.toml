@@ -1,0 +1,10 @@
+id = "short-film-flow"
+mode = "script"
+target = "flow"
+provider = "grok"
+title = "Short film for Google Flow"
+description = "A script of 8-second clips for Google Flow, written by Grok."
+template = "{story}"
+
+[inputs.story]
+description = "the story, its characters and its mood"

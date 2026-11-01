@@ -1,0 +1,18 @@
+id = "character-scene"
+mode = "image"
+title = "Character in a scene"
+description = "A character already made, in a new scene, with its face angle and expression named so the set does not drift to one look."
+session_input = "character"
+template = "The same person as before in this session. {scene}. {angle}. {expression}. One single photograph, not a collage."
+
+[inputs.character]
+description = "the character's session name"
+
+[inputs.scene]
+description = "where they are and what they do"
+
+[inputs.angle]
+description = "the face angle"
+
+[inputs.expression]
+description = "the expression"

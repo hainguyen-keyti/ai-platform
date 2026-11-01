@@ -6,9 +6,9 @@ PROVIDERS = ("chatgpt", "grok", "gemini")
 # What each provider's driver offers, its `supported_features`; the gate reads both and fails when
 # they differ. Grok writes no video script (DECISIONS 2026-09-25).
 FEATURES = {
-    "chatgpt": ("chat", "image", "video_script"),
-    "grok": ("chat", "image"),
-    "gemini": ("chat", "image", "video_script"),
+    "chatgpt": ("chat", "image", "video_script", "script"),
+    "grok": ("chat", "image", "script"),
+    "gemini": ("chat", "image", "video_script", "script"),
 }
 # The providers whose picture turn takes a reference picture; grok's driver refuses one
 # (worker/src/providers/grok.py, generate_image).
@@ -54,6 +54,17 @@ class WorkerMedia(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     type: str = Field(default="image", max_length=32)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ScriptRequest(BaseModel):
+    """A video script through /v1 (issue #30). Grok writes them unless told otherwise (the owner, 2026-11-01)."""
+    brief: str = Field(min_length=1, max_length=8000)
+    target: str = Field(max_length=40)
+    provider: str = Field(default="grok", max_length=40)
+    scenes: Optional[int] = Field(default=None, ge=1, le=30)
+    total_seconds: Optional[int] = Field(default=None, ge=1, le=600)
+    language: str = Field(default="vi", min_length=2, max_length=40)
+    session: Optional[str] = Field(default=None, max_length=64)
 
 
 class WorkerResult(BaseModel):

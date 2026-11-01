@@ -245,7 +245,15 @@ needs the session, `systemctl --user stop aip-worker`. Code changes reach it wit
 The picture budget's count is kept in `storage/pacing-<provider>.json`, so a restart does not give it
 back.
 
-## 11. MCP server for ChatGPT pictures
+## 11. MCP server: pictures, video scripts, presets
+
+The server is `mcp_server/aip_server.py`; `chatgpt_images.py` is the name existing configs run, and stays.
+
+- `write_video_script(brief, target, scenes=None, total_seconds=None, language="vi", provider="grok", session=None)`: a shot-by-shot script
+  for `flow` (Google Flow), `minimax_h3` or `wan`, each scene with a first-frame `image_prompt` and a `video_prompt` written the way that
+  model reads them, saved as Markdown and JSON. What each model takes is `TARGETS` in `api/src/scripts.py`, with where each limit was read: third-party
+  guides for two of them, so correct them there when a model changes. A reply that does not fit fails and gives its credit back.
+- `list_presets`, `generate(preset, inputs)`: a recipe is one TOML file in `mcp_server/presets/` (`mode`, `template`, `[inputs.*]`), and needs no code.
 
 `mcp_server/chatgpt_images.py` lets an agent (Claude Code, Claude Desktop, any MCP client) make
 pictures with ChatGPT on this platform as a tool. Its host starts it as a subprocess over stdio; it

@@ -13,6 +13,11 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **#30, modes, presets and video scripts, on branch `scripts-presets`, not merged, not on the running stack:** the owner said not to stop the service
+  while an agent uses it. `POST /v1/scripts`, `api/src/scripts.py` (`TARGETS`: flow, minimax_h3, wan), `BaseProvider.write_script` on all drivers, Grok by default;
+  `mcp_server/aip_server.py` with `write_video_script`, `get_video_script`, `list_script_targets`, `list_presets`, `generate`, presets in `mcp_server/presets/`;
+  `chatgpt_images.py` stays as the name configs run. Gate 81/81, ui_smoke 75/75, MCP test 61/61, stress 16/16, 11 of 11 mutants red. To do on the owner's word:
+  merge, restart api and worker when idle, then one real script per target on Grok. Next after that: a tool that turns a script's scenes into pictures in one session.
 - **The Cloudflare banners explained as far as measured, 2026-11-01, job `d6e42ca5`, its record in `storage/diagnostics/`:** a browser opened
   after 3h idle, `GET /` 403 `cf-mitigated`, page up, then every `/backend-api` call 403 for at least 23s, and the driver read that 403
   and sent anyway. Now `_past_check` sends nothing while the settings answer 403: waits up to 120s, loads the page again each 30s, then fails

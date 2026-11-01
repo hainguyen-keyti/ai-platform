@@ -10,9 +10,10 @@ from fastapi.responses import FileResponse
 from src.config import settings
 from src.db.client import db, many, one
 from src.jobs import account_can_serve, cancel_job, create_job, get_job, provider_load, provider_status
-from src.models import FEATURES, MAX_REFERENCES, PROVIDERS, TAKES_REFERENCE
+from src.models import FEATURES, MAX_REFERENCES, PROVIDERS, TAKES_REFERENCE, ScriptRequest
 from src.quota import today
 from src.routes.media import CONTENT_TYPES, _safe_path
+from src.scripts import TARGETS, build_instruction, target_summaries
 from src.security import api_key_user
 
 # The image API for programs: called with a personal API key only, never a login token.
@@ -111,18 +112,31 @@ def _picture_size(picture: bytes):
     return None
 
 
-def _image_request(user_id: str, request_id: str) -> dict:
-    """A request made through /v1, and only that: not the web's own picture or chat turns."""
+def _request_of(user_id: str, request_id: str, feature: str, word: str) -> dict:
+    """A request of this feature made through /v1, and only that: not the web's own turns."""
     job = get_job(user_id, request_id)
     with db() as conn:
         row = one(conn, "SELECT payload FROM jobs WHERE id = ? AND user_id = ?", (request_id, user_id))
     made_here = bool(row) and json.loads(row["payload"] or "{}").get("via") == "v1"
-    if job["feature"] != "image" or not made_here:
-        raise HTTPException(status_code=404, detail="image request not found")
+    if job["feature"] != feature or not made_here:
+        raise HTTPException(status_code=404, detail="{} request not found".format(word))
     payload = json.loads(row["payload"] or "{}")
     job["continued_from"] = payload.get("continued_from")
     job["session"] = payload.get("session")
+    job["target"] = payload.get("target")
     return job
+
+
+def _image_request(user_id: str, request_id: str) -> dict:
+    return _request_of(user_id, request_id, "image", "image")
+
+
+def _session_name(session: Optional[str]) -> Optional[str]:
+    """One name however it is spelled in case or spacing, so "Co Gai A" is not a second character (#28)."""
+    name = " ".join(session.split()).casefold() if session is not None else None
+    if session is not None and not name:
+        raise HTTPException(status_code=400, detail="a session needs a name")
+    return name
 
 
 def _key_conversation(user: dict, provider: str) -> str:
@@ -224,10 +238,7 @@ def create_image(prompt: str = Form(max_length=8000), image: Optional[List[Uploa
     prompt = prompt.strip()
     if not prompt:
         raise HTTPException(status_code=422, detail="a prompt is required")
-    # Issue #28: one name however it is spelled in case or spacing, so "Co Gai A" is not a second character.
-    name = " ".join(session.split()).casefold() if session is not None else None
-    if session is not None and not name:
-        raise HTTPException(status_code=400, detail="a session needs a name")
+    name = _session_name(session)
     if name and continue_from:
         raise HTTPException(status_code=400, detail="send session or continue_from, not both: "
                                                     "a request continued stays in that request's session")
@@ -335,6 +346,50 @@ def image_status(request_id: str, user: dict = Depends(api_key_user)):
         "created_at": job["created_at"],
         "finished_at": job["finished_at"],
     }
+
+
+@router.get("/script-targets")
+def script_targets(user: dict = Depends(api_key_user)):
+    """The video models a script can be written for, and what each takes (issue #30)."""
+    return {"targets": target_summaries()}
+
+
+@router.post("/scripts", status_code=202)
+def create_script(body: ScriptRequest, user: dict = Depends(api_key_user)):
+    if body.target not in TARGETS:
+        raise HTTPException(status_code=400, detail="unknown target {!r}; one of {}".format(body.target[:40], ", ".join(TARGETS)))
+    if body.provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail="unknown provider {!r}; one of {}".format(body.provider[:40], ", ".join(PROVIDERS)))
+    name = _session_name(body.session)
+    brief = body.brief.strip()
+    if not brief:
+        raise HTTPException(status_code=422, detail="a brief is required")
+    payload = {"message": build_instruction(brief, body.target, body.scenes, body.total_seconds, body.language),
+               "via": "v1", "target": body.target, "scenes": body.scenes}
+    if name:
+        payload["session"] = name
+    # With no session a script is its own conversation: a day's thread would have one script's characters in the next.
+    conversation_id = _session_conversation(user, body.provider, name) if name else None
+    created = create_job(user=user, provider=body.provider, feature="script", payload=payload, conversation_id=conversation_id,
+                         user_message="Write a video script: {}".format(brief), title=brief)
+    return {"id": created["job_id"], "status": "queued"}
+
+
+@router.get("/scripts/{request_id}")
+def script_status(request_id: str, user: dict = Depends(api_key_user)):
+    job = _request_of(user["id"], request_id, "script", "script")
+    text = (job["result"] or {}).get("text") or ""
+    return {"id": job["id"], "provider": job["provider"], "target": job["target"], "session": job["session"],
+            "conversation_id": job["conversation_id"], "status": STATUSES.get(job["status"], job["status"]),
+            "script": json.loads(text) if job["status"] == "done" and text else None, "error": job["error"],
+            "created_at": job["created_at"], "finished_at": job["finished_at"]}
+
+
+@router.post("/scripts/{request_id}/cancel")
+def cancel_script(request_id: str, user: dict = Depends(api_key_user)):
+    _request_of(user["id"], request_id, "script", "script")
+    cancel_job(user["id"], request_id)
+    return script_status(request_id, user)
 
 
 @router.post("/images/{request_id}/cancel")

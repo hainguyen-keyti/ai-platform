@@ -112,7 +112,7 @@ class GrokProvider(BaseProvider):
     name = "grok"
     # Chat and image for now. A video script uploads a reference picture, and
     # grok's upload flow is a different shape that has not been measured.
-    supported_features = (FeatureType.CHAT, FeatureType.IMAGE)
+    supported_features = (FeatureType.CHAT, FeatureType.IMAGE, FeatureType.SCRIPT)
     # Whether the server lists the running turn's question yet; reset by _run before each send.
     heard = False
 

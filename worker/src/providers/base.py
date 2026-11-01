@@ -9,6 +9,7 @@ class FeatureType(str, Enum):
     CHAT = "chat"
     IMAGE = "image"
     VIDEO_SCRIPT = "video_script"
+    SCRIPT = "script"
 
 
 MEMORY_ON_ERROR = ("the shared provider account has memory switched on, so this turn was not sent; "
@@ -117,6 +118,10 @@ class BaseProvider(ABC):
     def generate_video_script(self, image_filename: str, duration: int = 5,
                               thread_url: Optional[str] = None) -> GenerationResult:
         ...
+
+    def write_script(self, message: str, thread_url: Optional[str] = None) -> GenerationResult:
+        """A video script from its instruction, the api's, whose check of the answer is the api's too (#30)."""
+        return self.chat(message, None, thread_url)
 
     def delete_thread(self, thread_url: str) -> bool:
         """Remove a thread from the provider's own account; True once it is gone."""
