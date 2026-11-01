@@ -13,6 +13,16 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **The Cloudflare banners explained as far as measured, 2026-11-01, job `d6e42ca5`, its record in `storage/diagnostics/`:** a browser opened
+  after 3h idle, `GET /` 403 `cf-mitigated`, page up, then every `/backend-api` call 403 for at least 23s, and the driver read that 403
+  and sent anyway. Now `_past_check` sends nothing while the settings answer 403: waits up to 120s, loads the page again each 30s, then fails
+  unsent with a record. It answers no check. NOT met on the real site yet: read the next `chatgpt-check-*`. Why the check fell on `chatgpt`
+  and not `chatgpt-a2` at the same minute is not known.
+- **`chatgpt-a2` is a Free account** (the owner may change the plan): "You've hit the Free plan limit for image generations requests... resets
+  in 11 hours" after about 5 pictures. An account answering at once took job after job, so `provider_limit` now holds it for the time
+  the site says, others go on; a limit stated with no time holds an hour. Plus: no limit met yet, about 140 pictures on 10-30.
+- Also: an account that could not start stands aside, a held account's budget is not counted, the gate no longer asks its stack twice
+  (a 2s second ask went red three times), and a `ui_smoke` failure is said before its picture.
 - **A run of 100 pictures stopped at its first request on `cloudflare_challenge`, 2026-10-31 22:57 UTC** (job `c956d39e`, account
   `chatgpt`), with 0 pictures in the three hours before it, so not a burst; 1 picture made, 1 failed, nothing else sent. Suspect,
   not proven: all three challenges seen (10-31 10:52, 16:08, 22:57) came soon after a browser was freshly opened, though others
