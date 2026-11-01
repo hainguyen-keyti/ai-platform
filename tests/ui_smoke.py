@@ -2459,8 +2459,12 @@ def main():
         record("no console errors", not real_errors, str(real_errors[:3]))
 
     except Exception as exc:
-        shot(page, "99-failure")
+        # Said first: a page too unwell for its picture hid the failure itself (2026-11-01).
         record("unexpected failure", False, "{}: {}".format(type(exc).__name__, str(exc)[:300]))
+        try:
+            shot(page, "99-failure")
+        except Exception as picture:
+            print("no picture of the failure: {}".format(str(picture)[:120]))
     finally:
         browser.close()
 

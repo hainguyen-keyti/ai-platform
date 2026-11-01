@@ -331,7 +331,9 @@ def provider_load():
         accounts = {}
         for row in many(conn, "SELECT * FROM provider_accounts WHERE last_seen >= datetime('now', ?)",
                         ("-{} seconds".format(settings.no_worker_seconds),)):
-            accounts.setdefault(row["provider"], []).append(row)
+            # A held account takes no picture, so its budget is no room to tell anyone about.
+            if not _held(conn, row["account"]):
+                accounts.setdefault(row["provider"], []).append(row)
         waiting = {row["provider"]: row["n"] for row in many(
             conn, "SELECT provider, COUNT(*) AS n FROM jobs WHERE status = 'pending' GROUP BY provider")}
 

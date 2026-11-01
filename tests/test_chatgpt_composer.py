@@ -737,6 +737,59 @@ def main():
     record("a page that cannot be read still fails the turn with the banner, and says what it could",
            "cloudflare_challenge" in said and len(records) == 1 and records[0].get("unread") == "RuntimeError", "{!r} {}".format(said[:50], records))
 
+    # Measured 2026-11-01, job d6e42ca5: the api behind a check, the settings read among it, and the turn went out.
+    class BehindCheck(DrawingPage):
+        check_reads = 0
+
+        def evaluate(self, script, *args):
+            if script == chatgpt.FETCH_USER_SETTINGS and self.check_reads > 0:
+                self.check_reads -= 1
+                return {"status": 403, "values": {}}
+            return super().evaluate(script, *args)
+
+    def check_on(page):
+        driver = provider_on(page)
+        driver.media_path = driver.media_path / uuid.uuid4().hex / "media"
+        driver.media_path.mkdir(parents=True)
+        started = clock.now
+        try:
+            got = driver._run("vẽ một hình vuông")
+            return "success" if got.success else "failed", clock.now - started, driver
+        except ProviderError as exc:
+            return str(exc), clock.now - started, driver
+
+    page = BehindCheck(clock, tool_after=22, words_after=27, words_text="")
+    page.check_reads = 3
+    said, took, driver = check_on(page)
+    record("a turn waits for the api to come out from behind a check before it sends",
+           said == "success" and len(page.sent) == 1 and took >= 15, "{} sent {} after {:.0f}s".format(said, len(page.sent), took))
+
+    page = BehindCheck(clock, tool_after=22, words_after=27, words_text="")
+    page.check_reads = 8
+    said, took, driver = check_on(page)
+    record("a check that lasts has the page loaded again while it waits", said == "success" and page.loads >= 2 and len(page.sent) == 1,
+           "{} loads {}".format(said, page.loads))
+
+    page = BehindCheck(clock, tool_after=22, words_after=27, words_text="")
+    page.check_reads = 10000
+    said, took, driver = check_on(page)
+    kept = list((driver.media_path.parent / "diagnostics").glob("*.json"))
+    record("a check that stays fails the turn unsent, as a provider error, and leaves its record",
+           "Cloudflare" in said and "nothing was sent" in said and page.sent == [] and len(kept) == 1 and took < 300,
+           "{!r} sent {} records {} after {:.0f}s".format(said[:70], len(page.sent), len(kept), took))
+
+    page = BehindCheck(clock, tool_after=22, words_after=27, words_text="")
+    page.check_reads = 10000
+    driver = provider_on(page)
+    calls = []
+    driver.bind(None, lambda: calls.append(1) or len(calls) > 1)
+    try:
+        driver._past_check(page, None)
+        said = "returned"
+    except JobCancelled:
+        said = "cancelled"
+    record("a job taken away during the wait is not sent", said == "cancelled" and page.sent == [], said)
+
     # Measured 2026-10-30: a fresh worker's first picture failed with "logged out" at the memory read
     # that opens the turn (job f9cb16ab); the next job, on the same session, was done.
     def memory_on(page):

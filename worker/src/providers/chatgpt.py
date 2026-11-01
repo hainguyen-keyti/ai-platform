@@ -56,6 +56,7 @@ SERVER_POLL_MAX = 30
 OPEN_ATTEMPTS = 3
 OPEN_RETRY_SECONDS = 15
 GOTO_RETRY_SECONDS = 20
+CHECK_POLL_SECONDS, CHECK_RELOAD_SECONDS, CHECK_WAIT_SECONDS = 5, 30, 120
 # How long the page must stay quiet and unchanged before the answer counts as
 # over. Two seconds was thin: a reply that runs several tools puts the stop
 # button away between them, and a pause there reads as an ending.
@@ -382,6 +383,37 @@ class ChatGPTProvider(BaseProvider):
                                       "url": response.url.split("?")[0].split("#")[0][:200], "cf_mitigated": mitigated})
         except Exception:
             pass
+
+    def _settings_status(self, page):
+        """What the account's own settings answer now, or None when that cannot be asked."""
+        try:
+            self._access_token = self._access_token or self._session_token(page, 20)
+            if not self._access_token:
+                return None
+            return page.evaluate(FETCH_USER_SETTINGS, [self._access_token, list(MEMORY_KEYS)]).get("status")
+        except Exception:
+            return None
+
+    def _past_check(self, page, thread_url: Optional[str]):
+        """Send nothing while Cloudflare has the site's api behind a check: wait for it to clear, and load
+        the page again now and then, as a person would. Nothing here answers a check.
+
+        Measured 2026-11-01, job d6e42ca5, a browser opened after 3 hours idle: the page loaded, then every
+        /backend-api call answered 403 cf-mitigated for at least 23s, the settings read among them, and the
+        turn went out into that and failed. The same account's next turn on 10-31 and 11-01 went through.
+        """
+        waited = 0
+        while self._settings_status(page) == 403:
+            if waited >= CHECK_WAIT_SECONDS:
+                self._keep_check(page, "cloudflare check before sending")
+                raise ProviderError("chatgpt stayed behind a Cloudflare check for {}s, so nothing was sent".format(waited))
+            self._phase("waiting for the provider")
+            page.wait_for_timeout(CHECK_POLL_SECONDS * 1000)
+            waited += CHECK_POLL_SECONDS
+            self._check_stop()
+            if waited % CHECK_RELOAD_SECONDS == 0:
+                page = self._open(thread_url)
+        return page
 
     def _keep_check(self, page, banner: str):
         """What can be seen when the site shows a Cloudflare check (2026-10-31: four, and only their words were
@@ -1012,7 +1044,7 @@ class ChatGPTProvider(BaseProvider):
         uploads = [upload] if isinstance(upload, str) else list(upload or [])
         # Never let a cancel report the previous turn's thread as this one's.
         self.last_cancelled_thread = None
-        page = self._open(thread_url)
+        page = self._past_check(self._open(thread_url), thread_url)
         self._drop_attachments(page)
         on_thread = self._thread_id(page)
         # Look before speaking: with memory on, this turn would be written into

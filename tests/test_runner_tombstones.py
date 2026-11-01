@@ -59,6 +59,9 @@ class Pool:
     def close_idle(self, account):
         pass
 
+    def stands_aside(self, account):
+        return False
+
     def hold_seconds(self, provider=None):
         return self.hold
 

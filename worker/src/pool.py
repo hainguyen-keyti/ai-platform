@@ -168,6 +168,13 @@ class BrowserPool:
                 pass
         self._providers.clear()
 
+    def stands_aside(self, account: str) -> bool:
+        """An account that could not start takes no work while another of its provider can: the job would
+        only fail on it. With none other it does take it, and the job's failure says why."""
+        provider = self._provider_of.get(account)
+        return account in self._errors and any(
+            other in self._providers for other, of in self._provider_of.items() if of == provider and other != account)
+
     def _total_wait(self, health) -> float:
         """How long the cap across a provider's accounts holds: they share one machine and one IP."""
         total = health.pacing.get("image_total")

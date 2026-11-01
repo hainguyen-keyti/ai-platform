@@ -223,7 +223,7 @@ def scenario_tombstone(stack, key, token):
            "{}: {} then {}".format(statuses, before, after))
 
 
-def scenario_hold(stack, key, token):
+def scenario_hold(stack, key, token, admin):
     pinned = send(stack, key, session="on-b")[1]["id"]
     settled(stack, [pinned])
     account = job_row(stack, pinned)[1]
@@ -243,6 +243,11 @@ def scenario_hold(stack, key, token):
 
     served = next(p for p in http("GET", stack.api + "/v1/providers", token=key)[1]["providers"] if p["name"] == "chatgpt")
     record("the provider is still served", served["served"] is True, served)
+    time.sleep(1)
+    only = http("GET", stack.api + "/admin/accounts", token=admin)[1]["items"]
+    budgets = {row["account"]: row["image_budget"] for row in only}
+    record("a held account's budget is not counted as room", served["picture_budget"] == budgets[keeper],
+           "total {} budgets {}".format(served["picture_budget"], budgets))
 
     with sqlite3.connect(stack.db_path) as conn:
         conn.execute("INSERT OR REPLACE INTO provider_holds (provider, until, reason) VALUES (?, ?, 'the test')", (keeper, until))
@@ -396,7 +401,7 @@ def main():
         account = scenario_rotation(stack, key, other)
         scenario_privacy(stack, key, token, admin)
         scenario_tombstone(stack, key, token)
-        scenario_hold(stack, key, token)
+        scenario_hold(stack, key, token, admin)
         scenario_default_thread_moves(stack, key)
         scenario_account_needs_admin(stack, key)
         scenario_gone_account(stack, key, account)

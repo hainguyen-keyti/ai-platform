@@ -159,6 +159,9 @@ class Pool:
     def close_idle(self, account):
         pass
 
+    def stands_aside(self, account):
+        return False
+
     def execute(self, provider, feature, payload, thread_url, phase_hook, should_stop):
         self.executed.append((provider, feature, payload, thread_url))
         if self.raises is not None:
@@ -302,6 +305,17 @@ def pool_answers():
            status["chatgpt"]["ready"] and not status["grok"]["ready"] and "no profile" in status["grok"]["error"],
            str({n: (s["ready"], s["error"]) for n, s in status.items()}))
     pool_module.build_provider = built
+
+    # Issue #29: an account that cannot start leaves the work to the others of its provider.
+    pool = BrowserPool()
+    pool._provider_of = {"chatgpt": "chatgpt", "chatgpt-b": "chatgpt", "grok": "grok"}
+    pool._providers = {"chatgpt": Provider()}
+    pool._errors = {"chatgpt-b": "RuntimeError: no profile", "grok": "RuntimeError: no profile"}
+    record("an account that could not start stands aside while another of its provider can serve",
+           pool.stands_aside("chatgpt-b") and not pool.stands_aside("chatgpt"))
+    record("the only account of a provider does not, so its job says why it failed", not pool.stands_aside("grok"))
+    del pool._providers["chatgpt"]
+    record("nor does one whose fellows could not start either", not pool.stands_aside("chatgpt-b"))
     settings.providers = ["chatgpt"]
 
     # Issue #29: every account's browser held open is memory the machine is short of.

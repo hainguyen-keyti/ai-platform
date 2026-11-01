@@ -57,15 +57,21 @@ gate_compose up -d
 # again by its absolute path mends it.
 cd "$ROOT"
 # Five minutes: measured 2026-10-31, at a load of 13 the web was not up within two, and the gate went red for it.
+up_at=$(date +%s)
+api_up= web_up=
 for _ in $(seq 1 150); do
-  curl -s -m 2 "http://localhost:$GATE_API_PORT/health" >/dev/null \
-    && curl -s -m 2 -o /dev/null "http://localhost:$GATE_WEB_PORT/" && break
+  [ -n "$api_up" ] || { curl -s -m 5 "http://localhost:$GATE_API_PORT/health" >/dev/null && api_up=1; }
+  [ -n "$web_up" ] || { curl -s -m 5 -o /dev/null "http://localhost:$GATE_WEB_PORT/" && web_up=1; }
+  [ -n "$api_up" ] && [ -n "$web_up" ] && break
   sleep 2
 done
-curl -s -m 2 "http://localhost:$GATE_API_PORT/health" >/dev/null \
-  || { echo "full-gate: the gate's api does not answer on :$GATE_API_PORT" >&2; exit 1; }
-curl -s -m 2 -o /dev/null "http://localhost:$GATE_WEB_PORT/" \
-  || { echo "full-gate: the gate's web does not answer on :$GATE_WEB_PORT" >&2; exit 1; }
+# Asking again here with a short timeout went red on a loaded machine (2026-10-31, three times, the log of none kept).
+if [ -z "$api_up" ] || [ -z "$web_up" ]; then
+  echo "full-gate: after $(($(date +%s) - up_at))s the gate's api answered: ${api_up:-no}, its web on :$GATE_WEB_PORT: ${web_up:-no}" >&2
+  gate_compose logs --tail 40 web api >&2 || true
+  exit 1
+fi
+echo "the gate's stack answered after $(($(date +%s) - up_at))s"
 
 worker_mode() {
   curl -s -m 2 "http://127.0.0.1:$WORKER_PORT/health" | "$PY" -c 'import json, sys; print(json.load(sys.stdin).get("mode", ""))' 2>/dev/null || true

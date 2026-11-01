@@ -74,6 +74,10 @@ class Runner(threading.Thread):
         headers = {"X-Worker-Token": settings.worker_token}
         with httpx.Client(base_url=settings.api_url, headers=headers, timeout=30.0) as client:
             while not self._halt.is_set():
+                if self.pool.stands_aside(self.account):
+                    self.last_error = "this account could not start, so it takes no work"
+                    self._halt.wait(5.0)
+                    continue
                 hold = self.pool.hold_seconds(self.account)
                 if hold > 0:
                     # Pausing on purpose is not being dead: say so, or the api
