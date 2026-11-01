@@ -13,6 +13,10 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **A run of 100 pictures stopped at its first request on `cloudflare_challenge`, 2026-10-31 22:57 UTC** (job `c956d39e`, account
+  `chatgpt`), with 0 pictures in the three hours before it, so not a burst; 1 picture made, 1 failed, nothing else sent. Suspect,
+  not proven: all three challenges seen (10-31 10:52, 16:08, 22:57) came soon after a browser was freshly opened, though others
+  opened with none, and `BROWSER_IDLE_SECONDS` (1800) now makes more fresh opens. The limit itself was not measured.
 - **#29's real check passed, two accounts on the service:** `chatgpt-a2` is logged in (the owner), memory off. Two sessions
   sent together ran at once, woman-a on `chatgpt-a2` (thread `6ae61ffe`), woman-b on `chatgpt` (`6ae61fd3`); each one's
   follow-up stayed on its account and thread, all 4 done with pictures, no Cloudflare check, `storage/mcp-check29/`. Earlier the
