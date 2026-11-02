@@ -9,8 +9,8 @@ from src.config import settings
 # How often an idle worker asks whether a deleted conversation left a thread to
 # remove from the provider's account. Rare work; no need to ask every poll.
 TOMBSTONE_INTERVAL_SECONDS = 10.0
-# How often a runner busy outside a live job (deleting a thread, finishing a cancelled one) says it
-# is alive, as often as its pauses between turns do.
+# How often a runner busy outside a live job (deleting a thread, finishing a cancelled one, cleaning a
+# Library page) says it is alive, as often as its pauses between turns do.
 BUSY_PING_SECONDS = 5.0
 # How long a runner in a job goes at most without asking whether the job is still its own, whatever the
 # lease: a third of production's lease was 140s, and a Stop reached the driver after its turn had ended.
@@ -150,6 +150,11 @@ class Runner(threading.Thread):
             self.library_cleanup = {"day": day, "running": True, "removed": 0, "bytes": 0, "not_ours": 0,
                                     "failed": 0, "error": None}
         report = self.library_cleanup
+        # Measured 2026-11-02: one page ran at least 4m40s, and a job waiting on this account failed as no_worker.
+        done = threading.Event()
+        pinger = threading.Thread(target=self._keep_alive, args=(client, done),
+                                  name="alive-{}".format(self.provider), daemon=True)
+        pinger.start()
         try:
             page = self.pool.clean_library_page(self.account, self._cleaning["cursor"], self._cleaning["day"],
                                                 lambda urls: self._known_threads(client, urls))
@@ -159,6 +164,9 @@ class Runner(threading.Thread):
             self.last_error = "library cleanup failed, {}".format(report["error"])
             self._cleaned_day, self._cleaning = self._cleaning["day"], None
             return
+        finally:
+            done.set()
+            pinger.join(timeout=5)
         report["removed"] += page["removed"]
         report["bytes"] += page["bytes"]
         report["not_ours"] += page["not_ours"]
