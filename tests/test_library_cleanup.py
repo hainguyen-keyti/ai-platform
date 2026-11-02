@@ -13,6 +13,7 @@ Prints N/N PASSED.
 
 import sys
 import threading
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -241,6 +242,75 @@ def runner_cases():
            repr(client.posts))
 
 
+class PingClient(Client):
+    def __init__(self):
+        super().__init__()
+        self.pinged = threading.Event()
+
+    def post(self, path, json=None):
+        response = super().post(path, json)
+        if path == "/internal/workers/ping":
+            self.pinged.set()
+        return response
+
+    def pings(self):
+        return [body for path, body in list(self.posts) if path == "/internal/workers/ping"]
+
+
+class WaitingPool(Pool):
+    """A page that takes as long as it takes for the runner to say it is alive, as a real one did for minutes."""
+
+    def __init__(self, client, outcome):
+        super().__init__()
+        self.client, self.outcome, self.pinged = client, outcome, None
+
+    def clean_library_page(self, provider, cursor, day, known):
+        self.pinged = self.client.pinged.wait(5.0)
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+def keep_alive_cases():
+    """Measured 2026-11-02: no ping for at least 4m40s inside one page, and the api fails as no_worker what waits."""
+    every = runner_module.BUSY_PING_SECONDS
+    runner_module.BUSY_PING_SECONDS = 0.01
+    try:
+        for account, who in ((None, {"providers": ["chatgpt"]}),
+                             ("chatgpt-a2", {"providers": ["chatgpt"], "account": "chatgpt-a2"})):
+            client = PingClient()
+            pool = WaitingPool(client, step())
+            runner = runner_module.Runner(pool, "chatgpt", account)
+            runner._utcnow = lambda: utc(TODAY, 17)
+            runner._maybe_clean_library(client)
+            record("a runner says it is alive during a page, for its own account: {}".format(runner.account),
+                   pool.pinged is True and client.pings() and all(body == who for body in client.pings()),
+                   repr(client.pings()[:1]))
+            after = len(client.pings())
+            time.sleep(0.1)
+            record("its pings end with the page: {}".format(runner.account), len(client.pings()) == after,
+                   "{} then {}".format(after, len(client.pings())))
+
+        client = PingClient()
+        pool = WaitingPool(client, ProviderError("chatgpt's library could not be read (403)"))
+        runner = runner_module.Runner(pool, "chatgpt")
+        runner._utcnow = lambda: utc(TODAY, 17)
+        runner._maybe_clean_library(client)
+        after = len(client.pings())
+        time.sleep(0.1)
+        record("a failed page was pinged through too, its pings end with it, and it still says why",
+               pool.pinged is True and after > 0 and len(client.pings()) == after
+               and "403" in (runner.last_error or ""), "{} then {}".format(after, len(client.pings())))
+
+        client = PingClient()
+        runner = runner_at(WaitingPool(client, step()), [utc(TODAY, 16, 29)])
+        runner._maybe_clean_library(client)
+        time.sleep(0.1)
+        record("no page, no pings of its own", client.pings() == [], repr(client.pings()))
+    finally:
+        runner_module.BUSY_PING_SECONDS = every
+
+
 def pool_cases():
     pool = pool_module.BrowserPool()
     held = []
@@ -263,6 +333,7 @@ def pool_cases():
 def main():
     driver_cases()
     runner_cases()
+    keep_alive_cases()
     pool_cases()
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))
