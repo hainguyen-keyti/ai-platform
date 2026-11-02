@@ -13,6 +13,15 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **NEXT, not started, the owner has not yet said to fix it: the Library cleanup can fail picture requests.** Seen 2026-11-02: the `chatgpt` runner sent no ping from 18:32:19 UTC for at least
+  4m40s, inside one page of `_maybe_clean_library` (`worker/src/runner.py`; `clean_library_page` holds the account's lock through every file it trashes). A job on a conversation pinned to that account is
+  then swept as `no_worker` (`_sweep_unserved`, `api/src/jobs.py`). Suspect, by timing only, for `d4f93e0d` and `c7207f41` on 11-01 (both failed at 5m11s). The day's progress is in memory, so each
+  restart after 16:30 UTC runs it again. Proposed fix: keep the runner pinging during a page with the existing `_keep_alive`; a job then waits instead of failing. Fix in a worktree under a NEW path (Docker keeps a stale mount
+  for a path deleted and made again), full gate, then ASK before deploying.
+- **The owner's standing rule, 2026-11-02, verbatim: "không được ảnh hưởng đến MCP đang chạy, khi nào cần deploy thì báo tôi".** An agent uses the MCP for real, pictures and now scripts. Each deploy is asked for; restart only the
+  worker and only with an empty queue. Tests on real Grok share its queue with that agent: one turn at a time, as a failure lengthens its cooldown (a burst of tests delayed the agent's script by 18 minutes).
+- **Also open:** `Locator.inner_text` timed out on ChatGPT's prompt box (`bf7f3e97`, twice ever); `set_input_files` timeouts on `#upload-files`; `wsl.exe` from Windows sometimes answers `Wsl/Service/WSAETIMEDOUT` while the machine runs other projects' heavy
+  work (load 14), the worker staying up: read `localhost:8010/health` from Windows and retry. In the Bash tool the guard hook blocks a line holding both `git push` and `--force`, even of another command.
 - **Video scripts work on real Grok, #30 closed, 2026-11-02, at `222a9d4`:** one real script each for flow, minimax_h3 and wan, all checked by the api, in 71s to 218s, kept in
   `storage/mcp-check30/`. Every script had failed "grok never received this turn" at about 31s: Grok was writing it, the socket and the page showed so, while both REST reads
   of the thread stayed empty (job `db7509cf`, its record `storage/diagnostics/grok-unheard-*`). An answer's `response.chunk` on the socket now counts as heard. A fix on `inflightResponses`
