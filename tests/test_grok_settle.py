@@ -119,8 +119,12 @@ class FollowPage:
     answer takes tens of seconds. A fresh page has no thread until the send."""
 
     def __init__(self, clock, before=(200,), settled_after=20.0, fresh=False, empty_first=False,
-                 raises_first=None, raises_always=None, never_lands=False, after_status=200, answer=None):
+                 raises_first=None, raises_always=None, never_lands=False, after_status=200, answer=None,
+                 listed_late=False, node_status=200):
         self.clock, self.before, self.settled_after, self.fresh = clock, list(before), settled_after, fresh
+        # listed_late: the question is listed only with its finished answer, what is generated till then being
+        # all the server says of it (as a slow answer looked, 2026-11-02); node_status: what response-node answers.
+        self.listed_late, self.node_status = listed_late, node_status
         # answer: this turn's response as Grok records it (THIS unless said; issue #18 plays its own).
         self.answer = answer or THIS
         # never_lands: the server never lists this turn, its question nor an answer (measured
@@ -157,12 +161,17 @@ class FollowPage:
                 return {"status": self.after_status, "body": ""}
             if self.never_lands:
                 return {"status": 200, "body": json.dumps({"responses": earlier})}
+            if self.listed_late and self.clock.now - self.sent_at < self.settled_after:
+                return {"status": 200, "body": json.dumps({"responses": earlier})}
             rows = earlier + [THIS_HUMAN]
             if self.clock.now - self.sent_at >= self.settled_after:
                 rows.append(self.answer)
             return {"status": 200, "body": json.dumps({"responses": rows})}
         if "/response-node" in path:
-            return {"status": 200, "body": json.dumps({"responseNodes": [], "inflightResponses": []})}
+            if self.node_status != 200:
+                return {"status": self.node_status, "body": ""}
+            generating = self.listed_late and self.sent_at is not None and self.clock.now - self.sent_at < self.settled_after
+            return {"status": 200, "body": json.dumps({"responseNodes": [], "inflightResponses": ["r"] if generating else []})}
         return {"status": 404, "body": ""}
 
 
@@ -281,6 +290,16 @@ def follow_up_cases():
     record("a turn whose question is listed and whose answer takes minutes is still waited on",
            what == "success" and text == THIS["message"] and took >= 150,
            "{} {!r} after {:.0f}s".format(what, text, took))
+
+    what, text, sent, took = follow_up(clock, FollowPage(clock, listed_late=True, settled_after=150.0))
+    record("a slow answer whose question is listed only at its end is waited on while it is being generated",
+           what == "success" and text == THIS["message"] and sent == 1 and took >= 150,
+           "{} {!r} sent {} after {:.0f}s".format(what, text, sent, took))
+
+    what, text, sent, took = follow_up(clock, FollowPage(clock, never_lands=True, node_status=500))
+    record("a turn not listed, with what is being generated unreadable, is not said unsent: waited to the ceiling",
+           what.startswith("failed as provider_timeout") and took >= 300,
+           "{} after {:.0f}s".format(what, took))
 
     what, text, sent, took = follow_up(clock, FollowPage(clock, after_status=500))
     record("a thread that cannot be read after the send is not said unsent: waited to the ceiling",

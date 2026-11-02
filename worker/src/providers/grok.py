@@ -344,6 +344,14 @@ class GrokProvider(BaseProvider):
                   if (item.get("fileMimeType") or item.get("mimeType") or "").startswith("image/")]
         return text, assets
 
+    def _inflight(self, page, cid):
+        """What the server says it is generating in this thread, or None when it cannot be read."""
+        node_status, node_raw = self._api(page, SERVER_NODES.format(cid))
+        try:
+            return json.loads(node_raw).get("inflightResponses") if node_status == 200 else None
+        except ValueError:
+            return None
+
     def _server_turn(self, page, cid, baseline_ids):
         """The newest assistant turn as the server tells it, and whether it is done."""
         status, raw = self._api(page, SERVER_TURNS.format(cid))
@@ -363,12 +371,7 @@ class GrokProvider(BaseProvider):
         last = answers[-1]
         if last.get("partial"):
             return last, "working", status
-        node_status, node_raw = self._api(page, SERVER_NODES.format(cid))
-        try:
-            inflight = json.loads(node_raw).get("inflightResponses") if node_status == 200 else None
-        except ValueError:
-            inflight = None
-        if inflight != []:
+        if self._inflight(page, cid) != []:
             return last, "working", status
         # Grok's own word that it refused the turn, whatever words or card came with it (issue #18,
         # 2026-10-29: "You've used up your media generation credits." on a spent image allowance).
@@ -522,9 +525,13 @@ class GrokProvider(BaseProvider):
                 # Only a read that went through proves the question is missing; one that failed
                 # proves nothing and the wait goes on.
                 if status == 200 and not self.heard and time.time() - started > HEARD_WAIT:
-                    raise ProviderError(
-                        "grok never received this turn: its thread lists no question of it {:.0f}s "
-                        "after the send".format(time.time() - started))
+                    # Slow answers were said unheard at this wait (2026-11-02: a long essay, every video script), so
+                    # what the server is generating counts as heard. A read that failed proves nothing either way.
+                    self.heard = self._inflight(page, cid) != []
+                    if not self.heard:
+                        raise ProviderError(
+                            "grok never received this turn: its thread lists no question of it {:.0f}s "
+                            "after the send, and nothing is being generated".format(time.time() - started))
                 if turn and not announced:
                     self._phase("reply started")
                     announced = True
