@@ -120,11 +120,12 @@ class FollowPage:
 
     def __init__(self, clock, before=(200,), settled_after=20.0, fresh=False, empty_first=False,
                  raises_first=None, raises_always=None, never_lands=False, after_status=200, answer=None,
-                 listed_late=False, node_status=200):
+                 listed_late=False, node_status=200, frames=()):
         self.clock, self.before, self.settled_after, self.fresh = clock, list(before), settled_after, fresh
-        # listed_late: the question is listed only with its finished answer, what is generated till then being
-        # all the server says of it (as a slow answer looked, 2026-11-02); node_status: what response-node answers.
-        self.listed_late, self.node_status = listed_late, node_status
+        # listed_late: both reads of the thread stay empty till the answer is finished, and the socket is all that shows
+        # it (measured 2026-11-02, job db7509cf); frames: what the socket brings after the send; node_status: what
+        # response-node answers.
+        self.listed_late, self.node_status, self.frames = listed_late, node_status, frames
         # answer: this turn's response as Grok records it (THIS unless said; issue #18 plays its own).
         self.answer = answer or THIS
         # never_lands: the server never lists this turn, its question nor an answer (measured
@@ -170,8 +171,7 @@ class FollowPage:
         if "/response-node" in path:
             if self.node_status != 200:
                 return {"status": self.node_status, "body": ""}
-            generating = self.listed_late and self.sent_at is not None and self.clock.now - self.sent_at < self.settled_after
-            return {"status": 200, "body": json.dumps({"responseNodes": [], "inflightResponses": ["r"] if generating else []})}
+            return {"status": 200, "body": json.dumps({"responseNodes": [], "inflightResponses": []})}
         return {"status": 404, "body": ""}
 
 
@@ -187,11 +187,15 @@ def follow_up(clock, page, stop=None, keep=None):
     if keep is not None:
         keep["driver"] = provider
     provider._open = lambda thread_url=None: (page, "composer")
+    sockets = {}
+    provider._note_websocket(type("Socket", (), {"on": lambda self, name, call: sockets.__setitem__(name, call)})())
 
     def send(_page, _composer, prompt):
         page.sent.append(prompt)
         page.sent_at = clock.now
         page.url = THREAD
+        for frame in page.frames:
+            sockets["framereceived"](frame)
     provider._send = send
     provider.bind(None, stop)
     started = clock.now
@@ -318,10 +322,24 @@ def follow_up_cases():
     record("a turn said not received leaves that record, and a turn that was heard leaves none",
            "never received" in what and len(kept_for) == 1, "{} {}".format(what, kept_for))
 
-    what, text, sent, took = follow_up(clock, FollowPage(clock, listed_late=True, settled_after=150.0))
-    record("a slow answer whose question is listed only at its end is waited on while it is being generated",
+    chunk = json.dumps({"session_id": "s", "event": {"type": "response.chunk"}}, separators=(",", ":"))
+    what, text, sent, took = follow_up(clock, FollowPage(clock, listed_late=True, settled_after=150.0, frames=(chunk,)))
+    record("a slow answer, its chunks on the socket and both reads of the thread empty till its end, is waited on",
            what == "success" and text == THIS["message"] and sent == 1 and took >= 150,
            "{} {!r} sent {} after {:.0f}s".format(what, text, sent, took))
+
+    other = json.dumps({"session_id": "s", "event": {"type": "presence.ping"}}, separators=(",", ":"))
+    what, text, sent, took = follow_up(clock, FollowPage(clock, never_lands=True, frames=(other, chunk.encode())))
+    record("a socket's other traffic is no answer: a turn with only that is said not received",
+           what.startswith("refused as provider_error") and "never received" in what and took < 60,
+           "{} after {:.0f}s".format(what, took))
+
+    keep = {}
+    follow_up(clock, FollowPage(clock, frames=(chunk,)), keep=keep)
+    what, text, sent, took = follow_up(clock, FollowPage(clock, never_lands=True), keep=keep)
+    record("the chunks of the turn before do not make the next one heard",
+           what.startswith("refused as provider_error") and "never received" in what and took < 60,
+           "{} after {:.0f}s".format(what, took))
 
     what, text, sent, took = follow_up(clock, FollowPage(clock, never_lands=True, node_status=500))
     record("a turn not listed, with what is being generated unreadable, is not said unsent: waited to the ceiling",

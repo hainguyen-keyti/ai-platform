@@ -26,6 +26,8 @@ CHALLENGE_TEXT = ("security verification", "just a moment", "verify you are huma
 
 REPLY_TIMEOUT = 300
 THREAD_WAIT = 45
+# What a piece of an answer says of itself on the page's websocket, as read on the site 2026-11-02.
+ANSWER_CHUNK = '"type":"response.chunk"'
 # A thread that can be read and still lists no question of this turn this long after Enter never
 # received it. Measured 2026-10-28 (issue #13): the question is listed at the first read, 4-6s after
 # Enter; a turn the server never got was waited on to the ceiling, 321s.
@@ -126,7 +128,7 @@ class GrokProvider(BaseProvider):
         # What the account's memory switch read before the last turn: on, off or unknown.
         self.memory = None
         # What the page's websockets carried since the last send: a turn travels over one, not over REST.
-        self._frames = {"sent": 0, "received": 0, "bytes": 0, "last": None}
+        self._frames = {"sent": 0, "received": 0, "bytes": 0, "chunks": 0, "last": None}
 
     def start(self) -> None:
         if not saved(self.sessions_path, self.account):
@@ -149,11 +151,14 @@ class GrokProvider(BaseProvider):
         return self._page
 
     def _note_websocket(self, socket):
-        """Count a socket's frames for the record of a lost turn. Only what the site sent is kept, and little of it."""
+        """Count a socket's frames: an answer's chunks prove a turn was heard, and the rest is for the record of a lost
+        one. Only what the site sent is kept, and little of it."""
         def received(payload):
             self._frames["received"] += 1
             self._frames["bytes"] += len(payload)
             self._frames["last"] = repr(payload)[:200]
+            if isinstance(payload, str) and ANSWER_CHUNK in payload:
+                self._frames["chunks"] += 1
 
         def sent(_payload):
             self._frames["sent"] += 1
@@ -541,7 +546,7 @@ class GrokProvider(BaseProvider):
         cid = self.thread_id(page.url)
         baseline_ids = self._baseline_ids(page, cid)
         self.heard = False
-        self._frames = {"sent": 0, "received": 0, "bytes": 0, "last": None}
+        self._frames = {"sent": 0, "received": 0, "bytes": 0, "chunks": 0, "last": None}
         started = time.time()
         self._phase("waiting")
         try:
@@ -569,9 +574,10 @@ class GrokProvider(BaseProvider):
                 # Only a read that went through proves the question is missing; one that failed
                 # proves nothing and the wait goes on.
                 if status == 200 and not self.heard and time.time() - started > HEARD_WAIT:
-                    # Slow answers were said unheard at this wait (2026-11-02: a long essay, every video script), so
-                    # what the server is generating counts as heard. A read that failed proves nothing either way.
-                    self.heard = self._inflight(page, cid) != []
+                    # Measured 2026-11-02, job db7509cf, 32s into a video script: 939 frames on the socket, the answer's chunks
+                    # among them, its words on the page, and both reads of the thread empty. The socket is the witness of a slow
+                    # answer. A read of what is generating that failed proves nothing either way.
+                    self.heard = self._frames["chunks"] > 0 or self._inflight(page, cid) != []
                     if not self.heard:
                         self._keep_unheard(page, cid, started)
                         raise ProviderError(

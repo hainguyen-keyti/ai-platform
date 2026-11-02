@@ -170,10 +170,15 @@ sending. The response to `GET /rest/user-settings` carries no `cache-control`, `
 `etag` or `last-modified` header (only `vary: Origin, ...`), so nothing marks it as reusable from
 the browser's cache; the driver fetches it again before every turn.
 
+## A long answer (measured 2026-11-02, job db7509cf)
+
+32s into a video script on a new thread, `/responses` listed no turn and `inflightResponses` was empty, both 200,
+while the socket had brought 939 frames, `{"session_id":...,"event":{"type":"response.chunk",...` among them, and
+the page showed the answer's words. So the REST reads say nothing of a long answer while it streams; the socket does.
+
 ## Still unmeasured
 
-- whether `partial` and `inflightResponses` behave the same on a long streaming answer, a search
-  answer, or a refusal
+- whether `partial` and `inflightResponses` behave the same on a search answer or a refusal
 - what the site shows when the seven turns are spent, and which error kind that should map to
 - whether a second cohort (the plain textarea) ever appears for this account
 - the gRPC-web credits endpoint, which is where a usable quota number probably lives
