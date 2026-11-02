@@ -13,16 +13,23 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
+- **Video scripts fail on real Grok, fix on branch `grok-slow-heard` (worktree `D:\keyti\ai-platform-45`), gate green, NOT merged, NOT running:** every script
+  (5 of 5, 2 of them the agent's on 11-02) ended "grok never received this turn" at about 31s. Short turns and a 2165-character one passed; a 3000-word essay in plain English
+  failed the same way, so a slow answer is the suspect. The driver now counts `inflightResponses` as heard. NOT measured: whether that field is filled during a long answer
+  (the 09-25 measurements left it open), and that the question was received. To do on the owner's word: merge, push, restart the worker alone when idle, one real script per
+  target, then close #30. Docker Desktop did not come back by itself after Windows restarted on 11-01 20:06 UTC: the api was down until 11-02 13:12.
 - **#30, modes, presets and video scripts, on branch `scripts-presets`, not merged, not on the running stack:** the owner said not to stop the service
   while an agent uses it. `POST /v1/scripts`, `api/src/scripts.py` (`TARGETS`: flow, minimax_h3, wan), `BaseProvider.write_script` on all drivers, Grok by default;
   `mcp_server/aip_server.py` with `write_video_script`, `get_video_script`, `list_script_targets`, `list_presets`, `generate`, presets in `mcp_server/presets/`;
   `chatgpt_images.py` stays as the name configs run. Gate 81/81, ui_smoke 75/75, MCP test 61/61, stress 16/16, 11 of 11 mutants red. To do on the owner's word:
   merge, restart api and worker when idle, then one real script per target on Grok. Next after that: a tool that turns a script's scenes into pictures in one session.
+- **Plus met its real limit, measured 2026-11-01 19:55 UTC, job `5a897f8e`:** "You've hit the Plus plan limit for image generations requests ... resets in
+  14 hours", after 129 pictures in the 24h before it on `chatgpt`, only 33 of them in the last 3h. Windows of 24h from the first picture after the last ended fit the record: Free 5 and refused, twice, its "resets in" matching; Plus 75, 98 and 92
+  requests met nothing, then 121 (124 pictures) from 11-01 09:05 met the limit, one event, and its "14 hours" is about 50 minutes off that window's end. Held until 11-02 09:55 UTC, `chatgpt-a2` (Free) until 18:37 UTC: no ChatGPT picture before 09:55.
 - **The picture budget is 1000 in three hours on this machine, the owner's call, 2026-11-01 18:17 UTC:** set in
   `~/.config/systemd/user/aip-worker.service.d/budget.conf`, which wins over `.env`; `./scripts/run-worker.sh` by hand still takes `.env`'s
-  value. The 40 was this project's own pace, from a comment that "Plus allows roughly 50 images per rolling 3 hours" with no source; no real
-  limit has met Plus and nothing above 40 in 3h has been measured here. If one comes, `provider_limit` holds the account and fails what waits
-  on it, refunded. Watch the first runs past 40 for that and for `chatgpt-check-*`.
+  value. The 40 was this project's own pace, from a comment that "Plus allows roughly 50 images per rolling 3 hours" with no source. No account
+  has passed 40 in 3h yet, so the limit above did not come from raising it.
 - **A request behind a spent budget says so, until when (`budget_free_at` on `GET /v1/images/{id}`, and in the MCP's answers):** measured
   2026-11-01: 3 requests waited 16:06 to 17:44 on thread `dd4c4722`, pinned to `chatgpt` at 40/40, while `chatgpt-a2` had room, which
   `/v1/providers`' totals cannot show; the first was claimed at 17:44:26, a second after the budget freed. Merged, NOT live until the owner
