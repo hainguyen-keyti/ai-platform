@@ -13,11 +13,11 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
-- **Video scripts fail on real Grok, fix on branch `grok-slow-heard` (worktree `D:\keyti\ai-platform-45`), gate green, NOT merged, NOT running:** every script
-  (5 of 5, 2 of them the agent's on 11-02) ended "grok never received this turn" at about 31s. Short turns and a 2165-character one passed; a 3000-word essay in plain English
-  failed the same way, so a slow answer is the suspect. The driver now counts `inflightResponses` as heard. NOT measured: whether that field is filled during a long answer
-  (the 09-25 measurements left it open), and that the question was received. To do on the owner's word: merge, push, restart the worker alone when idle, one real script per
-  target, then close #30. Docker Desktop did not come back by itself after Windows restarted on 11-01 20:06 UTC: the api was down until 11-02 13:12.
+- **Video scripts work on real Grok, #30 closed, 2026-11-02, at `222a9d4`:** one real script each for flow, minimax_h3 and wan, all checked by the api, in 71s to 218s, kept in
+  `storage/mcp-check30/`. Every script had failed "grok never received this turn" at about 31s: Grok was writing it, the socket and the page showed so, while both REST reads
+  of the thread stayed empty (job `db7509cf`, its record `storage/diagnostics/grok-unheard-*`). An answer's `response.chunk` on the socket now counts as heard. A fix on `inflightResponses`
+  alone, made before that record existed, missed. Docker Desktop did not come back by itself after Windows restarted on 11-01 20:06 UTC: the api was down until 11-02 13:12.
+  Not done: the owner's "Start when you sign in" on Docker Desktop; a tool that turns a script's scenes into pictures in one session.
 - **#30, modes, presets and video scripts, on branch `scripts-presets`, not merged, not on the running stack:** the owner said not to stop the service
   while an agent uses it. `POST /v1/scripts`, `api/src/scripts.py` (`TARGETS`: flow, minimax_h3, wan), `BaseProvider.write_script` on all drivers, Grok by default;
   `mcp_server/aip_server.py` with `write_video_script`, `get_video_script`, `list_script_targets`, `list_presets`, `generate`, presets in `mcp_server/presets/`;
