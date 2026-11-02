@@ -13,11 +13,10 @@ open" at the end of the file; what the tests left in the accounts is in
 ## Current state (2026-10-30, at #27, pushed)
 
 **Newest first, what changed after the section below was written:**
-- **NEXT, not started, the owner has not yet said to fix it: the Library cleanup can fail picture requests.** Seen 2026-11-02: the `chatgpt` runner sent no ping from 18:32:19 UTC for at least
-  4m40s, inside one page of `_maybe_clean_library` (`worker/src/runner.py`; `clean_library_page` holds the account's lock through every file it trashes). A job on a conversation pinned to that account is
-  then swept as `no_worker` (`_sweep_unserved`, `api/src/jobs.py`). Suspect, by timing only, for `d4f93e0d` and `c7207f41` on 11-01 (both failed at 5m11s). The day's progress is in memory, so each
-  restart after 16:30 UTC runs it again. Proposed fix: keep the runner pinging during a page with the existing `_keep_alive`; a job then waits instead of failing. Fix in a worktree under a NEW path (Docker keeps a stale mount
-  for a path deleted and made again), full gate, then ASK before deploying.
+- **The Library cleanup no longer fails picture requests by silence, live 2026-11-02 19:39 UTC at `4703222`, the owner's word; NOT yet met on a long page.** The `chatgpt` runner had sent no ping from 18:32:19 UTC for at least
+  4m40s inside one page of `_maybe_clean_library`, so a job on a conversation pinned to that account could be swept as `no_worker` (`_sweep_unserved`). `d4f93e0d` and `c7207f41` (11-01) failed `no_worker` on the pinned account at 5m11s; their records do not name the cleanup, so it stays a suspect.
+  The runner now pings through a page with `_keep_alive`; a job waits for the page, as the page still holds the account's lock. `tests/test_library_cleanup.py` 22/22 (19/22 on the old code), 5 of 5 mutants red, full gate 81/81 and 75/75. The run after the restart trashed nothing (0 removed, 364 not ours, under a minute), so it proved nothing:
+  read `library_cleanup` and any `no_worker` after the next run that has files to trash, from 16:30 UTC. The day's progress is still in memory, so each restart after 16:30 UTC runs it again. `test_library_cleanup.py` is in no gate (follow-up). The worktree `D:\keyti\ai-platform-library-ping` and its branch are kept.
 - **The owner's standing rule, 2026-11-02, verbatim: "không được ảnh hưởng đến MCP đang chạy, khi nào cần deploy thì báo tôi".** An agent uses the MCP for real, pictures and now scripts. Each deploy is asked for; restart only the
   worker and only with an empty queue. Tests on real Grok share its queue with that agent: one turn at a time, as a failure lengthens its cooldown (a burst of tests delayed the agent's script by 18 minutes).
 - **Also open:** `Locator.inner_text` timed out on ChatGPT's prompt box (`bf7f3e97`, twice ever); `set_input_files` timeouts on `#upload-files`; `wsl.exe` from Windows sometimes answers `Wsl/Service/WSAETIMEDOUT` while the machine runs other projects' heavy
