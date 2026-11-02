@@ -125,6 +125,8 @@ class GrokProvider(BaseProvider):
         self.last_cancelled_thread = None
         # What the account's memory switch read before the last turn: on, off or unknown.
         self.memory = None
+        # What the page's websockets carried since the last send: a turn travels over one, not over REST.
+        self._frames = {"sent": 0, "received": 0, "bytes": 0, "last": None}
 
     def start(self) -> None:
         if not saved(self.sessions_path, self.account):
@@ -143,7 +145,48 @@ class GrokProvider(BaseProvider):
             return self._page
         self._context = open_session(self.sessions_path, self.account)
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
+        self._page.on("websocket", self._note_websocket)
         return self._page
+
+    def _note_websocket(self, socket):
+        """Count a socket's frames for the record of a lost turn. Only what the site sent is kept, and little of it."""
+        def received(payload):
+            self._frames["received"] += 1
+            self._frames["bytes"] += len(payload)
+            self._frames["last"] = repr(payload)[:200]
+
+        def sent(_payload):
+            self._frames["sent"] += 1
+        socket.on("framereceived", received)
+        socket.on("framesent", sent)
+
+    def _keep_unheard(self, page, cid, started):
+        """What can be seen of a turn the thread does not list (2026-11-02: only the words were kept, and a fix made
+        on them missed): a picture of the page and a record beside it. The turn has already failed; this cannot fail it worse."""
+        folder = self.media_path.parent / "diagnostics"
+        stem = "grok-unheard-{}-{}-{}".format(self.account, int(time.time()), uuid.uuid4().hex[:6])
+        record = {"account": self.account, "at": round(time.time(), 1), "seconds_since_send": round(time.time() - started, 1),
+                  "thread": cid, "frames": dict(self._frames)}
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            record["url_has_rid"] = "rid=" in page.url
+            turns_status, turns_raw = self._api(page, SERVER_TURNS.format(cid))
+            record["turns_status"] = turns_status
+            record["turns"] = [{"sender": row.get("sender"), "partial": row.get("partial"), "message_chars": len(row.get("message") or ""),
+                                "stream_errors": self._stream_errors(row)} for row in (json.loads(turns_raw).get("responses") or [])]
+            nodes_status, nodes_raw = self._api(page, SERVER_NODES.format(cid))
+            record["nodes_status"] = nodes_status
+            record["nodes"] = {key: value for key, value in json.loads(nodes_raw).items()}
+            record["title"] = page.title()
+            record["composer_chars"] = len(page.locator(COMPOSER[1]).first.inner_text(timeout=3000) or "")
+            record["page_end"] = (page.locator("body").inner_text(timeout=3000) or "")[-800:]
+        except Exception as exc:
+            record["unread"] = type(exc).__name__
+        try:
+            (folder / (stem + ".json")).write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
+            page.screenshot(path=str(folder / (stem + ".png")))
+        except Exception:
+            pass
 
     @staticmethod
     def thread_id(url: Optional[str]) -> Optional[str]:
@@ -498,6 +541,7 @@ class GrokProvider(BaseProvider):
         cid = self.thread_id(page.url)
         baseline_ids = self._baseline_ids(page, cid)
         self.heard = False
+        self._frames = {"sent": 0, "received": 0, "bytes": 0, "last": None}
         started = time.time()
         self._phase("waiting")
         try:
@@ -529,6 +573,7 @@ class GrokProvider(BaseProvider):
                     # what the server is generating counts as heard. A read that failed proves nothing either way.
                     self.heard = self._inflight(page, cid) != []
                     if not self.heard:
+                        self._keep_unheard(page, cid, started)
                         raise ProviderError(
                             "grok never received this turn: its thread lists no question of it {:.0f}s "
                             "after the send, and nothing is being generated".format(time.time() - started))

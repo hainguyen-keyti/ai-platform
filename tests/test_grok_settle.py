@@ -182,7 +182,8 @@ def follow_up(clock, page, stop=None, keep=None):
     from src.providers.base import JobCancelled, ProviderError
     grok_module.time = clock
     scratch = Path(tempfile.mkdtemp(prefix="grok-settle-"))
-    provider = (keep or {}).get("driver") or GrokProvider(scratch, scratch)
+    # The media folder's parent is where a lost turn's record goes, so it goes with the rest.
+    provider = (keep or {}).get("driver") or GrokProvider(scratch / "media", scratch)
     if keep is not None:
         keep["driver"] = provider
     provider._open = lambda thread_url=None: (page, "composer")
@@ -290,6 +291,32 @@ def follow_up_cases():
     record("a turn whose question is listed and whose answer takes minutes is still waited on",
            what == "success" and text == THIS["message"] and took >= 150,
            "{} {!r} after {:.0f}s".format(what, text, took))
+
+    folder = Path(tempfile.mkdtemp(prefix="grok-record-"))
+    recorder = GrokProvider(folder / "media", folder)
+    sockets = {}
+    recorder._note_websocket(type("Socket", (), {"on": lambda self, name, call: sockets.__setitem__(name, call)})())
+    sockets["framesent"]("what went out")
+    sockets["framereceived"](b"an answer")
+    lost = FollowPage(clock, never_lands=True)
+    lost.sent_at = clock.now - 32
+    recorder._keep_unheard(lost, THREAD.split("/c/")[-1], clock.now - 32)
+    kept = [json.loads(path.read_text(encoding="utf-8")) for path in (folder / "diagnostics").glob("grok-unheard-*.json")]
+    shutil.rmtree(folder, ignore_errors=True)
+    record("a lost turn's record holds the thread, the server's word and the socket's frames, and nothing the socket sent",
+           len(kept) == 1 and kept[0]["turns_status"] == 200 and len(kept[0]["turns"]) == 2 and kept[0]["nodes"]["inflightResponses"] == []
+           and kept[0]["frames"]["sent"] == 1 and kept[0]["frames"]["received"] == 1 and kept[0]["frames"]["bytes"] == 9
+           and "what went out" not in json.dumps(kept[0]), kept)
+
+    keep_record, kept_for = GrokProvider._keep_unheard, []
+    GrokProvider._keep_unheard = lambda self, page, cid, started: kept_for.append(cid)
+    try:
+        what, text, sent, took = follow_up(clock, FollowPage(clock, never_lands=True))
+        follow_up(clock, FollowPage(clock))
+    finally:
+        GrokProvider._keep_unheard = keep_record
+    record("a turn said not received leaves that record, and a turn that was heard leaves none",
+           "never received" in what and len(kept_for) == 1, "{} {}".format(what, kept_for))
 
     what, text, sent, took = follow_up(clock, FollowPage(clock, listed_late=True, settled_after=150.0))
     record("a slow answer whose question is listed only at its end is waited on while it is being generated",
