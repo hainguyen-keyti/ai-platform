@@ -12,7 +12,7 @@ Each probe prints what it saw; nothing here asserts a wish. Costs:
 Every turn leaves a thread in the owner's account; they are deleted only by name, with the owner's
 yes. Opens the provider's own profile, storage/sessions/gemini/, as the worker does: take gemini
 off the host worker first, the profile opens in one browser at a time. Never changes an account
-setting. Measured first on 2026-09-25 with a throwaway copy of this file; see docs/research.
+setting. Measured first on 2026-09-25 with a throwaway copy of this file.
 """
 
 import base64

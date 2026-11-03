@@ -3,7 +3,7 @@
 
     ~/cloakbrowser-env/bin/python tests/test_chatgpt_composer.py
 
-Measured 2026-09-27 (docs/research/2026-09-27-chatgpt-composer.md): the page first
+Measured 2026-09-27: the page first
 paints textarea#pending-home-input and mounts the real composer, a ProseMirror
 div with no id, about ten seconds later; #prompt-textarea is gone; a failed first
 turn leaves /c/local-chatgpt:<uuid> in the address. The driver used to call a

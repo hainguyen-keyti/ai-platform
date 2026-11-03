@@ -126,6 +126,18 @@ def playable(found):
                 and found.get("named"))
 
 
+# A fixed wait read a page still loading on a busy machine (2026-11-03: disk at 500%, a video and pictures
+# not yet shown): wait for the thing itself, and let the check that follows say if it never came.
+VIDEO_SHOWN = "() => [...document.querySelectorAll('[data-testid=media-video]')].some((n) => n.getClientRects().length > 0)"
+
+
+def wait_until(page, script, seconds=30):
+    try:
+        page.wait_for_function(script, timeout=seconds * 1000)
+    except Exception:
+        pass
+
+
 def shot(page, name):
     STEP[0] = name
     SHOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -652,7 +664,7 @@ def main():
             page.fill(COMPOSER, "make a short video of a cat asleep in the sun")
             page.click("button:has-text('Send')")
             page.wait_for_selector("text=mock video for", timeout=60000)
-            page.wait_for_timeout(1500)
+            wait_until(page, VIDEO_SHOWN)
             in_chat = page.evaluate(PLAYABLE)
             shot(page, "07h-video")
             record("a video plays in the chat, and can be saved", playable(in_chat), repr(in_chat))
@@ -666,6 +678,8 @@ def main():
         faint_texts(page, "the gallery with items", faint, texts_on)
         shot(page, "08-gallery")
         heading = page.locator("text=/Gallery \\(\\d+\\)/").first.inner_text()
+        wait_until(page, "() => Array.from(document.images).some(i => i.naturalWidth > 0 && i.getClientRects().length > 0)")
+        wait_until(page, VIDEO_SHOWN)
         gallery_images = page.evaluate(
             "() => Array.from(document.images).filter(i => i.naturalWidth > 0 && i.getClientRects().length > 0).length"
         )
@@ -722,13 +736,13 @@ def main():
 
         try:
             page.fill("[data-testid=conversation-search]", "Renamed by")
-            page.wait_for_timeout(700)
+            wait_until(page, "() => document.querySelectorAll('[data-testid=conversation-item]').length === 1")
             hits = page.locator("[data-testid=conversation-item]").count()
             page.fill("[data-testid=conversation-search]", "zzz-nothing-here")
-            page.wait_for_timeout(700)
+            wait_until(page, "() => document.querySelectorAll('[data-testid=conversation-item]').length === 0")
             misses = page.locator("[data-testid=conversation-item]").count()
             page.fill("[data-testid=conversation-search]", "")
-            page.wait_for_timeout(700)
+            wait_until(page, "() => document.querySelectorAll('[data-testid=conversation-item]').length > 0")
             record("search filters the sidebar", hits == 1 and misses == 0,
                    "{} hit(s) for the title, {} for nonsense".format(hits, misses))
         except Exception as exc:

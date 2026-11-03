@@ -14,7 +14,7 @@ from src.providers.base import (MEMORY_ON_ERROR, BaseProvider, FeatureType, Gene
 from src.providers.session import NO_SESSION, open_session, profile_of, saved
 
 HOME = "https://chatgpt.com/"
-# Measured 2026-09-27 (docs/research/2026-09-27-chatgpt-composer.md): the page
+# Measured 2026-09-27: the page
 # changed overnight. Each selector lists the new page first and keeps the old one
 # in case both are still served. The page first paints textarea#pending-home-input
 # and mounts the real composer about ten seconds later: that placeholder is not ready.

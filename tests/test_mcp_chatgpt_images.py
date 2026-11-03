@@ -747,9 +747,9 @@ async def run(fake, work):
 def module_cases():
     sys.path.insert(0, str(SERVER.parent))
     import chatgpt_images  # noqa: E402
-    cases = {r"D:\keyti\ai-platform\ref.png": "/mnt/d/keyti/ai-platform/ref.png",
+    cases = {r"D:\work\ai-platform\ref.png": "/mnt/d/work/ai-platform/ref.png",
              "C:/Users/me/pic.png": "/mnt/c/Users/me/pic.png",
-             "/home/keyti/pic.png": "/home/keyti/pic.png"}
+             "/home/me/pic.png": "/home/me/pic.png"}
     got = {path: chatgpt_images.local_path(path, wsl=True) for path in cases}
     record("under WSL a Windows path the agent gives is read where WSL sees it",
            got == cases, repr(got))
