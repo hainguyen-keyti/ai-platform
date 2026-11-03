@@ -648,11 +648,20 @@ class Presets(TypedDict):
 def script_markdown(script: dict) -> str:
     """The script for a person to read and paste from, scene by scene."""
     lines = ["# {}".format(script["title"]), "", "For {}, {}s in all.".format(script["target"], script["total_seconds"]), ""]
+    direction = script.get("direction") or {}
+    for label, field in (("Concept", "concept"), ("Hook", "hook"), ("Visual style", "visual_style"), ("Palette", "palette")):
+        if direction.get(field):
+            lines.append("- **{}**: {}".format(label, direction[field]))
+    if direction:
+        lines.append("")
     for character in script.get("characters") or []:
         lines.append("- **{}**: {}".format(character["name"], character["description"]))
     for scene in script["scenes"]:
         lines += ["", "## Scene {} ({}s)".format(scene["number"], scene["duration_seconds"]), "", scene["description"], "",
                   "Camera: {}".format(scene["camera"])]
+        for label, field in (("Color", "color"), ("Lighting", "lighting"), ("Sound", "sound")):
+            if scene.get(field):
+                lines += ["", "{}: {}".format(label, scene[field])]
         if scene.get("dialogue"):
             lines += ["", "Dialogue: {}".format(scene["dialogue"])]
         lines += ["", "First frame:", "", "```text", scene["image_prompt"], "```", "", "Video prompt:", "", "```text", scene["video_prompt"], "```"]
@@ -721,8 +730,9 @@ async def write_video_script(brief: str, target: str, ctx: Context, scenes: Opti
                              session: Optional[str] = None, save_dir: Optional[str] = None,
                              wait_seconds: int = SCRIPT_WAIT_SECONDS) -> Annotated[CallToolResult, Script]:
     """Write a shot-by-shot video script for an AI video model. target is flow (Google Flow, Veo: 8s clips),
-    minimax_h3 (5 to 15s) or wan (Wan 2.2: under 5s, silent); list_script_targets says what each takes. Each
-    scene comes with its duration, camera, dialogue, a first-frame image_prompt and a video_prompt written the way
+    minimax_h3 (5 to 15s) or wan (Wan 2.2: under 5s, silent); list_script_targets says what each takes. The script
+    comes with its direction (concept, hook, visual style, palette), and each scene with its duration, camera, color,
+    lighting, sound (none on a silent target), dialogue, a first-frame image_prompt and a video_prompt written the way
     that model reads them; the script is checked against the target, and one that does not fit fails and gives
     its credit back. Saved as Markdown to read and paste from, and JSON. Written by Grok unless provider says
     otherwise. Each request costs one credit. A script still running is collected with get_video_script."""

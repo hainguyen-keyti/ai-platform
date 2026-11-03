@@ -1,0 +1,50 @@
+id = "content-explainer-flow"
+mode = "script"
+target = "flow"
+provider = "grok"
+scenes = 5
+total_seconds = 40
+title = "Explainer for Google Flow"
+description = "A 40-second explainer in 5 clips, each picture carrying one idea. Written by Grok with its concept, camera, color, lighting, sound and dialogue."
+template = """
+A short explainer for social video.
+
+Topic: {topic}
+Points to get across: {points}
+Audience: {audience}
+Presenter: {presenter}
+Tone: {tone}
+Format: {format}. Frame every image_prompt and video_prompt for this format.
+
+One scene for each beat:
+1. Hook: a question or a wrong belief this audience really holds, shown as an image.
+2. Why it matters: what it changes for them, in one concrete situation.
+3. The core idea: one physical metaphor that makes it obvious.
+4. The next point: the same metaphor pushed one step further.
+5. Takeaway: one thing to remember or do, said in one line.
+
+Build the concept on that one metaphor, so every picture explains by itself with the sound off. Do not use charts, slides, floating icons or on-screen text, which video
+models draw badly. Say one idea per clip, in spoken lines of under 16 words, in plain words. Do not invent statistics, sources or facts that are not given above;
+if a point is uncertain, say it as such.
+"""
+
+[inputs.topic]
+description = "the topic"
+
+[inputs.points]
+description = "the true points to get across, two or three"
+
+[inputs.audience]
+description = "who it is for and what they already know"
+
+[inputs.presenter]
+description = "who speaks, if anyone is seen"
+default = "a voice-over, or one presenter if the metaphor needs a person"
+
+[inputs.tone]
+description = "the tone"
+default = "curious and clear"
+
+[inputs.format]
+description = "the frame"
+default = "vertical 9:16"

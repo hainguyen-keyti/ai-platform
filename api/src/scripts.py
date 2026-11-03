@@ -39,7 +39,10 @@ TARGETS = {
     },
 }
 
-SCENE_TEXT = ("description", "camera", "image_prompt", "video_prompt")
+SCENE_TEXT = ("description", "camera", "color", "lighting", "image_prompt", "video_prompt")
+DIRECTION_TEXT = ("concept", "hook", "visual_style", "palette")
+# Room left under a target's max_words: real scripts ran up to 170 of Flow's 180 (storage/mcp-check30) before color and lighting joined them.
+PROMPT_WORDS_SPARE = 20
 
 
 class ScriptError(ValueError):
@@ -58,18 +61,27 @@ def build_instruction(brief: str, target: str, scenes=None, total_seconds=None, 
     count = "exactly {} scenes".format(scenes) if scenes else "as many scenes as the story needs"
     length = " The whole film runs about {} seconds.".format(total_seconds) if total_seconds else ""
     negative = ', "negative_prompt": "..."' if rules["negative_prompt"] else ""
+    audible = rules["dialogue_words"] > 0
     return (
         "You are a film director writing a shot-by-shot script for the AI video model {label}. target={target} scenes={scenes} "
         "seconds={low}-{high}\n\nThe brief:\n{brief}\n\nWrite {count}.{length} Each scene lasts {low} to {high} seconds.\n\n"
-        "Rules for {label}: {rules}\n\nKeep every character's look the same across scenes. Every image_prompt describes the scene's "
-        "first frame as one still picture, with each character's full appearance. Write title, description, camera, image_prompt, video_prompt "
-        "and negative_prompt in English. Write dialogue in the language {language}, and leave it an empty string when nobody speaks.\n\n"
+        "Rules for {label}: {rules}\n\nFirst settle the direction: concept, one fresh idea the film is built on; hook, what stops a viewer in "
+        "the first two seconds; visual_style, the look, lens and movement; palette, three to five named colors. Then every scene gives its "
+        "shot size, angle and movement in camera, how the palette reads in this shot in color, the source, direction and quality of the light in "
+        "lighting{sound_rule}. The video model reads only image_prompt and video_prompt, so each must itself state the camera, color and lighting "
+        "of its scene. Keep each video_prompt to at most {most} words.\n\n"
+        "Keep every character's look the same across scenes. Every image_prompt describes the scene's "
+        "first frame as one still picture, with each character's full appearance. Write title, direction, description, camera, color, lighting, sound, "
+        "image_prompt, video_prompt and negative_prompt in English. Write dialogue in the language {language}, and leave it an empty string when nobody speaks.\n\n"
         "Answer with one JSON object and nothing else, no markdown, in exactly this shape:\n"
-        '{{"title": "...", "characters": [{{"name": "...", "description": "full look, the same words every time"}}], '
-        '"scenes": [{{"number": 1, "duration_seconds": {low}, "description": "...", "camera": "...", "dialogue": "", '
+        '{{"title": "...", "direction": {{"concept": "...", "hook": "...", "visual_style": "...", "palette": "..."}}, '
+        '"characters": [{{"name": "...", "description": "full look, the same words every time"}}], '
+        '"scenes": [{{"number": 1, "duration_seconds": {low}, "description": "...", "camera": "...", "color": "...", "lighting": "...", {sound_shape}"dialogue": "", '
         '"image_prompt": "...", "video_prompt": "..."{negative}}}]}}'
     ).format(label=rules["label"], target=target, scenes=scenes or "any", low=rules["min_seconds"], high=rules["max_seconds"], brief=brief,
-             count=count, length=length, rules=rules["rules"], language=language, negative=negative)
+             count=count, length=length, rules=rules["rules"], language=language, negative=negative, most=rules["max_words"] - PROMPT_WORDS_SPARE,
+             sound_rule=", and the music, effects and ambience in sound; video_prompt states the sound too" if audible else "",
+             sound_shape='"sound": "...", ' if audible else "")
 
 
 def _json_object(text: str) -> dict:
@@ -101,7 +113,12 @@ def checked_script(text: str, target: str, scenes=None) -> dict:
     if scenes and len(written) != scenes:
         raise ScriptError("{} scenes were asked for and {} came back".format(scenes, len(written)))
     characters = found.get("characters") if isinstance(found.get("characters"), list) else []
-    script = {"title": _text(found.get("title"), "the title"), "target": target, "characters": [
+    title = _text(found.get("title"), "the title")
+    direction = found.get("direction")
+    if not isinstance(direction, dict):
+        raise ScriptError("the script has no direction")
+    script = {"title": title, "target": target,
+              "direction": {field: _text(direction.get(field), "the direction's {}".format(field)) for field in DIRECTION_TEXT}, "characters": [
         {"name": _text(c.get("name"), "a character's name"), "description": _text(c.get("description"), "a character's description")}
         for c in characters if isinstance(c, dict)], "scenes": [], "total_seconds": 0}
     for number, scene in enumerate(written, 1):
@@ -116,6 +133,8 @@ def checked_script(text: str, target: str, scenes=None) -> dict:
         kept = {"number": number, "duration_seconds": seconds}
         for field in SCENE_TEXT:
             kept[field] = _text(scene.get(field), "{}'s {}".format(where, field))
+        if rules["dialogue_words"] > 0:
+            kept["sound"] = _text(scene.get("sound"), "{}'s sound".format(where))
         dialogue = scene.get("dialogue") or ""
         if not isinstance(dialogue, str):
             raise ScriptError("{}'s dialogue is not text".format(where))

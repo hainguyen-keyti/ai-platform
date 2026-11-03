@@ -212,8 +212,8 @@ picture made on the web and a chat turn answer `404`, as they do on a read.
 | `language` | no | The language of the dialogue, `vi` by default. The prompts are in English |
 | `session` | no | A name, as for pictures: the same name goes into the same provider thread |
 
-It answers `202` with an `id`. `GET /v1/scripts/{id}` gives `status` and, once `done`, `script`: `title`, `target`, `total_seconds`, `characters`, and `scenes`, each with
-`number`, `duration_seconds`, `description`, `camera`, `dialogue`, `image_prompt`, `video_prompt`, and `negative_prompt` for `wan`. A reply that is not valid or does not fit the target ends `failed`
+It answers `202` with an `id`. `GET /v1/scripts/{id}` gives `status` and, once `done`, `script`: `title`, `target`, `total_seconds`, `direction` (`concept`, `hook`, `visual_style`, `palette`), `characters`, and `scenes`, each with
+`number`, `duration_seconds`, `description`, `camera`, `color`, `lighting`, `sound` (not for `wan`, which is silent), `dialogue`, `image_prompt`, `video_prompt`, and `negative_prompt` for `wan`. A reply that is not valid or does not fit the target ends `failed`
 with the reason in `error`, and its credit comes back. `POST /v1/scripts/{id}/cancel` cancels one.
 
 ## Errors

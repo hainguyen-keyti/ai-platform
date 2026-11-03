@@ -131,9 +131,16 @@ class FakeV1:
                         return self.answer(200, dict(state, status="running"))
                     if held["reads"] < 2:
                         return self.answer(200, dict(state, status="running"))
+                    if "oldscript" in held["brief"]:
+                        return self.answer(200, dict(state, status="done", script={
+                            "title": "Old", "target": held["target"], "total_seconds": 8, "characters": [],
+                            "scenes": [{"number": 1, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "dialogue": "",
+                                        "image_prompt": "a still", "video_prompt": "An old walk"}]}))
                     return self.answer(200, dict(state, status="done", script={
                         "title": "Về nhà", "target": held["target"], "total_seconds": 8, "characters": [{"name": "Lan", "description": "a red coat"}],
-                        "scenes": [{"number": 1, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "dialogue": "Xin chào",
+                        "direction": {"concept": "a coat that remembers", "hook": "she walks out of a painting", "visual_style": "35mm handheld", "palette": "teal and amber"},
+                        "scenes": [{"number": 1, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "color": "teal shadows", "lighting": "low golden sun",
+                                    "sound": "soft wind", "dialogue": "Xin chào",
                                     "image_prompt": "a still of Lan", "video_prompt": "Lan walks home", "negative_prompt": "blurry"}]}))
                 if self.path == "/v1/account":
                     if fake.account_broken:
@@ -389,6 +396,11 @@ async def run(fake, work):
                and data["script"]["title"] == "Về nhà" and json.loads(Path(data["json_path"]).read_text(encoding="utf-8"))["scenes"][0]["video_prompt"] == "Lan walks home"
                and "Lan walks home" in text and "a still of Lan" in text and "Xin chào" in text and "blurry" in text and data.get("session") == "lan",
                "{} {} {!r}".format(result.is_error, asked, said(result)[:90]))
+        record("the saved Markdown shows the direction, and each scene's color, lighting and sound",
+               all(word in text for word in ("a coat that remembers", "she walks out of a painting", "35mm handheld", "teal and amber", "teal shadows", "low golden sun", "soft wind")), text[:200])
+        result = await client.call_tool("write_video_script", {"brief": "oldscript", "target": "flow", "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+        old = Path((result.structured_content or {}).get("markdown_path") or "/nowhere")
+        record("a script from before the direction still reads as Markdown", not result.is_error and old.exists() and "An old walk" in old.read_text(encoding="utf-8"), said(result)[:90])
         result = await client.call_tool("write_video_script", {"brief": "x", "target": "nosuch"}, read_timeout_seconds=60)
         record("a target the platform does not know is a tool error saying which there are", result.is_error and "flow" in said(result), said(result)[:90])
         result = await client.call_tool("write_video_script", {"brief": "badscript", "target": "flow"}, read_timeout_seconds=60)
@@ -416,6 +428,22 @@ async def run(fake, work):
         asked = fake.script_posts[-1]
         record("a script preset names its video model and its writer", not result.is_error and asked["target"] == "wan" and asked["provider"] == "grok" and asked["brief"] == "Lan goes home",
                "{} {}".format(asked, said(result)[:80]))
+        content = {"content-ad-flow": ({"product": "PRODUCT-X", "audience": "AUDIENCE-X", "benefit": "BENEFIT-X"}, 4),
+                   "content-story-flow": ({"idea": "IDEA-X", "characters": "CHARACTER-X"}, 6),
+                   "content-review-flow": ({"product": "PRODUCT-X", "audience": "AUDIENCE-X", "experience": "EXPERIENCE-X"}, 4),
+                   "content-explainer-flow": ({"topic": "TOPIC-X", "points": "POINTS-X", "audience": "AUDIENCE-X"}, 5)}
+        for preset, (given, count) in content.items():
+            result = await client.call_tool("generate", {"preset": preset, "inputs": given, "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            asked = fake.script_posts[-1]
+            record("{} goes to Grok for Flow, {} scenes, with what it was given and its defaults".format(preset, count),
+                   not result.is_error and asked["provider"] == "grok" and asked["target"] == "flow" and asked["scenes"] == count and asked["language"] == "vi"
+                   and all(value in asked["brief"] for value in given.values()) and "vertical 9:16" in asked["brief"] and "{" not in asked["brief"], "{} {}".format(asked, said(result)[:80]))
+            before = len(fake.script_posts)
+            result = await client.call_tool("generate", {"preset": preset, "inputs": dict(list(given.items())[1:]), "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            record("{} refuses a brief with its first input left out".format(preset), result.is_error and "needs" in said(result) and len(fake.script_posts) == before, said(result)[:90])
+        for preset in ("content-ad-flow", "content-review-flow"):
+            result = await client.call_tool("generate", {"preset": preset, "inputs": content[preset][0], "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            record("{} forbids inventing claims".format(preset), "Do not invent" in fake.script_posts[-1]["brief"], fake.script_posts[-1]["brief"][-200:])
         for name, arguments, word in (("a missing input", {"preset": "character-scene", "inputs": {"character": "Lan"}}, "needs"),
                                       ("an input it does not take", {"preset": "short-film-wan", "inputs": {"story": "x", "mood": "y"}}, "no input mood"),
                                       ("a preset that is not there", {"preset": "nosuch", "inputs": {}}, "no preset"),
