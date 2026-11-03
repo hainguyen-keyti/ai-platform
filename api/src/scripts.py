@@ -113,18 +113,22 @@ def _production_instruction(brief, scenes, total_seconds, language) -> str:
         "Settle the concept first: the one fresh idea, who it is for, what they should take away, the tone, the visual style, three to five named colors, "
         "and a synopsis of the whole film. Then the screenplay and the shot list: every scene breaks into shots, and each shot lasts as long as it needs, "
         "from under a second to much longer, so the rhythm comes from the story and the cut, never from one repeated length. For each shot give the "
-        "shot size, angle, lens, camera movement, composition, what happens, the light, the color, the sound, and how it cuts to the next one. Dialogue and voice-over "
+        "shot size, angle, lens, camera movement, composition, what happens, the light, the color, the sound, and how it cuts to the next one. ends_at_seconds is "
+        "the running clock, the film's time when the shot ends: add each shot's duration to it as you write. {clock_rule}Dialogue and voice-over "
         "must fit inside their shot when said aloud; leave them, or on_screen_text, an empty string when there is none. Then the post-production: pacing, transitions, "
         "color grade, music with its moments, sound mix, subtitles and format. Do not name any camera brand, AI model, generator or editing software: "
         "how the film gets made is for whoever makes it. Keep every character's look and every setting the same throughout. Write every text in the language {language}.\n\n"
         "Answer with one JSON object and nothing else, no markdown, in exactly this shape:\n"
         '{{"title": "...", "concept": {{"idea": "...", "audience": "...", "message": "...", "tone": "...", "visual_style": "...", "palette": "...", "synopsis": "..."}}, '
         '"characters": [{{"name": "...", "description": "full look and costume"}}], "settings": [{{"name": "...", "description": "place, time, props"}}], '
-        '"scenes": [{{"number": 1, "title": "...", "location": "...", "purpose": "...", "description": "...", "shots": [{{"number": 1, "duration_seconds": 3, "shot_size": "...", '
+        # Post comes before the deep scenes, as Grok closed one brace too many coming back out of them (job fbc7d9f9).
+        '"post": {{"pacing": "...", "transitions": "...", "color_grade": "...", "music": "...", "sound_mix": "...", "subtitles": "...", "format": "..."}}, '
+        '"scenes": [{{"number": 1, "title": "...", "location": "...", "purpose": "...", "description": "...", "shots": [{{"number": 1, "duration_seconds": 3, "ends_at_seconds": 3, "shot_size": "...", '
         '"angle": "...", "lens": "...", "movement": "...", "composition": "...", "action": "...", "lighting": "...", "color": "...", "sound": "...", "transition": "...", '
-        '"dialogue": "", "voice_over": "", "on_screen_text": ""}}]}}], '
-        '"post": {{"pacing": "...", "transitions": "...", "color_grade": "...", "music": "...", "sound_mix": "...", "subtitles": "...", "format": "..."}}}}'
-    ).format(scenes=scenes or "any", total=total_seconds or "any", brief=brief, count=count, length=length, language=language)
+        '"dialogue": "", "voice_over": "", "on_screen_text": ""}}]}}]}}'
+    ).format(scenes=scenes or "any", total=total_seconds or "any", brief=brief, count=count, length=length, language=language,
+             clock_rule="The last shot's clock must reach about {} seconds: if it falls short, add shots rather than stretching them. ".format(total_seconds) if total_seconds
+             else "If the film feels short, add shots rather than stretching them. ")
 
 
 def _named_list(found, field, where, required=False) -> list:
