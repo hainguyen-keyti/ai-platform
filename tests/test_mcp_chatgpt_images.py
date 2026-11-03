@@ -441,6 +441,13 @@ async def run(fake, work):
             before = len(fake.script_posts)
             result = await client.call_tool("generate", {"preset": preset, "inputs": dict(list(given.items())[1:]), "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
             record("{} refuses a brief with its first input left out".format(preset), result.is_error and "needs" in said(result) and len(fake.script_posts) == before, said(result)[:90])
+            result = await client.call_tool("generate", {"preset": preset, "inputs": given, "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            brief = fake.script_posts[-1]["brief"]
+            record("{} forbids danger on screen, gives a child nothing unfit, and asks for the palette inside the prompts".format(preset),
+                   "No one does anything dangerous" in brief and "No child" in brief and "Name the palette's colors" in brief and "aloud" in brief, brief[-200:])
+            wanted = {"content-ad-flow": "where it is safe to use", "content-story-flow": "Throw away the first ending",
+                      "content-review-flow": "different shot size", "content-explainer-flow": "snowball"}[preset]
+            record("{} carries its own rule against what its first real script got wrong".format(preset), wanted in brief, wanted)
         for preset in ("content-ad-flow", "content-review-flow"):
             result = await client.call_tool("generate", {"preset": preset, "inputs": content[preset][0], "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
             record("{} forbids inventing claims".format(preset), "Do not invent" in fake.script_posts[-1]["brief"], fake.script_posts[-1]["brief"][-200:])

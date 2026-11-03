@@ -24,8 +24,12 @@ One scene for each beat:
 4. Payoff: the changed moment, then the call to action spoken as a person would say it.
 
 Build the concept on one unexpected visual idea that only this product could carry, and let it return in the last scene. Avoid stock ad images: slow-motion
-smiles, floating products, a white studio with no story. Change shot size or angle at every cut. Write spoken lines of under 16 words as people really talk,
-never as a translated slogan. Do not invent prices, statistics, results, awards or testimonials that are not given above.
+smiles, floating products, a white studio with no story. Change shot size or angle at every cut. The product is used only where it is safe to use it, whatever
+the audience's daily life: someone who rides uses it stopped, off the bike.
+Name the palette's colors inside every image_prompt and video_prompt, as the video model sees nothing else. No one does anything dangerous on screen: no drinking,
+eating or using a phone while riding or driving, always a helmet on a motorbike and a seatbelt in a car. No child drinks alcohol or coffee or is put at risk.
+Write spoken lines of under 16 words to be said aloud, as this audience really talks, never as a written or translated slogan.
+Do not invent prices, statistics, results, awards or testimonials that are not given above.
 """
 
 [inputs.product]
