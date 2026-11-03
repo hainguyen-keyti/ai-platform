@@ -23,8 +23,12 @@ One scene for each beat:
 4. The next point: the same metaphor pushed one step further.
 5. Takeaway: one thing to remember or do, said in one line.
 
-Build the concept on that one metaphor, so every picture explains by itself with the sound off. Do not use charts, slides, floating icons or on-screen text, which video
-models draw badly. Say one idea per clip, in spoken lines of under 16 words, in plain words. Do not invent statistics, sources or facts that are not given above;
+Build the concept on that one metaphor, so every picture explains by itself with the sound off. Take it from the place and daily life of this audience, something they
+could touch this week, with people dressed for that place. Not a stock metaphor: no snowball, iceberg, dominoes, piggy bank or plant growing from coins.
+Do not use charts, slides, floating icons or on-screen text, which video models draw badly.
+Name the palette's colors inside every image_prompt and video_prompt, as the video model sees nothing else. No one does anything dangerous on screen: no drinking,
+eating or using a phone while riding or driving, always a helmet on a motorbike and a seatbelt in a car. No child drinks alcohol or coffee or is put at risk.
+Say one idea per clip, in spoken lines of under 16 words, in plain words to be said aloud, never written or translated phrasing. Do not invent statistics, sources or facts that are not given above;
 if a point is uncertain, say it as such.
 """
 

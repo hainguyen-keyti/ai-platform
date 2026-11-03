@@ -25,7 +25,10 @@ One scene for each beat:
 
 Tell it through what the viewer sees: dialogue only where a look could not say it, and silence is allowed. Let color and light change with the character's state
 across the film, within the palette. Avoid dreams, narrated morals and endings that explain themselves. Change shot size or angle at every cut.
-Write spoken lines of under 16 words, as these characters would really talk.
+Throw away the first ending that comes to mind, and the second: the turn must change what scene 1 meant, and the viewer must see it, not be told.
+Name the palette's colors inside every image_prompt and video_prompt, as the video model sees nothing else. No one does anything dangerous on screen: no drinking,
+eating or using a phone while riding or driving, always a helmet on a motorbike and a seatbelt in a car. No child drinks alcohol or coffee or is put at risk.
+Write spoken lines of under 16 words to be said aloud, as these characters would really talk, never written or translated phrasing.
 """
 
 [inputs.idea]

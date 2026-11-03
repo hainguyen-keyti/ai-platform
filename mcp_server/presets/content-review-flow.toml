@@ -24,7 +24,10 @@ One scene for each beat:
 4. Verdict: who it suits and who it does not.
 
 Make it feel found, not produced: handheld, available light, a real room, small imperfections, natural pauses. Keep one consistent presenter throughout.
-Write spoken lines of under 16 words, as people talk to a friend, never ad copy. The presenter is a fictional character, so never say they are a customer or that
+Give every scene a different shot size and a different place to stand, as a person filming on a phone would: selfie to camera, hands from above, a detail held close, the whole room.
+Name the palette's colors inside every image_prompt and video_prompt, as the video model sees nothing else. No one does anything dangerous on screen: no drinking,
+eating or using a phone while riding or driving, always a helmet on a motorbike and a seatbelt in a car. No child drinks alcohol or coffee or is put at risk.
+Write spoken lines of under 16 words to be said aloud, as people talk to a friend, never ad copy or translated phrasing. The presenter is a fictional character, so never say they are a customer or that
 results were measured. Do not invent features, prices, statistics, results or other people's opinions: report only the experience given above.
 """
 
