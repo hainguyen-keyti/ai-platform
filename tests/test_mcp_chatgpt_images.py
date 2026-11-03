@@ -475,12 +475,14 @@ async def run(fake, work):
             record("{} keeps danger off screen and asks for rhythm in its cut".format(preset),
                    "No one does anything dangerous" in brief and "No child" in brief and "rhythm" in brief and "aloud" in brief, brief[-200:])
             result = await client.call_tool("generate", {"preset": preset, "inputs": dict(given, seconds=90), "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            record("{} asks for a camera that moves on purpose, a strong first two seconds, and no image repeated".format(preset),
+                   "Move the camera on purpose" in brief and "first two seconds" in brief and "more than twice" in brief, brief[-200:])
             record("{} takes the film's length from its input".format(preset), not result.is_error and fake.script_posts[-1]["total_seconds"] == 90 and "90 seconds" in fake.script_posts[-1]["brief"], said(result)[:90])
             before = len(fake.script_posts)
             result = await client.call_tool("generate", {"preset": preset, "inputs": dict(given, seconds="dài"), "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
             record("{} refuses a length that is not a number, and sends nothing".format(preset), result.is_error and "seconds" in said(result) and len(fake.script_posts) == before, said(result)[:90])
         for preset, wanted in (("director-ad", "Do not invent"), ("director-ad", "where it is safe to use"), ("director-story", "Throw away the first ending"),
-                               ("director-review", "Do not invent"), ("director-review", "different shot size"), ("director-explainer", "snowball")):
+                               ("director-review", "Do not invent"), ("director-review", "different shot size"), ("director-explainer", "snowball"), ("director-explainer", "sources, promises or facts")):
             result = await client.call_tool("generate", {"preset": preset, "inputs": director[preset], "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
             record("{} says: {}".format(preset, wanted), wanted in fake.script_posts[-1]["brief"], fake.script_posts[-1]["brief"][-200:])
         result = await client.call_tool("write_video_script", {"brief": "a film", "target": "production", "total_seconds": 3, "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
