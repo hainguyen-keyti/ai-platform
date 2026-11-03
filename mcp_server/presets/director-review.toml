@@ -1,0 +1,56 @@
+id = "director-review"
+mode = "script"
+target = "production"
+provider = "grok"
+seconds_input = "seconds"
+title = "Director: creator review"
+description = "A director's and screenwriter's whole creator-style review, built only on the experience given, for whoever makes it: concept, screenplay, timed shots of any length, post-production. Written by Grok."
+template = """
+A creator-style review for social video, about {seconds} seconds, that looks filmed by one presenter.
+
+Product: {product}
+Audience: {audience}
+Real experience to report: {experience}
+Drawback or limit to admit: {drawback}
+Presenter: {presenter}
+Tone: {tone}
+Format: {format}
+
+The arc: the presenter says the most surprising part of the experience straight to camera, mid-action; the product in their hands, in a real place, doing what was reported; the drawback,
+said plainly; who it suits and who it does not.
+
+Make it feel found, not produced: handheld, available light, a real room, small imperfections, natural pauses. Give every shot a different shot size and a different place to stand: selfie to camera, hands from
+above, a detail held close, the whole room. Let the rhythm come from jump cuts on the presenter's own speech, with on-screen text where they make a point.
+No one does anything dangerous on screen: no drinking, eating or using a phone while riding or driving, always a helmet on a motorbike and a seatbelt in a car. No child drinks alcohol or coffee or is put at risk.
+Write lines to be said aloud, as people talk to a friend, never ad copy or translated phrasing. The presenter is a fictional character, so never say they are a customer or that results were measured.
+Do not invent features, prices, statistics, results or other people's opinions: report only the experience given above.
+"""
+
+[inputs.product]
+description = "the product: what it is and how it looks"
+
+[inputs.audience]
+description = "who would watch this"
+
+[inputs.experience]
+description = "what using it is really like, the true points to report"
+
+[inputs.drawback]
+description = "a real drawback or limit"
+default = "none given; say plainly who it is not for"
+
+[inputs.presenter]
+description = "the presenter's look and manner"
+default = "choose an ordinary, believable person who fits the audience"
+
+[inputs.tone]
+description = "the tone"
+default = "candid and relaxed"
+
+[inputs.format]
+description = "the frame"
+default = "vertical 9:16"
+
+[inputs.seconds]
+description = "about how long the film runs, in whole seconds"
+default = 45

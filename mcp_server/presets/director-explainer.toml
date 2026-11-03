@@ -1,0 +1,51 @@
+id = "director-explainer"
+mode = "script"
+target = "production"
+provider = "grok"
+seconds_input = "seconds"
+title = "Director: explainer"
+description = "A director's and screenwriter's whole explainer, for whoever makes it: concept, screenplay, timed shots of any length, on-screen text, post-production. Written by Grok."
+template = """
+A short explainer for social video, about {seconds} seconds.
+
+Topic: {topic}
+Points to get across: {points}
+Audience: {audience}
+Presenter: {presenter}
+Tone: {tone}
+Format: {format}
+
+The arc: a question or a wrong belief this audience really holds, shown as an image; what it changes for them, in one concrete situation; the core idea through one physical metaphor;
+that metaphor pushed one step further for the next point; one thing to remember or do, said in one line.
+
+Build the concept on that one metaphor, so the pictures explain by themselves with the sound off. Take it from the place and daily life of this audience, something they could touch this week, with people dressed
+for that place. Not a stock metaphor: no snowball, iceberg, dominoes, piggy bank or plant growing from coins. Let the rhythm follow the thinking: hold a shot while an idea lands, cut quickly through examples,
+and use on-screen text only for the words the viewer should remember.
+No one does anything dangerous on screen: no drinking, eating or using a phone while riding or driving, always a helmet on a motorbike and a seatbelt in a car. No child drinks alcohol or coffee or is put at risk.
+Write lines to be said aloud, in plain words, never written or translated phrasing. Do not invent statistics, sources or facts that are not given above; if a point is uncertain, say it as such.
+"""
+
+[inputs.topic]
+description = "the topic"
+
+[inputs.points]
+description = "the true points to get across, two or three"
+
+[inputs.audience]
+description = "who it is for and what they already know"
+
+[inputs.presenter]
+description = "who speaks, if anyone is seen"
+default = "a voice-over, or one presenter if the metaphor needs a person"
+
+[inputs.tone]
+description = "the tone"
+default = "curious and clear"
+
+[inputs.format]
+description = "the frame"
+default = "vertical 9:16"
+
+[inputs.seconds]
+description = "about how long the film runs, in whole seconds"
+default = 45

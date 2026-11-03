@@ -85,8 +85,9 @@ mcp = MCPServer("aip-chatgpt-images", instructions=(
     "session=\"woman-a\" and session=\"woman-b\": each session is a ChatGPT thread that sees no other "
     "session's pictures and lasts across days, so the same name keeps the same character, and "
     "list_sessions says which there are. write_video_script writes a shot-by-shot script for an AI video "
-    "model (flow, minimax_h3 or wan), each scene with its first-frame picture prompt and video prompt. "
-    "list_presets shows ready recipes, and generate runs one. account_status says the credits left before a set; "
+    "model (flow, minimax_h3 or wan), each scene with its first-frame picture prompt and video prompt; with target "
+    "production it writes a director's whole film instead, concept, screenplay, shot list and post-production, for no "
+    "particular tool, and the director-* presets ask for one. list_presets shows ready recipes, and generate runs one. account_status says the credits left before a set; "
     "cancel_image cancels a request sent by mistake."))
 
 
@@ -645,8 +646,39 @@ class Presets(TypedDict):
     message: str
 
 
+def clock(seconds: float) -> str:
+    whole = int(seconds)
+    return "{:02d}:{:02d}".format(whole // 60, whole % 60) + (".{}".format(int(round((seconds - whole) * 10))) if seconds != whole else "")
+
+
+def production_markdown(script: dict) -> str:
+    """A director's whole film for a crew and an editor to read, concept to post-production."""
+    concept, post = script["concept"], script["post"]
+    lines = ["# {}".format(script["title"]), "", "{}s in all.".format(script["total_seconds"]), "", "## Concept", ""]
+    lines += ["- **{}**: {}".format(label, concept[field]) for label, field in (
+        ("Idea", "idea"), ("Audience", "audience"), ("Message", "message"), ("Tone", "tone"), ("Visual style", "visual_style"), ("Palette", "palette"), ("Synopsis", "synopsis"))]
+    if script.get("characters"):
+        lines += ["", "## Characters", ""] + ["- **{}**: {}".format(c["name"], c["description"]) for c in script["characters"]]
+    lines += ["", "## Settings", ""] + ["- **{}**: {}".format(s["name"], s["description"]) for s in script["settings"]]
+    lines += ["", "## Screenplay and shots"]
+    for scene in script["scenes"]:
+        lines += ["", "### Scene {}: {}".format(scene["number"], scene["title"]), "", "{}. {}".format(scene["location"], scene["purpose"]), "", scene["description"]]
+        for shot in scene["shots"]:
+            lines += ["", "**Shot {}, {} to {} ({}s)**".format(shot["number"], clock(shot["start_seconds"]), clock(shot["end_seconds"]), shot["duration_seconds"]), ""]
+            lines += ["- {}: {}".format(label, shot[field]) for label, field in (
+                ("Shot size", "shot_size"), ("Angle", "angle"), ("Lens", "lens"), ("Movement", "movement"), ("Composition", "composition"), ("Action", "action"),
+                ("Lighting", "lighting"), ("Color", "color"), ("Dialogue", "dialogue"), ("Voice-over", "voice_over"), ("Sound", "sound"), ("On-screen text", "on_screen_text"),
+                ("Cut to next", "transition")) if shot.get(field)]
+    lines += ["", "## Post-production", ""]
+    lines += ["- **{}**: {}".format(label, post[field]) for label, field in (
+        ("Pacing", "pacing"), ("Transitions", "transitions"), ("Color grade", "color_grade"), ("Music", "music"), ("Sound mix", "sound_mix"), ("Subtitles", "subtitles"), ("Format", "format"))]
+    return "\n".join(lines) + "\n"
+
+
 def script_markdown(script: dict) -> str:
     """The script for a person to read and paste from, scene by scene."""
+    if script.get("post"):
+        return production_markdown(script)
     lines = ["# {}".format(script["title"]), "", "For {}, {}s in all.".format(script["target"], script["total_seconds"]), ""]
     direction = script.get("direction") or {}
     for label, field in (("Concept", "concept"), ("Hook", "hook"), ("Visual style", "visual_style"), ("Palette", "palette")):
@@ -735,7 +767,10 @@ async def write_video_script(brief: str, target: str, ctx: Context, scenes: Opti
     lighting, sound (none on a silent target), dialogue, a first-frame image_prompt and a video_prompt written the way
     that model reads them; the script is checked against the target, and one that does not fit fails and gives
     its credit back. Saved as Markdown to read and paste from, and JSON. Written by Grok unless provider says
-    otherwise. Each request costs one credit. A script still running is collected with get_video_script."""
+    otherwise. Each request costs one credit. A script still running is collected with get_video_script.
+    target production is a director's whole film instead, for no particular tool: concept, characters, settings, scenes
+    of timed shots of any length (size, angle, lens, movement, composition, action, light, color, sound, cut, lines,
+    on-screen text) and post-production; total_seconds is held to."""
     return await send_script(brief, target, ctx, scenes, total_seconds, language, provider, session, save_dir, wait_seconds)
 
 
@@ -810,7 +845,14 @@ async def generate(preset: str, inputs: dict, ctx: Context, session: Optional[st
         return await generate_image(text, ctx, reference_path=reference_path, save_dir=save_dir, session=named)
     if reference_path:
         raise ToolError("preset {} writes a script and takes no reference picture".format(preset))
-    return await send_script(text, chosen["target"], ctx, chosen.get("scenes"), chosen.get("total_seconds"), chosen.get("language", "vi"),
+    total = chosen.get("total_seconds")
+    if chosen.get("seconds_input"):
+        name = chosen["seconds_input"]
+        value = inputs.get(name, chosen["inputs"][name].get("default"))
+        if not str(value).isdigit():
+            raise ToolError("preset {} needs {} as a whole number of seconds, not {!r}".format(preset, name, value))
+        total = int(value)
+    return await send_script(text, chosen["target"], ctx, chosen.get("scenes"), total, chosen.get("language", "vi"),
                              chosen.get("provider", "grok"), named, save_dir, SCRIPT_WAIT_SECONDS)
 
 

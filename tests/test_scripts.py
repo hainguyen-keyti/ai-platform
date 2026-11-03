@@ -40,15 +40,89 @@ def answer(*scenes, **over):
     return json.dumps(script)
 
 
-def refused(text, target="flow", scenes=None):
+def refused(text, target="flow", scenes=None, total_seconds=None):
     try:
-        checked_script(text, target, scenes)
+        checked_script(text, target, scenes, total_seconds)
         return ""
     except ScriptError as exc:
         return str(exc)
 
 
+CONCEPT = {"idea": "một chiếc bình nhớ tay người", "audience": "dân văn phòng", "message": "mở một tay", "tone": "ấm", "visual_style": "cầm tay, tự nhiên",
+           "palette": "xanh rêu, xám, vàng nắng", "synopsis": "Một ngày bận rộn, một cái bình."}
+POST = {"pacing": "cắt nhanh rồi chậm lại", "transitions": "cắt thẳng, một match cut", "color_grade": "ấm, tương phản vừa", "music": "guitar nhẹ, vào từ giây 2",
+        "sound_mix": "thoại trên nhạc", "subtitles": "phụ đề tiếng Việt, chữ trắng", "format": "dọc 9:16, 30 fps"}
+
+
+def shot(seconds=4, **over):
+    base = {"number": 1, "duration_seconds": seconds, "shot_size": "cận", "angle": "góc thấp", "lens": "50mm", "movement": "đẩy nhẹ vào", "composition": "bình lệch phải",
+            "action": "ngón cái bật nắp", "lighting": "nắng xiên trái", "color": "xanh rêu trên nền xám", "sound": "tiếng click", "transition": "cắt thẳng theo nhịp",
+            "dialogue": "", "voice_over": "", "on_screen_text": ""}
+    base.update(over)
+    return base
+
+
+def film_scene(*shots, **over):
+    base = {"number": 1, "title": "Mở đầu", "location": "lề đường", "purpose": "giữ người xem", "description": "Linh dừng xe.", "shots": list(shots)}
+    base.update(over)
+    return base
+
+
+def film(*scenes, **over):
+    script = {"title": "Một tay", "concept": dict(CONCEPT), "characters": [{"name": "Linh", "description": "25 tuổi, áo be"}],
+              "settings": [{"name": "Lề đường", "description": "buổi chiều, xe máy dựng"}], "scenes": list(scenes), "post": dict(POST)}
+    script.update(over)
+    return json.dumps(script)
+
+
+def production_cases():
+    got = checked_script(film(film_scene(shot(4), shot(2.5, number=7)), film_scene(shot(8))), "production", None, 15)
+    record("a production script comes back whole, its shots of any length, numbered, timed by the api", got["total_seconds"] == 14.5
+           and [(s["number"], s["start_seconds"], s["end_seconds"]) for scene in got["scenes"] for s in scene["shots"]] == [(1, 0, 4), (2, 4, 6.5), (3, 6.5, 14.5)]
+           and got["concept"] == CONCEPT and got["post"] == POST and got["settings"][0]["name"] == "Lề đường" and got["target"] == "production", got["total_seconds"])
+    record("a shot keeps its dialogue, voice-over and on-screen text", checked_script(film(film_scene(shot(4, dialogue="Một tay thôi", voice_over="Dễ", on_screen_text="MÁT LÂU"))), "production")
+           ["scenes"][0]["shots"][0]["on_screen_text"] == "MÁT LÂU")
+    for section, fields, make in (("concept", CONCEPT, lambda f: film(film_scene(shot()), concept=dict(CONCEPT, **{f: ""}))),
+                                  ("post", POST, lambda f: film(film_scene(shot()), post=dict(POST, **{f: " "})))):
+        for field in fields:
+            said = refused(make(field), "production")
+            record("a production with no {} in its {} is refused, saying so".format(field, section), "{}'s {}".format(section, field) in said, said)
+    for field in ("title", "location", "purpose", "description"):
+        said = refused(film(film_scene(shot(), **{field: ""})), "production")
+        record("a scene with no {} is refused, saying which".format(field), "scene 1's {}".format(field) in said, said)
+    for field in ("shot_size", "angle", "lens", "movement", "composition", "action", "lighting", "color", "sound", "transition"):
+        said = refused(film(film_scene(shot(), shot(**{field: None}))), "production")
+        record("a shot with no {} is refused, saying which".format(field), "scene 1 shot 2's {}".format(field) in said, said)
+    for name, text, word in (("no concept", film(film_scene(shot()), concept=None), "no concept"), ("no post", film(film_scene(shot()), post="ok"), "no post"),
+                             ("no settings", film(film_scene(shot()), settings=[]), "no settings"), ("no scenes", film(), "no scenes"),
+                             ("a scene with no shots", film(film_scene()), "no shots"), ("a duration in words", film(film_scene(shot("4"))), "duration"),
+                             ("a zero duration", film(film_scene(shot(0))), "lasts 0s"), ("a true duration", film(film_scene(shot(True))), "duration"),
+                             ("a duration past a minute", film(film_scene(shot(61))), "lasts 61s"),
+                             ("dialogue that is not text", film(film_scene(shot(dialogue=["a"]))), "dialogue")):
+        said = refused(text, "production")
+        record("a production with {} is refused, saying so".format(name), word in said, said)
+    long_line = " ".join(["từ"] * 11)
+    said = refused(film(film_scene(shot(2, dialogue=long_line))), "production")
+    record("a line that cannot be said in its shot is refused", "11 words" in said and "2s" in said, said)
+    said = refused(film(film_scene(shot(2, dialogue=" ".join(["từ"] * 6), voice_over=" ".join(["từ"] * 5)))), "production")
+    record("dialogue and voice-over count together", "11 words" in said, said)
+    record("a line that fits is kept", not refused(film(film_scene(shot(2, dialogue=" ".join(["từ"] * 10)))), "production"))
+    record("the film's length is held to what was asked", "40s" in refused(film(film_scene(shot(40))), "production", None, 30), refused(film(film_scene(shot(40))), "production", None, 30))
+    record("a little off the length asked is fine", not refused(film(film_scene(shot(33))), "production", None, 30))
+    record("the number of scenes asked for is held to", "2 scenes" in refused(film(film_scene(shot())), "production", 2))
+    told = build_instruction("Bình xanh rêu", "production", None, 45, "vi")
+    record("the instruction carries the brief, the length, the language and every field",
+           all(word in told for word in ("Bình xanh rêu", "45 seconds", "language vi", "target=production", "total_seconds=45") + tuple('"{}"'.format(f) for f in tuple(CONCEPT) + tuple(POST)
+               + ("settings", "shots", "lens", "transition", "voice_over", "on_screen_text"))), told[:160])
+    record("the instruction asks for shots as long as they need, and names no tool",
+           "as long as it needs" in told and "Do not name" in told and "image_prompt" not in told and "video_prompt" not in told and "Flow" not in told, told[:160])
+    record("production is listed as a target", "production" in [t["name"] for t in target_summaries()])
+    long_flow = refused(answer(scene(), scene()), "flow", None, 1)
+    record("a video model's script is not held to the film's length", not long_flow, long_flow)
+
+
 def main():
+    production_cases()
     got = checked_script(answer(scene(), scene(number=9)), "flow")
     record("a script that fits comes back whole, renumbered, with its total", got["title"] == "A film" and got["target"] == "flow"
            and [s["number"] for s in got["scenes"]] == [1, 2] and got["total_seconds"] == 16 and got["characters"][0]["name"] == "Lan", got["total_seconds"])
@@ -79,7 +153,7 @@ def main():
     silent = dict(duration_seconds=5, negative_prompt="blurry textures", sound=None)
     record("a silent target needs no sound and keeps none", "sound" not in checked_script(answer(scene(**silent)), "wan")["scenes"][0])
     record("a silent target still needs its color", "color" in refused(answer(scene(**dict(silent, color=""))), "wan"))
-    for target in TARGETS:
+    for target in ("flow", "minimax_h3", "wan"):
         told = build_instruction("x", target)
         record("the instruction asks {} for all of it, and says the video model reads only its prompts".format(target),
                all('"{}"'.format(word) in told for word in tuple(DIRECTION) + ("color", "lighting")) and "reads only" in told
