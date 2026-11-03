@@ -1,0 +1,54 @@
+id = "content-review-flow"
+mode = "script"
+target = "flow"
+provider = "grok"
+scenes = 4
+total_seconds = 32
+title = "Creator review for Google Flow"
+description = "A 32-second creator-style review in 4 clips, built only on the experience given. Written by Grok with its concept, camera, color, lighting, sound and dialogue."
+template = """
+A creator-style review for social video, as if filmed on a phone by one presenter.
+
+Product: {product}
+Audience: {audience}
+Real experience to report: {experience}
+Drawback or limit to admit: {drawback}
+Presenter: {presenter}
+Tone: {tone}
+Format: {format}. Frame every image_prompt and video_prompt for this format.
+
+One scene for each beat:
+1. Hook: the presenter says the most surprising part of the experience straight to camera, mid-action.
+2. Show: the product in the presenter's hands, in a real place, doing what was reported.
+3. Honest part: the drawback or limit, said plainly.
+4. Verdict: who it suits and who it does not.
+
+Make it feel found, not produced: handheld, available light, a real room, small imperfections, natural pauses. Keep one consistent presenter throughout.
+Write spoken lines of under 16 words, as people talk to a friend, never ad copy. The presenter is a fictional character, so never say they are a customer or that
+results were measured. Do not invent features, prices, statistics, results or other people's opinions: report only the experience given above.
+"""
+
+[inputs.product]
+description = "the product: what it is and how it looks"
+
+[inputs.audience]
+description = "who would watch this"
+
+[inputs.experience]
+description = "what using it is really like, the true points to report"
+
+[inputs.drawback]
+description = "a real drawback or limit"
+default = "none given; say plainly who it is not for"
+
+[inputs.presenter]
+description = "the presenter's look and manner"
+default = "choose an ordinary, believable person who fits the audience"
+
+[inputs.tone]
+description = "the tone"
+default = "candid and relaxed"
+
+[inputs.format]
+description = "the frame"
+default = "vertical 9:16"

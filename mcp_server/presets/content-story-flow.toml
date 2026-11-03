@@ -1,0 +1,47 @@
+id = "content-story-flow"
+mode = "script"
+target = "flow"
+provider = "grok"
+scenes = 6
+total_seconds = 48
+title = "Short story for Google Flow"
+description = "A 48-second story in 6 clips with a turn and a closing image. Written by Grok with its concept, camera, color, lighting, sound and dialogue."
+template = """
+A short story for social video.
+
+Idea: {idea}
+Characters: {characters}
+Setting: {setting}
+Mood: {mood}
+Format: {format}. Frame every image_prompt and video_prompt for this format.
+
+One scene for each beat:
+1. Hook: the character in the middle of something strange or at stake, with no setup.
+2. World: what is normal here, shown in one telling detail.
+3. Want: what the character wants, shown through an action.
+4. Trouble: what stands in the way, raising the stakes.
+5. Turn: a choice or discovery the viewer did not see coming, and which scene 1 quietly prepared.
+6. Closing image: an image that answers the first scene, and leaves one feeling.
+
+Tell it through what the viewer sees: dialogue only where a look could not say it, and silence is allowed. Let color and light change with the character's state
+across the film, within the palette. Avoid dreams, narrated morals and endings that explain themselves. Change shot size or angle at every cut.
+Write spoken lines of under 16 words, as these characters would really talk.
+"""
+
+[inputs.idea]
+description = "the idea of the story"
+
+[inputs.characters]
+description = "who is in it: their look and what they want"
+
+[inputs.setting]
+description = "where and when it happens"
+default = "choose a specific place and time that sharpens the idea"
+
+[inputs.mood]
+description = "the mood"
+default = "tender, with a quiet surprise"
+
+[inputs.format]
+description = "the frame"
+default = "vertical 9:16"

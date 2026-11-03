@@ -25,13 +25,17 @@ def record(name, ok, detail=""):
 
 
 def scene(**over):
-    base = {"number": 1, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "dialogue": "", "image_prompt": "a still", "video_prompt": WORDS}
+    base = {"number": 1, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "color": "teal shadows, warm skin", "lighting": "low golden sun",
+            "sound": "soft wind, no music", "dialogue": "", "image_prompt": "a still", "video_prompt": WORDS}
     base.update(over)
     return base
 
 
+DIRECTION = {"concept": "a coat that remembers", "hook": "she walks out of a painting", "visual_style": "35mm, handheld", "palette": "teal, amber, off-white"}
+
+
 def answer(*scenes, **over):
-    script = {"title": "A film", "characters": [{"name": "Lan", "description": "a red coat"}], "scenes": list(scenes)}
+    script = {"title": "A film", "direction": dict(DIRECTION), "characters": [{"name": "Lan", "description": "a red coat"}], "scenes": list(scenes)}
     script.update(over)
     return json.dumps(script)
 
@@ -57,6 +61,31 @@ def main():
                              ("dialogue that is not text", answer(scene(dialogue=["hi"])), "dialogue")):
         said = refused(text)
         record("{} is refused, saying so".format(name), word in said, said)
+
+    kept = checked_script(answer(scene()), "flow")
+    record("a script keeps its direction, and each scene its color, lighting and sound",
+           kept["direction"] == DIRECTION and kept["scenes"][0]["color"] == "teal shadows, warm skin" and kept["scenes"][0]["lighting"] == "low golden sun"
+           and kept["scenes"][0]["sound"] == "soft wind, no music", kept["scenes"][0])
+    for field in ("color", "lighting", "sound"):
+        for name, value in (("missing", None), ("empty", "  ")):
+            said = refused(answer(scene(), scene(**{field: value})))
+            record("a scene with its {} {} is refused, saying which".format(field, name), "scene 2's {}".format(field) in said, said)
+    for field in DIRECTION:
+        said = refused(answer(scene(), direction=dict(DIRECTION, **{field: ""})))
+        record("a direction with no {} is refused, saying so".format(field), "direction's {}".format(field) in said, said)
+    for name, value in (("no direction", None), ("a direction in words", "moody")):
+        said = refused(answer(scene(), direction=value))
+        record("{} is refused, saying so".format(name), "no direction" in said, said)
+    silent = dict(duration_seconds=5, negative_prompt="blurry textures", sound=None)
+    record("a silent target needs no sound and keeps none", "sound" not in checked_script(answer(scene(**silent)), "wan")["scenes"][0])
+    record("a silent target still needs its color", "color" in refused(answer(scene(**dict(silent, color=""))), "wan"))
+    for target in TARGETS:
+        told = build_instruction("x", target)
+        record("the instruction asks {} for all of it, and says the video model reads only its prompts".format(target),
+               all('"{}"'.format(word) in told for word in tuple(DIRECTION) + ("color", "lighting")) and "reads only" in told
+               and ('"sound"' in told) == (TARGETS[target]["dialogue_words"] > 0), told[-300:])
+        most = TARGETS[target]["max_words"] - 20
+        record("the instruction gives {} room under its word limit".format(target), "at most {} words".format(most) in told, most)
 
     record("the number of scenes asked for is held to", "3 scenes" in refused(answer(scene()), scenes=3), refused(answer(scene()), scenes=3))
 

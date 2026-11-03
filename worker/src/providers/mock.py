@@ -260,9 +260,11 @@ class MockProvider(BaseProvider):
         scenes = int(count) if count.isdigit() else 2
         words = " ".join(["lighthouse"] * 90)
         negative = {"negative_prompt": "blurry textures"} if target == "wan" else {}
-        script = {"title": "mock film", "characters": [{"name": "Lan", "description": "a woman in a red coat"}], "scenes": [dict(
-            {"number": n + 1, "duration_seconds": low, "description": "a shot", "camera": "dolly in", "dialogue": "", "image_prompt": "a still",
-             "video_prompt": words}, **negative) for n in range(scenes)]}
+        script = {"title": "mock film", "direction": {"concept": "a lighthouse that listens", "hook": "the lamp turns to the viewer", "visual_style": "35mm, slow dolly",
+                                                      "palette": "teal, amber, off-white"},
+                  "characters": [{"name": "Lan", "description": "a woman in a red coat"}], "scenes": [dict(
+            {"number": n + 1, "duration_seconds": low, "description": "a shot", "camera": "dolly in", "color": "teal shadows", "lighting": "low golden sun",
+             "sound": "soft wind", "dialogue": "", "image_prompt": "a still", "video_prompt": words}, **negative) for n in range(scenes)]}
         text = json.dumps(script)
         if BROKEN_SCRIPT_PHRASE in message.lower():
             text = "Here is your script, sorry, no JSON today."

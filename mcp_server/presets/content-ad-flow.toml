@@ -1,0 +1,54 @@
+id = "content-ad-flow"
+mode = "script"
+target = "flow"
+provider = "grok"
+scenes = 4
+total_seconds = 32
+title = "Product ad for Google Flow"
+description = "A 32-second product ad in 4 clips: hook, desire, product, payoff. Written by Grok with its concept, camera, color, lighting, sound and dialogue."
+template = """
+A short product ad for social video.
+
+Product: {product}
+Audience: {audience}
+Main benefit: {benefit}
+Facts and offer: {facts}
+Call to action: {call_to_action}
+Tone: {tone}
+Format: {format}. Frame every image_prompt and video_prompt for this format.
+
+One scene for each beat:
+1. Hook: an image this audience has not seen in an ad for this kind of product, understood with the sound off.
+2. Desire: their real situation, shown through one concrete action, not described.
+3. Turn: the product at work, close enough to see how it delivers the main benefit.
+4. Payoff: the changed moment, then the call to action spoken as a person would say it.
+
+Build the concept on one unexpected visual idea that only this product could carry, and let it return in the last scene. Avoid stock ad images: slow-motion
+smiles, floating products, a white studio with no story. Change shot size or angle at every cut. Write spoken lines of under 16 words as people really talk,
+never as a translated slogan. Do not invent prices, statistics, results, awards or testimonials that are not given above.
+"""
+
+[inputs.product]
+description = "the product: what it is and how it looks"
+
+[inputs.audience]
+description = "who the ad is for"
+
+[inputs.benefit]
+description = "the one main benefit to show"
+
+[inputs.facts]
+description = "true facts the ad may state: price, offer, proof"
+default = "none given; state no specifics"
+
+[inputs.call_to_action]
+description = "what the viewer should do at the end"
+default = "a natural invitation to find out more"
+
+[inputs.tone]
+description = "the tone"
+default = "warm, confident, a little playful"
+
+[inputs.format]
+description = "the frame"
+default = "vertical 9:16"
