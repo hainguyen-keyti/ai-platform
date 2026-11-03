@@ -1,3 +1,0 @@
-[FAIL] the typing bubble's clock keeps counting while another conversation is open  back in alpha after 3.5s in bravo the clock reads '3s'
-73/74 PASSED
-exit 0

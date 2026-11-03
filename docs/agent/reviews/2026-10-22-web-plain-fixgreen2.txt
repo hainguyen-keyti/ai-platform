@@ -1,2 +1,0 @@
-74/74 PASSED
-exit 0

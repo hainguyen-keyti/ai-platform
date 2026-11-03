@@ -4,14 +4,13 @@ storage/
 # Secrets
 .env
 
-# Agent layer's per-session state
-.claude/session-start
-.claude/active-plan
-
-# The test gate's command names this machine's path and WSL distro (HANDOFF, Phase 0)
-.claude/test-command.txt
-
-# Child sessions' reports to the orchestrator (one per ticket, kept on this machine)
+# A maintainer's own agent settings and working notes, kept on their machine
+.claude/
+CLAUDE.md
+docs/agent/
+docs/agents/
+docs/research/
+docs/specs/
 .scratch/
 
 # Legacy scratch output from the CLI experiments
