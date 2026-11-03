@@ -477,6 +477,8 @@ async def run(fake, work):
             result = await client.call_tool("generate", {"preset": preset, "inputs": dict(given, seconds=90), "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
             record("{} asks for a camera that moves on purpose, a strong first two seconds, and no image repeated".format(preset),
                    "Move the camera on purpose" in brief and "first two seconds" in brief and "more than twice" in brief and "four words a second" in brief, brief[-200:])
+            record("{} shares out the film's time first, and does not pad its ending".format(preset),
+                   "Divide the film's length" in brief and "never pad the ending" in brief and "no more than three seconds" in brief, brief[-200:])
             record("{} takes the film's length from its input".format(preset), not result.is_error and fake.script_posts[-1]["total_seconds"] == 90 and "90 seconds" in fake.script_posts[-1]["brief"], said(result)[:90])
             before = len(fake.script_posts)
             result = await client.call_tool("generate", {"preset": preset, "inputs": dict(given, seconds="dài"), "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
