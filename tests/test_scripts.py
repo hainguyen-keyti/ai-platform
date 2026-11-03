@@ -116,7 +116,13 @@ def production_cases():
                + ("settings", "shots", "lens", "transition", "voice_over", "on_screen_text"))), told[:160])
     record("the instruction asks for shots as long as they need, and names no tool",
            "as long as it needs" in told and "Do not name" in told and "image_prompt" not in told and "video_prompt" not in told and "Flow" not in told, told[:160])
-    record("production is listed as a target", "production" in [t["name"] for t in target_summaries()])
+    # Measured 2026-11-03, job fbc7d9f9: a stray brace before a post written after the deep scenes, and shots adding up to 29.3s of 45s.
+    record("the shape puts post before the deep scenes", told.index('"post": {') < told.index('"scenes": ['), told[-400:])
+    record("the shape keeps a running clock, and says to add shots when short",
+           '"ends_at_seconds"' in told and "running clock" in told and "add shots" in told, told[:160])
+    record("what the writer's clock says is not kept: the api times the shots",
+           "ends_at_seconds" not in checked_script(film(film_scene(shot(4, ends_at_seconds=99))), "production")["scenes"][0]["shots"][0])
+    record("production is listed as a target","production" in [t["name"] for t in target_summaries()])
     long_flow = refused(answer(scene(), scene()), "flow", None, 1)
     record("a video model's script is not held to the film's length", not long_flow, long_flow)
 
