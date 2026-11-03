@@ -11,8 +11,8 @@ from src.providers.base import (BaseProvider, FeatureType, GenerationResult, Job
                                 MediaArtifact, ProviderError)
 from src.providers.session import NO_SESSION, open_session, profile_of, saved
 
-# Everything below was measured on the owner's account on 2026-09-25 and 2026-09-27; see
-# docs/research/2026-09-27-gemini.md. The interface is Vietnamese, so nothing keys on words.
+# Everything below was measured on a real account on 2026-09-25 and 2026-09-27.
+# The interface is Vietnamese, so nothing keys on words.
 HOME = "https://gemini.google.com/app"
 COMPOSER = 'rich-textarea .ql-editor[contenteditable="true"]'
 # The turn is this streamed request, not the batchexecute rpcs around it: its body carries the

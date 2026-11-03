@@ -3,7 +3,7 @@
 
     ~/cloakbrowser-env/bin/python tests/test_grok_memory.py
 
-Measured 2026-09-27 (docs/research/2026-09-25-grok-measurements.md): GET /rest/user-settings from
+Measured 2026-09-27: GET /rest/user-settings from
 inside grok.com answers {"enableMemory": ..., ...}, and the switch is Settings, Data Controls,
 "Personalize Grok with your conversation history". On a shared account it lets one user's turn be
 remembered in another user's, so the driver must read it before every turn. Prints N/N PASSED.

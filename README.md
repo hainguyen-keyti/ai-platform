@@ -1,104 +1,408 @@
 # AI Platform
 
-A web app for a team to chat, make pictures and write video scripts with ChatGPT, Grok and Gemini,
-driven through real logged-in browser sessions (cloakbrowser), not provider APIs. What it is, how it
-is built and where it stands: [`docs/agent/PROJECT.md`](docs/agent/PROJECT.md).
+A self-hosted platform to chat, make pictures and write video scripts with ChatGPT, Grok and Gemini.
+It drives your own logged-in browser sessions instead of provider APIs, and gives you three ways in:
+a web app, an HTTP API and an MCP server for AI agents.
 
-Three parts: the **api** (FastAPI, Docker, port 3000), the **web** (React and Vite, Docker, port
-5173), and the **worker** (Python and cloakbrowser, on the host, port 8000), which asks the api for
-jobs with `WORKER_TOKEN` and drives the browsers.
+> [!WARNING]
+> **Read this before you use it.**
+>
+> - This project automates consumer accounts through a stealth browser. That may break the terms of
+>   the services it drives, and an account can be limited or closed. Use your own accounts, at your
+>   own risk, and check each service's terms yourself.
+> - It is not affiliated with OpenAI, xAI or Google, and it comes with no warranty.
+> - The MIT license covers this repository only. The first run downloads CloakBrowser's Chromium,
+>   which has [a license of its own](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md):
+>   it may not be redistributed, and offering it to third parties as a service needs a separate
+>   agreement with its vendor.
+> - Sites change without notice, and a change can break a driver until someone updates it.
 
-These steps take a fresh clone to a green full gate on Windows 11 with WSL2 (Ubuntu 26.04), where
-they were walked. On macOS, where the project ran before, skip the Windows-only steps; this README
-has not been walked there.
+## Contents
 
-## 1. Prerequisites
+- [What you get](#what-you-get)
+- [How it works](#how-it-works)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Use it](#use-it): [web](#the-web-app), [HTTP API](#the-http-api), [MCP server](#the-mcp-server)
+- [Video script presets](#video-script-presets)
+- [Run it day to day](#run-it-day-to-day)
+- [Configuration](#configuration)
+- [Development and tests](#development-and-tests)
+- [Troubleshooting](#troubleshooting)
 
-- **Windows: everything below runs inside WSL** (Ubuntu), in a WSL terminal, never in PowerShell or
-  cmd: the scripts are `sh`, the worker and the gates need a Linux venv, and the paths are Linux
-  paths. A clone on a Windows drive is reached as `/mnt/<drive>/...` (this machine:
-  `/mnt/d/keyti/ai-platform`, where the full gate runs).
-- **Windows: the three packages cloakbrowser's Chromium needs that a new WSL Ubuntu lacks**:
-  `sudo apt update && sudo apt install -y libnss3 libnspr4 libasound2t64` (the names on Ubuntu
-  26.04). Without them the browser does not start, and the gates' browser checks fail. `ldd ~/.cloakbrowser/chromium-*/chrome | grep "not found"` prints nothing
-  once the browser is downloaded and every library is there.
-- git.
-- [uv](https://docs.astral.sh/uv/getting-started/installation/), which also installs Python 3.11:
-  `curl -LsSf https://astral.sh/uv/install.sh | sh`, then open a new shell so `~/.local/bin`, where
-  it puts `uv`, is on PATH.
-- `python3` on PATH: the quick gate, `acceptance.py`, uses only the standard library and runs under
-  any python3 (Ubuntu and macOS ship one). WSL's Ubuntu has no `python` command, so the commands
-  here say `python3`.
-- Node.js 22 or newer with npm (the web image uses `node:22-alpine`): the full gate builds the web
-  on the host. This machine's WSL runs 24.22.1, the linux-x64 archive from nodejs.org unpacked into
-  `~/.local/opt` with `node`, `npm` and `npx` linked into `~/.local/bin`.
-- Docker with compose v2. macOS: Docker Desktop. Windows: Docker Desktop with the WSL2 backend and
-  **Settings > Resources > WSL Integration turned on for the distro** you work in, so `docker` and
-  `docker compose` work inside WSL. Docker Desktop on Windows does not start by itself: start it
-  before the stack.
+## What you get
 
-## 2. Clone
+- **Chat and pictures** with ChatGPT, Grok and Gemini, from one interface.
+- **Video scripts**, written by a chat model and checked before you get them. A script can target
+  Google Flow, MiniMax H3 or Wan 2.2, or be a director's whole film: concept, screenplay, timed shots
+  and post-production, for whatever tool makes it.
+- **Several users**, invite-only, each with a daily credit balance. A failed job gives its credit back.
+- **Several accounts per provider**, so that requests go to one with room.
+- **Pacing built in**: a gap between turns, a picture budget and a back-off after errors, per account.
+
+## How it works
+
+```
+ Web app (React)        Your program        AI agent
+   :5173                     |            MCP server (stdio)
+      |                      |                   |
+      +----------------------+-------------------+
+                             v
+                   API (FastAPI) :3000 ------ SQLite, media on disk
+                             ^
+                             |  the worker asks for jobs and posts results
+                             |
+                   Worker (Python) on the host
+                             |
+                   One browser per logged-in account
+                             |
+                   ChatGPT / Grok / Gemini
+```
+
+The API and the web run in Docker. The worker runs on the host, because it needs a real browser and
+its logged-in profiles. The API never calls the worker: the worker asks for work, so it can restart
+without losing the queue.
+
+## Requirements
+
+| What | Notes |
+|---|---|
+| Operating system | Windows 11 with WSL2 (Ubuntu) is the tested setup. macOS was used earlier, and native Linux should work, but neither has been walked through with this guide |
+| Docker with Compose v2 | On Windows: Docker Desktop with the WSL2 backend, and **Settings > Resources > WSL Integration** on for your distro |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/) | Installs Python 3.11 for the worker |
+| `python3`, git | Any recent `python3` |
+| A screen for the login step | The first login opens a browser window. WSLg shows it on Windows 11 |
+| Provider accounts | Your own, for each provider you want to serve |
+
+**On Windows, run everything below in a WSL terminal**, not in PowerShell or cmd. The scripts are `sh`
+and the worker needs a Linux virtual environment.
+
+Also on Windows and Ubuntu, install the libraries the browser needs (the names are for recent Ubuntu):
 
 ```bash
-git clone <repo-url> ai-platform
+sudo apt update && sudo apt install -y libnss3 libnspr4 libasound2t64
+```
+
+## Install
+
+### 1. Clone
+
+```bash
+git clone https://github.com/hainguyen-keyti/ai-platform.git
 cd ai-platform
 ```
 
-`.gitattributes` checks every text file out with LF (`* text=auto eol=lf`), whatever
-`core.autocrlf` says: a CR breaks the shell scripts and the `.env` that `run-worker.sh` sources. On
-Windows, check it, above all if the clone was made by Windows git:
+On Windows, check that the files came out with LF line endings, or the scripts will not run:
 
 ```bash
 git ls-files --eol scripts/ .env.example
 ```
 
-Every row must show `w/lf`. A `w/crlf` means the files were checked out before `.gitattributes`
-existed; write them again from the index with `git rm --cached -r -q . && git reset --hard` (this
-discards uncommitted changes).
+Every row must show `w/lf`.
 
-## 3. `.env`
+### 2. Create `.env`
 
 ```bash
 cp .env.example .env
 ```
 
-Replace the three `change-me` values, `JWT_SECRET`, `INVITE_CODE` and `WORKER_TOKEN`, each with a
-new random string, for example the output of `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
-Every other line is the value a real run uses; `.env.example` explains each one. `.env` is
-git-ignored; never commit it. `INVITE_CODE` is what people type to register, and the full gate reads
-it from this file.
+Replace the three secrets `JWT_SECRET`, `INVITE_CODE` and `WORKER_TOKEN`, each with its own random
+value. This prints one:
 
-Compose reads `.env` for the api (it refuses to start without the three secrets), and
-`scripts/run-worker.sh` exports every line of it to the worker. A name given on the command line, or
-already exported by the shell, wins over the file, even an empty one.
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+```
 
-## 4. The worker's venv
+`INVITE_CODE` is what people type to register. Never commit `.env`; it is already git-ignored. The API
+refuses to start without these three values. All the other settings have working defaults:
+see [Configuration](#configuration).
 
-The worker, the gates and the scripts run under one venv, `~/cloakbrowser-env` by default:
+### 3. Create the worker's virtual environment
 
 ```bash
 uv venv --seed --python 3.11 ~/cloakbrowser-env
 ~/cloakbrowser-env/bin/pip install -r worker/requirements.txt -r api/requirements.txt
 ```
 
-- `--seed` puts pip in the venv: `run-worker.sh` and `acceptance.py` call the venv's pip.
-- `worker/requirements.txt` pins `cloakbrowser==0.5.10` and `playwright==1.63.0` (a new
-  cloakbrowser can bring a new Chromium build, which changes what the sites see); install those
-  pins, not newer versions.
-- `api/requirements.txt` is needed too: `acceptance.py` starts its own api under this venv.
-- A venv elsewhere: set `CLOAKBROWSER_VENV` to its path. `scripts/run-worker.sh`,
-  `scripts/full-gate.sh` and `acceptance.py` read it; the other scripts are run as
-  `<venv>/bin/python <script>`.
-- The first cloakbrowser launch downloads its Chromium into `~/.cloakbrowser`. If the first quick
-  gate times out on a browser check while that runs, run it again.
+Keep the pinned versions: a new CloakBrowser can bring a new Chromium build, which changes what the
+sites see. The browser itself is downloaded to `~/.cloakbrowser` the first time it starts, so the first
+run takes longer. To keep the environment elsewhere, set `CLOAKBROWSER_VENV` to its path.
 
-## 5. Windows only: the Windows fonts in WSL
+### 4. Start the API and the web
 
-cloakbrowser's Chromium presents itself as Windows (`navigator.platform` is `Win32`). In a bare WSL
-it rendered every Linux family it was given (Roboto, Ubuntu, even DejaVu Serif) as DejaVu Sans,
-which is wider, and `tests/ui_smoke.py` reads 73/74 (the Vietnamese phone nav takes two rows at
-360px). With the Windows fonts below, the web renders in Arial and ui_smoke reads 74/74. Copy the Windows fonts into WSL and refresh the
-cache (`fc-cache` is the `fontconfig` package):
+```bash
+docker compose build
+docker compose up -d
+```
+
+Check that the API answers:
+
+```bash
+curl http://localhost:3000/health
+```
+
+It should print `{"status":"ok"}`.
+
+### 5. Create your account
+
+Open http://localhost:5173 and register with your invite code. **The first account on an empty database
+becomes the admin**, so register yourself first.
+
+### 6. Log in to each provider
+
+The worker uses a browser profile for each account. Make one for each provider in `PROVIDERS`
+(`chatgpt,grok,gemini` by default; remove the ones you do not want from `.env`):
+
+```bash
+~/cloakbrowser-env/bin/python scripts/login_provider.py chatgpt
+~/cloakbrowser-env/bin/python scripts/login_provider.py grok
+~/cloakbrowser-env/bin/python scripts/login_provider.py gemini
+```
+
+A browser window opens on the provider's site. Log in by hand. The script closes the window by itself
+once the login is real. It never sees your password, but the session is saved in
+`storage/sessions/<provider>/`, so **anyone who can read that folder is signed in as you**.
+
+**Then turn the account's memory off** in that provider's own settings: ChatGPT's memory, Grok's memory,
+and Gemini's personal context and saved info. Otherwise one person's chat could leak into another's, so
+the worker refuses to send a turn to an account with memory on, and says why.
+
+Rules for profiles:
+
+- A profile opens in one browser at a time, so stop the worker before you log in.
+- Never copy a profile to another machine: log in again there.
+- Never delete the `device-seed` file alone.
+
+### 7. Start the worker
+
+```bash
+./scripts/run-worker.sh
+```
+
+Leave it running. The API and the web now have real providers behind them.
+
+### 8. Try it
+
+Open http://localhost:5173, sign in, pick a provider and send a message. A chat answer usually takes
+under a minute, and a picture about a minute.
+
+No account handy, or just testing the setup? Run the worker with canned answers:
+
+```bash
+PROVIDER_MODE=mock ./scripts/run-worker.sh
+```
+
+## Use it
+
+### The web app
+
+Chat with any served provider, ask for a picture, attach files, and find everything in the gallery.
+Each conversation stays with the provider and the account it started on. An admin can see each
+account's state at `GET /admin/accounts`.
+
+### The HTTP API
+
+Create a key on the web's **API** page. It starts with `aip_` and is shown only once.
+
+```bash
+export AIP_API_KEY=aip_...
+
+# Send a picture request: answers at once with an id
+curl -X POST http://localhost:3000/v1/images \
+  -H "Authorization: Bearer $AIP_API_KEY" \
+  -F "prompt=a red fox in the snow"
+
+# Ask for its status until it is done
+curl -H "Authorization: Bearer $AIP_API_KEY" http://localhost:3000/v1/images/<id>
+```
+
+A ready-made client that needs only the standard library:
+
+```bash
+python3 scripts/image_api_example.py --prompt "a red fox in the snow" --out pictures
+```
+
+Every call, including video scripts, is described in [`docs/api-v1-images.md`](docs/api-v1-images.md).
+
+### The MCP server
+
+This lets an agent (Claude Code, Claude Desktop or any MCP client) use the platform as tools. It runs as
+a subprocess of the agent's host and calls the API with your key.
+
+**Install it** in its own environment:
+
+```bash
+uv venv --python 3.11 ~/.venvs/aip-mcp
+VIRTUAL_ENV=~/.venvs/aip-mcp uv pip install -r mcp_server/requirements.txt
+```
+
+**Register it.** The key goes in the server's environment, never on its command line.
+
+Claude Code on Linux or macOS, or inside WSL, from the repository folder:
+
+```bash
+claude mcp add --env AIP_API_KEY=aip_... --transport stdio aip-chatgpt-images -- ~/.venvs/aip-mcp/bin/python "$PWD/mcp_server/chatgpt_images.py"
+```
+
+Claude Code on Windows, with the server in WSL, from PowerShell:
+
+```
+claude mcp add --env AIP_API_KEY=aip_... AIP_API_URL=http://localhost:3000 WSLENV=AIP_API_KEY/u:AIP_API_URL/u --transport stdio aip-chatgpt-images -- wsl -d Ubuntu --exec /home/<you>/.venvs/aip-mcp/bin/python /mnt/<drive>/<path>/ai-platform/mcp_server/chatgpt_images.py
+```
+
+Claude Desktop, in `claude_desktop_config.json` under `mcpServers`:
+
+```json
+"aip-chatgpt-images": {
+  "type": "stdio",
+  "command": "/home/<you>/.venvs/aip-mcp/bin/python",
+  "args": ["/path/to/ai-platform/mcp_server/chatgpt_images.py"],
+  "env": {"AIP_API_KEY": "aip_...", "AIP_API_URL": "http://localhost:3000"}
+}
+```
+
+In Claude Code, `/mcp` shows whether it connected. A session started before you change the server keeps
+the old process: open a new session.
+
+**The tools:**
+
+| Tool | What it does |
+|---|---|
+| `generate_image` | Makes one picture, optionally from reference pictures, and saves it |
+| `generate_images` | Makes a set of 1 to 20 pictures, one after another |
+| `get_image` | Collects a picture request that is still running or already done |
+| `cancel_image` | Cancels a request sent by mistake and gives its credit back |
+| `write_video_script` | Writes a script for `flow`, `minimax_h3` or `wan`, or a whole film with `production` |
+| `get_video_script` | Collects a script that is still running or already done |
+| `list_script_targets` | Says what each target takes |
+| `list_presets`, `generate` | List the ready recipes, and run one |
+| `list_sessions` | Lists your named sessions |
+| `account_status` | Says the credits left, the picture budget and the queue |
+
+Then just ask the agent, for example: "make five pictures of a fox in different seasons and save them in
+`~/pictures/fox`".
+
+Good to know:
+
+- **Keep a character apart with a session.** Requests of one key share one thread per day, so pictures
+  drift toward one look. Pass `session="woman-a"` to give a character a thread of its own that lasts
+  across days.
+- **Change a picture with `continue_from`**, using its request id, instead of sending it back.
+- **Each request costs one credit**, and a failed one gives it back.
+- Files go to `save_dir`, or `AIP_SAVE_DIR`, or `<temp>/aip-pictures`. Scripts are saved as Markdown and JSON.
+
+## Video script presets
+
+A preset is a recipe: one TOML file in [`mcp_server/presets/`](mcp_server/presets). It fills your inputs
+into a template and sends the result as a normal request. To add one, add a file: no code is needed.
+
+| Preset | Makes | You must give |
+|---|---|---|
+| `director-ad` | A director's whole product ad | `product`, `audience`, `benefit` |
+| `director-story` | A director's whole short story | `idea`, `characters` |
+| `director-review` | A director's whole creator-style review | `product`, `audience`, `experience` |
+| `director-explainer` | A director's whole explainer | `topic`, `points`, `audience` |
+| `content-ad-flow`, `content-review-flow` | Clips for Google Flow: 4 clips, 32s | Same as above |
+| `content-story-flow` | Clips for Google Flow: 6 clips, 48s | `idea`, `characters` |
+| `content-explainer-flow` | Clips for Google Flow: 5 clips, 40s | `topic`, `points`, `audience` |
+| `short-film-flow`, `short-film-minimax`, `short-film-wan` | Your story, passed on with no direction | `story` |
+| `character-portrait`, `character-scene` | A picture of a character, kept in its own session | See `list_presets` |
+
+Ask an agent, or call the tool directly:
+
+```
+generate(preset="director-ad", inputs={
+  "product": "a moss-green 500 ml steel bottle with a one-hand lid",
+  "audience": "young office workers",
+  "benefit": "opens with one hand, so you do not stop what you are doing",
+  "seconds": 30
+})
+```
+
+The `director-*` presets also take `seconds` (45 by default) and answer with a whole film, written in the
+request's language (Vietnamese unless you say otherwise): concept, characters, settings, scenes of timed
+shots of any length, and post-production. Each shot has its size, angle, lens, movement, composition,
+action, light, color, sound, cut, lines and on-screen text. They name no tool: how the film gets made is
+up to whoever makes it. If an idea is too small for its length, the ending tends to drag, so choose a
+shorter `seconds`.
+
+**What is guaranteed.** The API checks a script's shape: every field present, the film's length within
+15% of what you asked, and lines that fit their shot. A script that fails is refused and its credit
+comes back. **What is not guaranteed.** A rule written in a preset, such as "invent no claims" or "no
+danger on screen", is a request to the model. Quality varies between runs, so read what comes back
+before you use it, above all for ads and reviews.
+
+## Run it day to day
+
+| Task | Command |
+|---|---|
+| Start | `docker compose up -d`, then `./scripts/run-worker.sh` |
+| Stop | Ctrl-C on the worker, then `docker compose down` |
+| Worker health | `curl http://localhost:8000/health` |
+| Add a second account | `~/cloakbrowser-env/bin/python scripts/login_provider.py chatgpt --account a2`, turn its memory off, restart the worker |
+
+**Keep the worker running without a terminal**, as a systemd user service. On WSL this needs
+`systemd=true` in `/etc/wsl.conf`:
+
+```bash
+./scripts/install-worker-service.sh            # optional arguments: port, providers
+systemctl --user start aip-worker
+systemctl --user status aip-worker
+```
+
+Its log is `~/.cache/ai-platform/host-worker-real.log`. Stop it before you log in to an account.
+
+**Several accounts.** An account with room takes the next request, and two accounts can run at once. A
+conversation stays on the account that started it. The picture budget, the back-off and the Library
+cleanup are per account.
+
+**Nightly Library cleanup.** Once a day, at `LIBRARY_CLEANUP_AT`, the worker moves to ChatGPT's Library trash
+the pictures from before today of the platform's own threads. Nothing else on the account is touched,
+and a trashed file can be restored. Set `LIBRARY_CLEANUP_AT=` (empty) to turn it off.
+
+**Use it from another machine.** The defaults assume one machine: `docker compose` publishes its ports on
+every network interface with no TLS, and it runs the API with auto-reload. Before you expose it, read
+[`SECURITY.md`](SECURITY.md), and set `VITE_API_URL` to the address browsers will reach the API on.
+
+## Configuration
+
+All settings live in `.env`, and [`.env.example`](.env.example) explains each one. A name set on the command
+line wins over the file. The ones you are most likely to change:
+
+| Setting | Default | What |
+|---|---|---|
+| `PROVIDERS` | `chatgpt,grok,gemini` | Which providers this worker serves |
+| `PROVIDER_MODE` | `real` | `mock` gives canned answers and needs no account |
+| `DEFAULT_QUOTA` | `500` | Each new user's credits a day |
+| `IMAGE_BUDGET_3H` | `40` | Pictures per account in a rolling 3 hours; past it, requests wait |
+| `IMAGE_TOTAL_3H` | `0` | The same cap across a provider's accounts (0 is no cap) |
+| `MIN_GAP_SECONDS` | `3` | The pause between turns |
+| `COOLDOWN_BASE_SECONDS`, `COOLDOWN_MAX_SECONDS` | `30`, `900` | The back-off after provider errors |
+| `BROWSER_IDLE_SECONDS` | `1800` | Close a browser unused this long (0 keeps it open) |
+| `LIBRARY_CLEANUP_AT` | `16:30` | Daily ChatGPT Library cleanup, in UTC; empty turns it off |
+| `TOKEN_TTL_HOURS` | `24` | How long a web login lasts |
+
+The pacing settings can be set per provider, for example `MIN_GAP_SECONDS__GROK=150`. These defaults are
+this project's own choices, not published limits: providers do not announce theirs, and they change.
+
+## Development and tests
+
+The tests mock the providers, so you can rerun them freely. They spend no account's quota.
+
+```bash
+python3 acceptance.py          # quick gate, about 5 minutes
+```
+
+The full gate also builds the web and walks it in a browser, on a stack of its own (API on :3100, web on
+:5273, worker on :8100, data in `storage/gate/`), so it never touches your real data:
+
+```bash
+(cd web && npm ci)             # first time only; needs Node.js 22 or newer
+./scripts/full-gate.sh         # about 10 minutes
+```
+
+On Windows, one layout check in the web test needs Windows fonts in WSL, or it fails on the wider
+default font:
 
 ```bash
 mkdir -p ~/.local/share/fonts/windows
@@ -111,253 +415,66 @@ cp arial.ttf arialbd.ttf arialbi.ttf ariali.ttf \
    ~/.local/share/fonts/windows/
 cd -
 fc-cache -f
-fc-list | grep -i segoe
 ```
 
-The last line must list Segoe UI. macOS needs no step here.
-
-## 6. The web's packages
+Against your real accounts (these spend quota and can draw a bot check, so use them sparingly):
 
 ```bash
-(cd web && npm ci)
+python3 acceptance.py --real --keep --provider chatgpt
+~/cloakbrowser-env/bin/python tests/provider_probe.py all
 ```
 
-The full gate runs `npm run build` on the host, so the host needs its own `web/node_modules`. The
-web container keeps a separate one in an anonymous volume. npm 11 warns that it held esbuild's
-postinstall script; the build works without it.
-
-## 7. Docker
+The MCP server has its own tests:
 
 ```bash
-docker compose build
-docker compose up -d
+~/.venvs/aip-mcp/bin/python tests/test_mcp_chatgpt_images.py
+~/.venvs/aip-mcp/bin/python tests/stress_mcp.py
 ```
 
-The api answers on http://localhost:3000/health and the web on http://localhost:5173.
+**Add a provider:** write a `BaseProvider` that takes `account`, add it to `build_provider` in
+`worker/src/pool.py` and to `PROVIDERS` and `FEATURES` in `api/src/models.py`.
 
-**Register your own account now**, at http://localhost:5173 with the invite code: the first account
-on an empty database is the admin. The full gate's test accounts live in a database of its own
-(`storage/gate/`, below), never in `storage/db`.
-
-## 8. The gates
-
-Quick gate, about 5 minutes, its own ports, temp database and mock providers, safe to rerun:
-
-```bash
-python3 acceptance.py
-```
-
-It prints a PASS/FAIL table and exits non-zero on a failure.
-
-Full gate, about 8 minutes, in one command:
-
-```bash
-./scripts/full-gate.sh
-```
-
-It runs, stopping at the first red step: the quick gate; `npm run build` in `web/`; **a stack of
-its own**, a second compose project `aip-gate` (api :3100, web :5273, its database and media in
-`storage/gate/`, emptied each run); a mock worker of its own on :8100 with `MOCK_DELAY_SECONDS=4`,
-serving that api only (its log in `~/.cache/ai-platform/`); then `tests/ui_smoke.py` with
-`INVITE_CODE` read from `.env`. It takes its stack down and stops its worker on exit. The real
-stack, its database and a real worker are never touched, so the gate can run while people use the
-platform. It needs the venv, `.env` and Docker running, and ports 3100, 5273 and 8100 free
-(`GATE_API_PORT`, `GATE_WEB_PORT`, `WORKER_PORT` change them).
-
-### `.claude/test-command.txt`
-
-Agent sessions run the full gate through the one line in `.claude/test-command.txt`. The file names
-this machine's path, so it is git-ignored and each machine writes its own. On Windows the line runs
-the gate inside WSL from the Windows side (this machine runs it as `cmd.exe /d /c "<line> 2>&1"`
-from the project folder); change the distro name and the path to yours:
-
-```
-wsl -d Ubuntu --exec bash -lc "cd /mnt/d/keyti/ai-platform && ./scripts/full-gate.sh"
-```
-
-Double quotes: cmd.exe and wsl.exe do not treat single quotes as quotes. On macOS the line would be
-`cd /path/to/ai-platform && ./scripts/full-gate.sh` (not tried there yet).
-
-## 9. Logging in a provider
-
-Each provider the worker serves (`PROVIDERS` in `.env`, `chatgpt,grok,gemini`) needs a logged-in
-session, the browser profile `storage/sessions/<provider>/`, made only by the login script:
-
-```bash
-~/cloakbrowser-env/bin/python scripts/login_provider.py chatgpt
-```
-
-(or `grok`, `gemini`). A browser window opens on the provider's site; log in by hand, and the
-script closes it once the login is real. On Windows the window has to show through WSLg (WSL's
-own display); no login has been tried from WSL yet. A profile opens in one browser at a
-time, so stop the worker, or take that provider off it, first. Never copy a profile between
-machines, and never delete its `device-seed` alone. `storage/` is git-ignored: a new machine logs
-in again.
-
-### More than one account
-
-A provider can have several accounts, each its own login in its own profile, so that requests go to one with
-room:
-
-```bash
-~/cloakbrowser-env/bin/python scripts/login_provider.py chatgpt --account a2
-```
-
-That makes `storage/sessions/chatgpt-a2/`. Log in by hand; the first window's profile stays the default account.
-For ChatGPT turn the account's memory off first, or the worker refuses to speak into it. Restart the worker and it
-serves every profile it finds (`ACCOUNTS__CHATGPT=chatgpt,chatgpt-a2` names them instead).
-
-- An account with room takes the next request, so the work spreads by itself, and two accounts run at once.
-- A thread opens only on the account that made it. A conversation, a session or a `continue_from` stays on its
-  account and waits for it. If that account needs its admin, or no worker serves it, such a request is refused
-  with a clear reason; a key's thread for the day starts anew on another account.
-- The picture budget (`IMAGE_BUDGET_3H`), the backing off and the nightly Library cleanup are per account, and
-  the budget's count is in `storage/pacing-<account>.json`. `IMAGE_TOTAL_3H` caps a provider's accounts
-  together, as they share one machine and one IP.
-- `GET /admin/accounts` shows each account. Everything else shows totals and names no account.
-
-To add a provider, write a `BaseProvider` that takes `account`, add it to `build_provider` in
-`worker/src/pool.py` and to `PROVIDERS`/`FEATURES` in `api/src/models.py`; its accounts then work the same way.
-
-## 10. Running it
-
-```bash
-docker compose up -d
-./scripts/run-worker.sh
-```
-
-The worker serves the providers in `PROVIDERS`, in real mode (`PROVIDER_MODE=mock` for canned
-replies). Open http://localhost:5173 and sign in (step 7). Stop with `docker compose down` and
-Ctrl-C on the worker.
-
-To keep the real worker up without a terminal open, make it a service of WSL's systemd:
-
-```bash
-./scripts/install-worker-service.sh 8010 chatgpt,grok
-systemctl --user start aip-worker
-```
-
-Port and providers are optional (8000 and `.env`'s `PROVIDERS`). It comes back after a crash and when
-WSL starts, and logs to `~/.cache/ai-platform/host-worker-real.log`. Before a login or a probe that
-needs the session, `systemctl --user stop aip-worker`. Code changes reach it with
-`systemctl --user restart aip-worker`.
-
-The picture budget's count is kept in `storage/pacing-<provider>.json`, so a restart does not give it
-back.
-
-## 11. MCP server: pictures, video scripts, presets
-
-The server is `mcp_server/aip_server.py`; `chatgpt_images.py` is the name existing configs run, and stays.
-
-- `write_video_script(brief, target, scenes=None, total_seconds=None, language="vi", provider="grok", session=None)`: a shot-by-shot script
-  for `flow` (Google Flow), `minimax_h3` or `wan`, each scene with a first-frame `image_prompt` and a `video_prompt` written the way that
-  model reads them, saved as Markdown and JSON. What each model takes is `TARGETS` in `api/src/scripts.py`, with where each limit was read: third-party
-  guides for two of them, so correct them there when a model changes. A reply that does not fit fails and gives its credit back.
-- `list_presets`, `generate(preset, inputs)`: a recipe is one TOML file in `mcp_server/presets/` (`mode`, `template`, `[inputs.*]`), and needs no code.
-
-`mcp_server/chatgpt_images.py` lets an agent (Claude Code, Claude Desktop, any MCP client) make
-pictures with ChatGPT on this platform as a tool. Its host starts it as a subprocess over stdio; it
-calls the platform's image API (`docs/api-v1-images.md`) with your own API key. Two tools:
-
-- `generate_image(prompt, reference_path=None, save_dir=None, wait_seconds=420, preview=True)`:
-  sends the prompt (and a PNG, JPEG or WEBP reference picture, if given), waits for ChatGPT (about a
-  minute), saves every picture it made and answers with the files' paths. A request still running
-  when the wait ends answers with its id. Every request of one key goes into that key's own
-  ChatGPT thread for the day (UTC). `continue_from=<request id>` changes a picture already made
-  ("the same, at night"): the prompt goes into the ChatGPT thread that made it, so the picture is
-  not sent back. `session="woman-a"` keeps a person or character apart: the same name goes into the
-  same ChatGPT thread on any day, another name into a thread that sees none of its pictures, and
-  `list_sessions` says which there are. `reference_paths=[…]` sends up to 4 reference pictures in order ("the character of
-  the first in the scene of the second"), all together under 10 MB.
-- `generate_images(prompts, reference_path=None, save_dir=None, wait_seconds=1800, preview=True)`:
-  a set of 1 to 20 prompts, sent at once, made one after another (ChatGPT makes one picture at a
-  time), with the same reference picture for each when one is given. It reports "k of n done" as
-  it goes and answers each prompt's files, failure reason, or request id if it is still running. A
-  refusal when sending (no credit left, say) stops sending the rest, and the answer says which
-  prompts were not sent.
-- `get_image(request_id, save_dir=None, preview=True)`: collects such a request later.
-- `account_status()`: the credits left today, when they come back, whether ChatGPT is served right
-  now, and how much of the worker's picture budget is used (40 in three hours by default,
-  `IMAGE_BUDGET_3H`; past it requests wait in the queue); worth asking before a set.
-- `cancel_image(request_id)`: cancels a request sent by mistake, queued or running, and gives its
-  credit back.
-
-Every answer carries a preview of each picture (a JPEG, at most 512 px a side) for the agent to look
-at, and the same facts as structured content (the request, its status, each file). `preview=False`
-leaves the preview out. A picture is saved as `<prompt slug>-<request>-<n>.png`, for example
-`meo-cam-ben-cua-so-b5f940d8-1.png`, and a `.json` of the same name beside it records the prompt,
-the request, the reference picture and the times.
-
-Each request costs one credit, as on the web, and a failed one gives it back. Pictures go to
-`save_dir`, or `AIP_SAVE_DIR`, or `<temp>/aip-pictures`. Under WSL a Windows path you give
-(`D:\...`) is read as `/mnt/d/...`, and every saved file is also named by its Windows path
-(`\\wsl.localhost\...`).
-
-Each day at `LIBRARY_CLEANUP_AT` (HH:MM in UTC, 16:30 by default, which is 23:30 in Vietnam; empty
-turns it off) the worker moves to ChatGPT's Library trash the pictures from before today of the
-platform's own threads, a page at a time while it has no job. A trashed file can be restored from
-the Library and no longer counts in the store. Nothing else on the account is touched: not a file of
-another thread, not a file that is not a picture. Worker health shows the last run as
-`library_cleanup` and the store as `storage`. A `continue_from` on a request from before today still
-worked after its picture was trashed (measured once, 2026-10-30).
-
-Install it in a venv of its own (the `mcp` SDK and Pillow for the previews, pinned in its
-requirements):
-
-```bash
-uv venv --python 3.11 ~/.venvs/aip-mcp
-VIRTUAL_ENV=~/.venvs/aip-mcp uv pip install -r mcp_server/requirements.txt
-```
-
-Make a key on the web's **API** page (step 7's account), then register the server. The key goes in
-the server's environment, never on its command line:
-
-- **Claude Code on Windows, the server in WSL** (this machine): Windows variables reach WSL only when
-  `WSLENV` names them (`/u`: when WSL is started from Windows). From PowerShell:
-
-  ```
-  claude mcp add --env AIP_API_KEY=aip_... AIP_API_URL=http://localhost:3000 WSLENV=AIP_API_KEY/u:AIP_API_URL/u --transport stdio aip-chatgpt-images -- wsl -d Ubuntu --exec /home/<you>/.venvs/aip-mcp/bin/python /mnt/d/keyti/ai-platform/mcp_server/chatgpt_images.py
-  ```
-
-- **Claude Code on Linux or macOS** (or inside WSL):
-
-  ```bash
-  claude mcp add --env AIP_API_KEY=aip_... --transport stdio aip-chatgpt-images -- ~/.venvs/aip-mcp/bin/python "$PWD/mcp_server/chatgpt_images.py"
-  ```
-
-- **Claude Desktop**: in `claude_desktop_config.json`, under `mcpServers`:
-
-  ```json
-  "aip-chatgpt-images": {
-    "type": "stdio",
-    "command": "/home/<you>/.venvs/aip-mcp/bin/python",
-    "args": ["/path/to/ai-platform/mcp_server/chatgpt_images.py"],
-    "env": {"AIP_API_KEY": "aip_...", "AIP_API_URL": "http://localhost:3000"}
-  }
-  ```
-
-  (on Windows, `"command": "wsl"` with the WSL line's arguments and its `WSLENV` in `env`).
-
-In Claude Code, `/mcp` shows whether it connected. Then ask the agent for a picture, or for a set:
-"make these five pictures with ChatGPT and save them in `D:\pictures\fox`: …". A call still running
-after two minutes moves to a background task in Claude Code, and its answer arrives when it ends.
-Its own test:
-`~/.venvs/aip-mcp/bin/python tests/test_mcp_chatgpt_images.py` (a fake `/v1`, no account).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) before you open a pull request.
 
 ## Troubleshooting
 
-- **The api logs `Could not import module "src.main"`** (or the full gate stops at
-  `full-gate: api does not answer on :3000`) after Windows, WSL or Docker Desktop restarts: Docker
-  Desktop started the container before WSL had mounted the project's drive, so the api's bind
-  mount is empty. Start Docker Desktop, then from the project folder in WSL:
-  `docker compose up -d --force-recreate`. The database is on the `storage/db` bind mount and
-  survives.
-- **After a change to `web/package.json` or `web/package-lock.json`**: the web image installs with
-  `npm ci`, but the container keeps its old `node_modules` volume on a plain `up -d`. Run
-  `docker compose build web && docker compose up -d --renew-anon-volumes web`.
-- **The web and the api are silent while :8000 still answers**: the host worker does not depend on
-  Docker, so this is the stack, not the platform; check that Docker Desktop is running, then the
-  first item above.
+**The API does not answer after a restart of Windows, WSL or Docker.** Docker Desktop may have started the
+container before WSL mounted the drive. It also does not start by itself unless you set it to. Start it,
+then:
 
-More traps, and the project's live state: `docs/agent/HANDOFF.md`. Working rules for agents:
-`CLAUDE.md`.
+```bash
+docker compose up -d --force-recreate
+```
+
+**The browser does not start.** A system library is probably missing. This prints what is:
+
+```bash
+ldd ~/.cloakbrowser/chromium-*/chrome | grep "not found"
+```
+
+**The browser download fails, or asks for a license key.** CloakBrowser's terms and downloads change over
+time. Check [its documentation](https://github.com/CloakHQ/CloakBrowser#readme) for the pinned version in
+`worker/requirements.txt`.
+
+**A job fails with `no_worker`.** No worker has served that provider or account lately. Check that the worker
+is running and that the provider is in `PROVIDERS`.
+
+**A turn is refused: logged out, or memory on.** Stop the worker, log in again or turn memory off (step 6), and
+start it. The provider is held out for 10 minutes after such a failure (`PROVIDER_HOLD_SECONDS`).
+
+**A provider shows a Cloudflare or "unusual traffic" check.** The worker does not solve these. Slow down, give
+it time, and log in by hand if needed. If it keeps happening, take the provider out of `PROVIDERS` for a while.
+
+**A request waits for a long time.** Its account may have spent its picture budget, or be in a back-off. `GET
+/v1/providers` and the MCP's `account_status` show `budget_free_at` and the queue.
+
+**The web still runs old packages after a change to `web/package*.json`:**
+
+```bash
+docker compose build web && docker compose up -d --renew-anon-volumes web
+```
+
+## Contributing, security, license
+
+Contributions are welcome: see [`CONTRIBUTING.md`](CONTRIBUTING.md). Report a vulnerability privately, as
+[`SECURITY.md`](SECURITY.md) says. Released under the [MIT License](LICENSE).

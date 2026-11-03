@@ -1,5 +1,5 @@
 #!/bin/sh
-# The full gate in one command (CLAUDE.md): the quick gate, the web build, then ui_smoke against a
+# The full gate in one command: the quick gate, the web build, then ui_smoke against a
 # compose stack and a mock worker OF ITS OWN. The gate's stack is a second compose project
 # (`aip-gate`) on GATE_API_PORT and GATE_WEB_PORT, with its database and media in storage/gate/,
 # emptied at each run; its mock worker (MOCK_DELAY_SECONDS=4, which ui_smoke's typing check needs)

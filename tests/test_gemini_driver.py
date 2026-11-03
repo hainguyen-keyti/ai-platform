@@ -3,7 +3,7 @@
 
     ~/cloakbrowser-env/bin/python tests/test_gemini_driver.py
 
-Measured 2026-09-25 and 2026-09-27 (docs/research/2026-09-27-gemini.md): the composer is a Quill
+Measured 2026-09-25 and 2026-09-27: the composer is a Quill
 editor; a generated picture arrives from lh3.googleusercontent.com/rd-gg-dl/ during the turn, while
 a user's upload shows from a blob and, reopened, from /rd-gg/ (so a loose "/rd-gg" match would take
 it); the personal context switch is read on /personalization-settings, and a signed-out session is

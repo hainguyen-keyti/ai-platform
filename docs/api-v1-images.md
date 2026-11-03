@@ -49,7 +49,7 @@ Each entry also says how busy it is: `waiting`, the requests in its queue; `pict
 `picture_budget`, what its worker has made of the pictures it allows itself in three hours (40 by
 default, `IMAGE_BUDGET_3H`, so an account is not driven into a wall); and `budget_free_at` (UTC), set
 only while that budget is spent. Past the budget a request is taken and charged but waits in the
-queue until then; it still counts as `served`. The count starts again when the worker restarts.
+queue until then; it still counts as `served`. The count survives a restart of the worker.
 
 ## Your credits
 

@@ -5,8 +5,8 @@
     ~/cloakbrowser-env/bin/python tests/provider_probe.py send,cleanup    # comma-separated; always run in PROBES order
     ~/cloakbrowser-env/bin/python tests/provider_probe.py memory-toggle   # by name only
 
-Each probe prints what it saw; nothing here asserts a wish. The output is copied
-into docs/research as the record of what the site did that day. It drives the
+Each probe prints what it saw; nothing here asserts a wish. The output is the
+record of what the site did that day. It drives the
 worker's own provider class against the saved session in storage/sessions, so
 the code paths measured are the ones in production. It creates one thread of its
 own and deletes only that one. Stop the host worker first: memory-toggle must

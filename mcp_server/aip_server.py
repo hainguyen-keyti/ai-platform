@@ -17,7 +17,7 @@ sent by mistake, its credit given back (issue #20).
 A picture is saved under its prompt's name with a record of it beside it, and the answer carries a
 small preview of it for the agent to look at, and its facts as structured content (issue #19).
 Under WSL a Windows path the agent gives is read where WSL sees it, and every saved picture is also
-named by its Windows path. Install and register: README.md, "MCP server for ChatGPT pictures".
+named by its Windows path. Install and register: README.md, "The MCP server".
 Issue #17.
 """
 
