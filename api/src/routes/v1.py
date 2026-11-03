@@ -367,7 +367,7 @@ def create_script(body: ScriptRequest, user: dict = Depends(api_key_user)):
     if not brief:
         raise HTTPException(status_code=422, detail="a brief is required")
     payload = {"message": build_instruction(brief, body.target, body.scenes, body.total_seconds, body.language),
-               "via": "v1", "target": body.target, "scenes": body.scenes}
+               "via": "v1", "target": body.target, "scenes": body.scenes, "total_seconds": body.total_seconds}
     if name:
         payload["session"] = name
     # With no session a script is its own conversation: a day's thread would have one script's characters in the next.

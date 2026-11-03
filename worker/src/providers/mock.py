@@ -255,6 +255,9 @@ class MockProvider(BaseProvider):
         thread = self._thread(thread_url)
         self.last_cancelled_thread = thread
         self._pace()
+        production = re.search(r"target=production scenes=\w+ total_seconds=(\w+)", message)
+        if production:
+            return GenerationResult(success=True, thread_url=thread, text=json.dumps(self._mock_production(production.group(1))))
         asked = re.search(r"target=(\w+) scenes=(\w+) seconds=(\d+)-(\d+)", message)
         target, count, low = asked.group(1), asked.group(2), int(asked.group(3))
         scenes = int(count) if count.isdigit() else 2
@@ -272,6 +275,18 @@ class MockProvider(BaseProvider):
             script["scenes"][0]["duration_seconds"] = 999
             text = "```json\n{}\n```".format(json.dumps(script))
         return GenerationResult(success=True, thread_url=thread, text=text)
+
+    @staticmethod
+    def _mock_production(total: str) -> dict:
+        """A whole film in four shots of the length asked for, from the same words each time."""
+        seconds = int(total) / 4 if total.isdigit() else 5
+        shot = {"duration_seconds": seconds, "shot_size": "close", "angle": "low", "lens": "50mm", "movement": "slow push", "composition": "off centre", "action": "the lamp turns",
+                "lighting": "low sun", "color": "teal and amber", "sound": "wind", "transition": "straight cut", "dialogue": "", "voice_over": "", "on_screen_text": ""}
+        scene = {"title": "A lighthouse", "location": "the pier", "purpose": "to hook", "description": "The lamp turns.", "shots": [dict(shot), dict(shot)]}
+        return {"title": "mock production", "concept": {"idea": "a lighthouse that listens", "audience": "everyone", "message": "listen", "tone": "warm", "visual_style": "35mm",
+                                                        "palette": "teal, amber", "synopsis": "A lamp turns."},
+                "characters": [{"name": "Lan", "description": "a red coat"}], "settings": [{"name": "the pier", "description": "at dusk"}], "scenes": [dict(scene), dict(scene)],
+                "post": {"pacing": "slow", "transitions": "straight cuts", "color_grade": "warm", "music": "piano", "sound_mix": "wind low", "subtitles": "none", "format": "9:16"}}
 
     def generate_video_script(self, image_filename: str, duration: int = 5,
                               thread_url: Optional[str] = None) -> GenerationResult:

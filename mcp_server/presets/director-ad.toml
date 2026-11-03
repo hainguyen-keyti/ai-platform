@@ -1,0 +1,57 @@
+id = "director-ad"
+mode = "script"
+target = "production"
+provider = "grok"
+seconds_input = "seconds"
+title = "Director: product ad"
+description = "A director's and screenwriter's whole product ad, for whoever makes it: concept, screenplay, timed shots of any length, post-production. Written by Grok."
+template = """
+A short product ad for social video, about {seconds} seconds.
+
+Product: {product}
+Audience: {audience}
+Main benefit: {benefit}
+Facts and offer: {facts}
+Call to action: {call_to_action}
+Tone: {tone}
+Format: {format}
+
+The arc: a hook this audience has not seen in an ad for this kind of product, understood with the sound off; their real situation shown through one concrete action; the product
+at work, close enough to see how it delivers the main benefit; the changed moment; the call to action, as a person would say it.
+
+Build the concept on one unexpected visual idea that only this product could carry, and let it return at the end. Avoid stock ad images: slow-motion smiles, floating products, a white
+studio with no story. Let the rhythm of the cut carry the energy: quick shots where the hook and the product hit, and a longer one where the viewer should feel the change. Tie the music and the cuts to each other.
+The product is used only where it is safe to use it, whatever the audience's daily life: someone who rides uses it stopped, off the bike.
+No one does anything dangerous on screen: no drinking, eating or using a phone while riding or driving, always a helmet on a motorbike and a seatbelt in a car. No child drinks alcohol or coffee or is put at risk.
+Write lines to be said aloud, as this audience really talks, never as a written or translated slogan.
+Do not invent prices, statistics, results, awards or testimonials that are not given above.
+"""
+
+[inputs.product]
+description = "the product: what it is and how it looks"
+
+[inputs.audience]
+description = "who the ad is for"
+
+[inputs.benefit]
+description = "the one main benefit to show"
+
+[inputs.facts]
+description = "true facts the ad may state: price, offer, proof"
+default = "none given; state no specifics"
+
+[inputs.call_to_action]
+description = "what the viewer should do at the end"
+default = "a natural invitation to find out more"
+
+[inputs.tone]
+description = "the tone"
+default = "warm, confident, a little playful"
+
+[inputs.format]
+description = "the frame"
+default = "vertical 9:16"
+
+[inputs.seconds]
+description = "about how long the film runs, in whole seconds"
+default = 45

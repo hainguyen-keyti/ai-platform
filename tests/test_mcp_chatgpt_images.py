@@ -131,6 +131,16 @@ class FakeV1:
                         return self.answer(200, dict(state, status="running"))
                     if held["reads"] < 2:
                         return self.answer(200, dict(state, status="running"))
+                    if held["target"] == "production":
+                        return self.answer(200, dict(state, status="done", script={
+                            "title": "Một tay", "target": "production", "total_seconds": 2.5,
+                            "concept": {"idea": "IDEA-M", "audience": "AUDIENCE-M", "message": "MESSAGE-M", "tone": "TONE-M", "visual_style": "STYLE-M", "palette": "PALETTE-M", "synopsis": "SYNOPSIS-M"},
+                            "characters": [{"name": "Linh", "description": "LOOK-M"}], "settings": [{"name": "Lề đường", "description": "SETTING-M"}],
+                            "scenes": [{"number": 1, "title": "SCENE-M", "location": "LOCATION-M", "purpose": "PURPOSE-M", "description": "DESCRIPTION-M", "shots": [
+                                {"number": 1, "duration_seconds": 2.5, "start_seconds": 0, "end_seconds": 2.5, "shot_size": "SIZE-M", "angle": "ANGLE-M", "lens": "LENS-M", "movement": "MOVE-M",
+                                 "composition": "FRAME-M", "action": "ACTION-M", "lighting": "LIGHT-M", "color": "COLOR-M", "sound": "SOUND-M", "transition": "CUT-M", "dialogue": "LINE-M",
+                                 "voice_over": "VO-M", "on_screen_text": "TEXT-M"}]}],
+                            "post": {"pacing": "PACE-M", "transitions": "TRANS-M", "color_grade": "GRADE-M", "music": "MUSIC-M", "sound_mix": "MIX-M", "subtitles": "SUBS-M", "format": "FORMAT-M"}}))
                     if "oldscript" in held["brief"]:
                         return self.answer(200, dict(state, status="done", script={
                             "title": "Old", "target": held["target"], "total_seconds": 8, "characters": [],
@@ -451,6 +461,35 @@ async def run(fake, work):
         for preset in ("content-ad-flow", "content-review-flow"):
             result = await client.call_tool("generate", {"preset": preset, "inputs": content[preset][0], "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
             record("{} forbids inventing claims".format(preset), "Do not invent" in fake.script_posts[-1]["brief"], fake.script_posts[-1]["brief"][-200:])
+        director = {"director-ad": {"product": "PRODUCT-X", "audience": "AUDIENCE-X", "benefit": "BENEFIT-X"},
+                    "director-story": {"idea": "IDEA-X", "characters": "CHARACTER-X"},
+                    "director-review": {"product": "PRODUCT-X", "audience": "AUDIENCE-X", "experience": "EXPERIENCE-X"},
+                    "director-explainer": {"topic": "TOPIC-X", "points": "POINTS-X", "audience": "AUDIENCE-X"}}
+        for preset, given in director.items():
+            result = await client.call_tool("generate", {"preset": preset, "inputs": given, "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            asked = fake.script_posts[-1]
+            brief = asked["brief"]
+            record("{} asks Grok for a whole film of 45s by default, in Vietnamese, with what it was given".format(preset),
+                   not result.is_error and asked["target"] == "production" and asked["provider"] == "grok" and asked["total_seconds"] == 45 and asked["language"] == "vi"
+                   and "scenes" not in asked and all(value in brief for value in given.values()) and "vertical 9:16" in brief and "{" not in brief, "{} {}".format(asked, said(result)[:80]))
+            record("{} keeps danger off screen and asks for rhythm in its cut".format(preset),
+                   "No one does anything dangerous" in brief and "No child" in brief and "rhythm" in brief and "aloud" in brief, brief[-200:])
+            result = await client.call_tool("generate", {"preset": preset, "inputs": dict(given, seconds=90), "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            record("{} takes the film's length from its input".format(preset), not result.is_error and fake.script_posts[-1]["total_seconds"] == 90 and "90 seconds" in fake.script_posts[-1]["brief"], said(result)[:90])
+            before = len(fake.script_posts)
+            result = await client.call_tool("generate", {"preset": preset, "inputs": dict(given, seconds="dài"), "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            record("{} refuses a length that is not a number, and sends nothing".format(preset), result.is_error and "seconds" in said(result) and len(fake.script_posts) == before, said(result)[:90])
+        for preset, wanted in (("director-ad", "Do not invent"), ("director-ad", "where it is safe to use"), ("director-story", "Throw away the first ending"),
+                               ("director-review", "Do not invent"), ("director-review", "different shot size"), ("director-explainer", "snowball")):
+            result = await client.call_tool("generate", {"preset": preset, "inputs": director[preset], "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+            record("{} says: {}".format(preset, wanted), wanted in fake.script_posts[-1]["brief"], fake.script_posts[-1]["brief"][-200:])
+        result = await client.call_tool("write_video_script", {"brief": "a film", "target": "production", "total_seconds": 3, "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+        data = result.structured_content or {}
+        film_text = Path(data.get("markdown_path") or "/nowhere").read_text(encoding="utf-8") if data.get("markdown_path") else ""
+        missing = [word for word in ("IDEA-M", "AUDIENCE-M", "MESSAGE-M", "TONE-M", "STYLE-M", "PALETTE-M", "SYNOPSIS-M", "LOOK-M", "SETTING-M", "SCENE-M", "LOCATION-M", "PURPOSE-M", "DESCRIPTION-M",
+                                     "SIZE-M", "ANGLE-M", "LENS-M", "MOVE-M", "FRAME-M", "ACTION-M", "LIGHT-M", "COLOR-M", "SOUND-M", "CUT-M", "LINE-M", "VO-M", "TEXT-M",
+                                     "PACE-M", "TRANS-M", "GRADE-M", "MUSIC-M", "MIX-M", "SUBS-M", "FORMAT-M", "00:00 to 00:02.5") if word not in film_text]
+        record("a production's Markdown shows every part of it, its shots timed", not result.is_error and not missing, missing or said(result)[:90])
         for name, arguments, word in (("a missing input", {"preset": "character-scene", "inputs": {"character": "Lan"}}, "needs"),
                                       ("an input it does not take", {"preset": "short-film-wan", "inputs": {"story": "x", "mood": "y"}}, "no input mood"),
                                       ("a preset that is not there", {"preset": "nosuch", "inputs": {}}, "no preset"),

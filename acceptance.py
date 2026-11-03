@@ -1318,15 +1318,18 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
         _, broken, broken_job = script_for(brief="answer with a broken script")
         _, too_long, _ = script_for(brief="answer with a scene too long")
         after = credits_of(k5.get("key"))
+        _, whole_film, _ = script_for(target="production", total_seconds=40)
+        film_shots = [shot for scene in (whole_film.get("script") or {}).get("scenes") or [] for shot in scene.get("shots") or []]
         flow_scenes = (flow.get("script") or {}).get("scenes") or []
-        if (code == 202 and flow.get("status") == "done" and flow.get("provider") == "grok" and flow.get("session") == "lan" and len(flow_scenes) == 2
+        if (whole_film.get("status") == "done" and whole_film.get("provider") == "grok" and len(film_shots) == 4 and film_shots[-1].get("end_seconds") == 40
+                and (whole_film.get("script") or {}).get("post", {}).get("pacing") and code == 202 and flow.get("status") == "done" and flow.get("provider") == "grok" and flow.get("session") == "lan" and len(flow_scenes) == 2
                 and flow_scenes[0]["duration_seconds"] == 8 and (wan.get("script") or {}).get("scenes", [{}])[0].get("negative_prompt")
                 and h3.get("status") == "done" and before - mid == 3 and broken.get("status") == "failed" and "fit" in (broken.get("error") or "")
                 and broken_job.get("error_kind") == "bad_script" and too_long.get("status") == "failed" and "999" in (too_long.get("error") or "") and after == mid):
-            c[scripts_ok].passed("flow, wan and minimax_h3 done on grok; a broken one and a long one failed, credits {} then {} then {}".format(before, mid, after))
+            c[scripts_ok].passed("flow, wan, minimax_h3 and a production done on grok; a broken one and a long one failed, credits {} then {} then {}".format(before, mid, after))
         else:
-            c[scripts_ok].failed("flow {} {}; wan {}; h3 {}; broken {} {}; long {}; credits {} {} {}".format(
-                code, flow, wan.get("status"), h3.get("status"), broken, broken_job.get("error_kind"), too_long, before, mid, after))
+            c[scripts_ok].failed("flow {} {}; wan {}; h3 {}; broken {} {}; long {}; credits {} {} {}; production {}".format(
+                code, flow, wan.get("status"), h3.get("status"), broken, broken_job.get("error_kind"), too_long, before, mid, after, whole_film))
 
         spent = credits_of(k5.get("key"))
         unknown = http("POST", api + "/v1/scripts", {"brief": "x", "target": "nosuch"}, token=k5.get("key"))[0]
@@ -1336,7 +1339,7 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
         shown = json.dumps(flow)
         not_a_script = http("GET", api + "/v1/scripts/{}".format(one_a[0]), token=k1.get("key"))[0]
         if (unknown == 400 and nobody == 400 and anon == 401 and credits_of(k5.get("key")) == spent and targets[0] == 200
-                and [t["name"] for t in targets[1]["targets"]] == ["flow", "minimax_h3", "wan"] and "account" not in shown and not_a_script == 404):
+                and [t["name"] for t in targets[1]["targets"]] == ["flow", "minimax_h3", "wan", "production"] and "account" not in shown and not_a_script == 404):
             c[scripts_refused].passed("unknown target 400, unknown provider 400, anonymous 401, credits {} unchanged".format(spent))
         else:
             c[scripts_refused].failed("target {} provider {} anon {} credits {} then {}; targets {}; picture read as a script {}".format(

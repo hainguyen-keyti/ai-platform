@@ -1,0 +1,47 @@
+id = "director-story"
+mode = "script"
+target = "production"
+provider = "grok"
+seconds_input = "seconds"
+title = "Director: short story"
+description = "A director's and screenwriter's whole short story, for whoever makes it: concept, screenplay, timed shots of any length, post-production. Written by Grok."
+template = """
+A short story for social video, about {seconds} seconds.
+
+Idea: {idea}
+Characters: {characters}
+Setting: {setting}
+Mood: {mood}
+Format: {format}
+
+The arc: the character in the middle of something strange or at stake, with no setup; what is normal here, in one telling detail; what the character wants, through an action; what stands in
+the way, raising the stakes; a turn the viewer did not see coming, which the opening quietly prepared; a closing image that answers the first one and leaves one feeling.
+
+Tell it through what the viewer sees: dialogue only where a look could not say it, and silence is allowed. Let color and light change with the character's state across the film, within the palette.
+Let the rhythm of the cut follow the character's breath: hold on what matters, cut quickly when something breaks, and leave a held last shot. Avoid dreams, narrated morals and endings that explain themselves.
+Throw away the first ending that comes to mind, and the second: the turn must change what the opening meant, and the viewer must see it, not be told.
+No one does anything dangerous on screen: no drinking, eating or using a phone while riding or driving, always a helmet on a motorbike and a seatbelt in a car. No child drinks alcohol or coffee or is put at risk.
+Write lines to be said aloud, as these characters would really talk, never written or translated phrasing.
+"""
+
+[inputs.idea]
+description = "the idea of the story"
+
+[inputs.characters]
+description = "who is in it: their look and what they want"
+
+[inputs.setting]
+description = "where and when it happens"
+default = "choose a specific place and time that sharpens the idea"
+
+[inputs.mood]
+description = "the mood"
+default = "tender, with a quiet surprise"
+
+[inputs.format]
+description = "the frame"
+default = "vertical 9:16"
+
+[inputs.seconds]
+description = "about how long the film runs, in whole seconds"
+default = 45

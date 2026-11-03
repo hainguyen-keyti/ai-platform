@@ -577,7 +577,7 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
             elif status == "done" and job["feature"] == "script":
                 asked = json.loads(job["payload"]) or {}
                 try:
-                    text = json.dumps(checked_script(text, asked.get("target"), asked.get("scenes")), ensure_ascii=False)
+                    text = json.dumps(checked_script(text, asked.get("target"), asked.get("scenes"), asked.get("total_seconds")), ensure_ascii=False)
                 except ScriptError as exc:
                     status, error_kind, error = "failed", "bad_script", "the script does not fit: {}".format(exc)
 

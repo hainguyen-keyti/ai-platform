@@ -206,7 +206,7 @@ picture made on the web and a chat turn answer `404`, as they do on a read.
 | Field | Required | What |
 |---|---|---|
 | `brief` | yes | The story, up to 8000 characters |
-| `target` | yes | `flow`, `minimax_h3` or `wan` |
+| `target` | yes | `flow`, `minimax_h3` or `wan`; or `production`, a director's whole film for no particular tool |
 | `provider` | no | Who writes it: `grok` (the default), `chatgpt` or `gemini` |
 | `scenes`, `total_seconds` | no | How many scenes, and about how long in all |
 | `language` | no | The language of the dialogue, `vi` by default. The prompts are in English |
@@ -215,6 +215,11 @@ picture made on the web and a chat turn answer `404`, as they do on a read.
 It answers `202` with an `id`. `GET /v1/scripts/{id}` gives `status` and, once `done`, `script`: `title`, `target`, `total_seconds`, `direction` (`concept`, `hook`, `visual_style`, `palette`), `characters`, and `scenes`, each with
 `number`, `duration_seconds`, `description`, `camera`, `color`, `lighting`, `sound` (not for `wan`, which is silent), `dialogue`, `image_prompt`, `video_prompt`, and `negative_prompt` for `wan`. A reply that is not valid or does not fit the target ends `failed`
 with the reason in `error`, and its credit comes back. `POST /v1/scripts/{id}/cancel` cancels one.
+
+With `target` `production` the `script` is instead `title`, `total_seconds`, `concept` (`idea`, `audience`, `message`, `tone`, `visual_style`, `palette`, `synopsis`), `characters`, `settings`, `post`
+(`pacing`, `transitions`, `color_grade`, `music`, `sound_mix`, `subtitles`, `format`) and `scenes` (`title`, `location`, `purpose`, `description`), each with `shots` of 0.5 to 60 seconds:
+`number`, `duration_seconds`, `start_seconds`, `end_seconds`, `shot_size`, `angle`, `lens`, `movement`, `composition`, `action`, `lighting`, `color`, `sound`, `transition`, `dialogue`, `voice_over`, `on_screen_text`.
+The film must run within 15% of `total_seconds`, and every text comes in `language`.
 
 ## Errors
 
