@@ -352,6 +352,32 @@ systemctl --user status aip-worker
 
 Its log is `~/.cache/ai-platform/host-worker-real.log`. Stop it before you log in to an account.
 
+**Bring everything back after a restart.** Docker Desktop does not come back by itself when WSL restarts, and
+after a restart Docker can start the API before WSL has mounted the project's drive. Two pieces fix both:
+
+```bash
+./scripts/install-autostart.sh                 # in WSL: a timer checks the stack every 3 minutes
+```
+
+```
+pwsh -File scripts\windows\install-autostart.ps1    # on Windows: starts Docker Desktop and WSL when they are down
+```
+
+The WSL timer runs `scripts/ensure-stack.sh`, which waits for Docker, starts the stack if the API does not
+answer, recreates the API and web containers if that is not enough, and starts the worker service if it is
+stopped. It does nothing while everything is up, and it never restarts a running worker. The Windows task
+runs at sign-in and every 5 minutes. Logs: `~/.cache/ai-platform/ensure-stack.log` in WSL and
+`%LOCALAPPDATA%\ai-platform\ensure-windows.log` on Windows.
+
+To take the stack down on purpose, stop the timer first, or it comes back within 3 minutes:
+
+```bash
+systemctl --user stop aip-stack.timer && docker compose down
+```
+
+Start it again with `systemctl --user start aip-stack.timer`. Remove the Windows task with
+`Unregister-ScheduledTask -TaskName 'AI Platform autostart' -Confirm:$false`.
+
 **Several accounts.** An account with room takes the next request, and two accounts can run at once. A
 conversation stays on the account that started it. The picture budget, the back-off and the Library
 cleanup are per account.
@@ -439,8 +465,8 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) before you open a pull request.
 ## Troubleshooting
 
 **The API does not answer after a restart of Windows, WSL or Docker.** Docker Desktop may have started the
-container before WSL mounted the drive. It also does not start by itself unless you set it to. Start it,
-then:
+container before WSL mounted the drive. It also does not start by itself unless you set it to. The autostart
+pieces above fix this by themselves within a few minutes. Without them, start Docker Desktop, then:
 
 ```bash
 docker compose up -d --force-recreate
