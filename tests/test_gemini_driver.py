@@ -1116,6 +1116,24 @@ def main():
     record("a switch that never renders reads unknown and does not block",
            p.memory == "unknown" and outcome == "sent",
            "health memory {!r}, outcome {!r}".format(p.memory, outcome))
+    # 2026-11-06: one real turn read unknown and kept nothing to say why; the next reads were off.
+    switch_records = sorted(kept.glob("gemini-switch-*.json"))
+    said = json.loads(switch_records[-1].read_text(encoding="utf-8")) if switch_records else {}
+    polls = said.get("polls") or []
+    # This account's saved-info page reads off: only the settings page is unknown.
+    record("an unknown reading keeps a record and a picture: where it asked, where it landed, every poll",
+           len(switch_records) == 1 and switch_records[0].with_suffix(".png").exists()
+           and said.get("asked") == "/personalization-settings"
+           and said.get("landed", "").endswith("/personalization-settings") and len(polls) >= 20
+           and all(set(poll) == {"at", "path", "switches", "checked"} for poll in polls)
+           and all(poll["switches"] == 0 for poll in polls),
+           "{} records, last {}".format(len(switch_records), {k: said.get(k) for k in ("asked", "landed", "error")}))
+    before = len(list(kept.glob("gemini-switch-*")))
+    p = provider_on(Page(clock), Page(clock, composer=False, landed="https://gemini.google.com/personalization-settings",
+                                      checked="false"))
+    p._guard()
+    record("a switch read off keeps nothing", p.memory == "off" and len(list(kept.glob("gemini-switch-*"))) == before,
+           "memory {!r}, files {} then {}".format(p.memory, before, len(list(kept.glob("gemini-switch-*")))))
 
     # Whole turns, through _run, on the fake page.
     stream_ok = Response("https://gemini.google.com/_/BardChatUi/data/assistant.lamda."
@@ -1516,7 +1534,7 @@ def main():
     page.replies = [stream_ok]
     kind, message, took, p = refusal(page, off())
     record("a turn that lands on Google's unusual-traffic check fails at once, naming it",
-           kind == "provider_error" and "unusual-traffic" in message and took < 5
+           kind == "provider_blocked" and "unusual-traffic" in message and took < 5
            and page.sent == [], "{} after {:.0f}s: {!r}".format(kind, took, message[:120]))
     record("the unusual-traffic check's url never reaches the error a user sees",
            "q=" not in message and "EgQ" not in message and "sorry/index" not in message,
@@ -1527,7 +1545,7 @@ def main():
     page.replies = [stream_ok]
     kind, message, took, p = refusal(page, settings)
     record("the guard reads Google's unusual-traffic check as blocked, never as signed out",
-           kind == "provider_error" and "unusual-traffic" in message and p.memory == "blocked"
+           kind == "provider_blocked" and "unusual-traffic" in message and p.memory == "blocked"
            and page.sent == [], "{} memory {} sent {}: {!r}".format(kind, p.memory, len(page.sent),
                                                                    message[:120]))
 
@@ -1621,8 +1639,8 @@ def main():
     page = Page(clock)
     page.replies = [stream_ok]
     kind, message, took, p = refusal(page, account(saved_landed=sorry))
-    record("Google's unusual-traffic check on the saved-info page is blocked, a provider error",
-           kind == "provider_error" and "unusual-traffic" in message and p.memory == "blocked"
+    record("Google's unusual-traffic check on the saved-info page is blocked, and the account held (issue #31)",
+           kind == "provider_blocked" and "unusual-traffic" in message and p.memory == "blocked"
            and page.sent == [] and "q=" not in message and "EgQ" not in message,
            "{} memory {} sent {}: {!r}".format(kind, p.memory, len(page.sent), message[:80]))
 
@@ -1639,7 +1657,7 @@ def main():
             ("a session sent to Google's sign-in", Page(clock, composer=False, landed=signin),
              "provider_misconfigured", "signed-out", "signed out"),
             ("Google's unusual-traffic check", Page(clock, composer=False, landed=sorry),
-             "provider_error", "blocked", "unusual-traffic")):
+             "provider_blocked", "blocked", "unusual-traffic")):
         outcome, said, p, took = look(settings)
         record("{}: the look ends at the settings page, saved info is not loaded".format(label),
                outcome == kind and p.memory == memory and words in said and "saved info" not in said

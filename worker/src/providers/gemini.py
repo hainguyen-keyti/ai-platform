@@ -254,9 +254,11 @@ class GeminiProvider(BaseProvider):
         default. A signed-out session asking for /personalization-settings lands on /saved-info,
         whose two switches are neither.
         """
+        polls, error = [], None
         try:
             page.goto(url, timeout=60000, wait_until="domcontentloaded")
-            deadline = time.time() + SETTINGS_WAIT
+            started = time.time()
+            deadline = started + SETTINGS_WAIT
             off_site = was_off = False
             while time.time() < deadline:
                 page.wait_for_timeout(500)
@@ -270,19 +272,45 @@ class GeminiProvider(BaseProvider):
                 # Sent to /saved-info from another page (measured): no account.
                 if path == SAVED_INFO_PATH and own != SAVED_INFO_PATH:
                     return "signed-out"
-                checked = None
+                checked = count = None
                 if path == own:
                     switches = page.locator(SWITCH)
-                    if switches.count() == 1:
+                    count = switches.count()
+                    if count == 1:
                         checked = switches.first.get_attribute("aria-checked")
+                polls.append({"at": round(time.time() - started, 1), "path": landed.hostname if off_site else path,
+                              "switches": count, "checked": checked})
                 if checked == "true":
                     return "on"
                 if checked == "false" and was_off:
                     return "off"
                 was_off = checked == "false"
-            return "signed-out" if off_site else "unknown"
+            if off_site:
+                return "signed-out"
+        except Exception as exc:
+            error = "{}: {}".format(type(exc).__name__, str(exc).splitlines()[0][:160] if str(exc) else "")
+        self._keep_switch(page, own, polls, error)
+        return "unknown"
+
+    def _keep_switch(self, page, own: str, polls: list, error: Optional[str]):
+        """What a settings page showed when its switch could not be read (2026-11-06: one real turn read
+        unknown and nothing said why; the next reads were off): every poll, and a picture, under
+        failures_path. Keeping it never changes the reading."""
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        name = "gemini-switch-{}-{}-{}".format(stamp, own.strip("/"), uuid.uuid4().hex[:6])
+        record = {"account": self.account, "asked": own, "landed": None, "error": error,
+                  "settings_wait": SETTINGS_WAIT, "polls": polls}
+        try:
+            # Never the query: Google's check carries the network's address there.
+            record["landed"] = (page.url or "").split("?")[0]
         except Exception:
-            return "unknown"
+            pass
+        try:
+            self.failures_path.mkdir(parents=True, exist_ok=True)
+            (self.failures_path / (name + ".json")).write_text(json.dumps(record, indent=1), encoding="utf-8")
+            page.screenshot(path=str(self.failures_path / (name + ".png")))
+        except Exception:
+            pass
 
     def _guard(self):
         """Look before speaking, at both of the account's memory switches, in a tab of its own so
