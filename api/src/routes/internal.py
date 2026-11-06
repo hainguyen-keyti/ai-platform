@@ -61,4 +61,5 @@ def submit_result(job_id: str, body: WorkerResult, _: bool = Depends(require_wor
         error_kind=body.error_kind,
         thread_url=body.thread_url,
         hold_seconds=body.hold_seconds,
+        retry_safe=body.retry_safe,
     )

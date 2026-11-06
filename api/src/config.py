@@ -40,6 +40,10 @@ class Settings:
         # A turn refused because the provider's account needs its admin holds that provider out this
         # long; then the next turn finds out whether it has been fixed.
         self.provider_hold_seconds = int(os.environ.get("PROVIDER_HOLD_SECONDS", "600"))
+        # An account behind a check or logged out waits for a person: half an hour, then the next turn finds out (issue #31).
+        self.provider_blocked_hold_seconds = int(os.environ.get("PROVIDER_BLOCKED_HOLD_SECONDS", "1800"))
+        # A turn that never reached the provider waits this long before it is taken again (issue #31).
+        self.job_retry_seconds = int(os.environ.get("JOB_RETRY_SECONDS", "60"))
 
 
 settings = Settings()

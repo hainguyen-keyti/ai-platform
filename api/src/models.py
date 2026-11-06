@@ -79,6 +79,8 @@ class WorkerResult(BaseModel):
     thread_url: Optional[str] = Field(default=None, max_length=500)
     # How long the account should be left alone, when the provider said (issue #29).
     hold_seconds: Optional[int] = Field(default=None, ge=0, le=604800)
+    # The worker's word that the turn never reached the provider, so it may be queued again (issue #31).
+    retry_safe: bool = False
 
 
 class WorkerPacing(BaseModel):

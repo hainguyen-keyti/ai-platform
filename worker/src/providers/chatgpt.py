@@ -319,6 +319,9 @@ SNAPSHOT_DOWNLOADS = """
 class SendRefused(ProviderError):
     """Cloudflare answered this turn's send with its check, so the turn never reached ChatGPT."""
 
+    def __init__(self, message: str):
+        super().__init__(message, kind="provider_blocked")
+
 
 class ChatGPTProvider(BaseProvider):
     """Drives a logged-in chatgpt.com session through cloakbrowser.
@@ -416,7 +419,8 @@ class ChatGPTProvider(BaseProvider):
         while self._settings_status(page) == 403:
             if waited >= CHECK_WAIT_SECONDS:
                 self._keep_check(page, "cloudflare check before sending")
-                raise ProviderError("chatgpt stayed behind a Cloudflare check for {}s, so nothing was sent".format(waited))
+                raise ProviderError("chatgpt stayed behind a Cloudflare check for {}s, so nothing was sent".format(waited),
+                                    kind="provider_blocked")
             self._phase("waiting for the provider")
             page.wait_for_timeout(CHECK_POLL_SECONDS * 1000)
             waited += CHECK_POLL_SECONDS
@@ -550,7 +554,7 @@ class ChatGPTProvider(BaseProvider):
                                 "{}".format(type(exc).__name__))
         if not token:
             raise ProviderError("composer never appeared and there is no session token: the "
-                                "session is logged out; run scripts/login_provider.py chatgpt")
+                                "session is logged out; run scripts/login_provider.py chatgpt", kind="provider_blocked")
         raise ProviderError("composer never appeared although the session is signed in: "
                             "chatgpt.com has changed its page; measure it with "
                             "tests/provider_probe.py composer")
@@ -601,6 +605,7 @@ class ChatGPTProvider(BaseProvider):
         # Enter rather than the send button: with an attachment in the composer
         # the preview panel is painted over the button and swallows the click,
         # which the button being visible and enabled does not reveal.
+        self.sent = True
         page.keyboard.press("Enter")
         for _ in range(20):
             page.wait_for_timeout(500)
@@ -639,7 +644,7 @@ class ChatGPTProvider(BaseProvider):
                 self._access_token = self._session_token(page, 20)
             if not self._access_token:
                 raise ProviderError("no session token: the provider session is logged out; "
-                                    "run scripts/login_provider.py chatgpt")
+                                    "run scripts/login_provider.py chatgpt", kind="provider_blocked")
             try:
                 got = page.evaluate(FETCH_USER_SETTINGS, [self._access_token, list(MEMORY_KEYS)])
             except Exception:
@@ -650,7 +655,7 @@ class ChatGPTProvider(BaseProvider):
             break
         if got.get("status") == 401:
             raise ProviderError("the provider rejected a fresh session token; the session is "
-                                "logged out or expired, run scripts/login_provider.py chatgpt")
+                                "logged out or expired, run scripts/login_provider.py chatgpt", kind="provider_blocked")
         values = got.get("values") or {}
         present = [values[k] for k in MEMORY_KEYS if k in values]
         if any(v is True for v in present):
@@ -683,6 +688,7 @@ class ChatGPTProvider(BaseProvider):
                 if any(r["cf_mitigated"] and r["method"] == "POST" and r["url"].endswith(SEND_PATH) and r["at"] >= self._sent_at
                        for r in self._refused):
                     raise SendRefused(said)
+                raise ProviderError(said, kind="provider_blocked")
             raise ProviderError(said)
 
     def _thread_nodes(self, page, thread_id: str):

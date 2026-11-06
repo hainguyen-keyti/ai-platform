@@ -103,6 +103,8 @@ CHECKS = (
     "a browser that dies under a turn is dropped and cools the provider down",
     "a busy runner keeps saying it is alive",
     "the nightly Library cleanup keeps its runner alive and touches only what is ours",
+    "a failed turn says whether it reached the provider",
+    "a turn that never reached the provider is queued again, an account behind a check is held",
     "an api key is shown once, listed without its secret, stored as a hash, and revoked",
     "an api key works only on /v1/images, and a login token not there",
     "a person keeps at most ten live api keys",
@@ -1440,7 +1442,9 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             ("a job's failures take the right path through the pool and the runner", "test_worker_paths.py", 68),
             ("a browser that dies under a turn is dropped and cools the provider down", "test_pool_dead_browser.py", 6),
             ("a busy runner keeps saying it is alive", "test_runner_liveness.py", 4),
-            ("the nightly Library cleanup keeps its runner alive and touches only what is ours", "test_library_cleanup.py", 22)):
+            ("the nightly Library cleanup keeps its runner alive and touches only what is ours", "test_library_cleanup.py", 22),
+            ("a failed turn says whether it reached the provider", "test_safe_retry.py", 21),
+            ("a turn that never reached the provider is queued again, an account behind a check is held", "test_safe_retry_api.py", 10)):
         suite = subprocess.run([python, str(ROOT / "tests" / script)], capture_output=True, text=True, cwd=str(ROOT))
         lines = [l for l in ((suite.stdout or "") + (suite.stderr or "")).splitlines() if l.strip()]
         summary = next((l for l in reversed(lines) if "PASSED" in l), "")

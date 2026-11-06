@@ -298,7 +298,7 @@ class GeminiProvider(BaseProvider):
                 if state in ("blocked", "signed-out", "on"):
                     self.memory = state
                 if state == "blocked":
-                    raise ProviderError(BLOCKED)
+                    raise ProviderError(BLOCKED, kind="provider_blocked")
                 if state == "signed-out":
                     raise ProviderError(SIGNED_OUT, kind="provider_misconfigured")
                 if state == "on":
@@ -327,7 +327,7 @@ class GeminiProvider(BaseProvider):
                               "landed": (landed or page.url.split("?")[0])[:60],
                               "attempt": attempt + 1}
             if blocked:
-                raise ProviderError(BLOCKED)
+                raise ProviderError(BLOCKED, kind="provider_blocked")
             if ready and (not wanted or landed == wanted):
                 return page
         # A deleted thread lands back on /app, and so could a slow one: nothing tells them apart,
@@ -372,6 +372,7 @@ class GeminiProvider(BaseProvider):
             self._phase("retrying the composer")
         else:
             raise ProviderError("the prompt never reached gemini's composer")
+        self.sent = True
         page.keyboard.press("Enter")
 
     def _attach(self, page, filename: str):

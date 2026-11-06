@@ -26,12 +26,16 @@ class ProviderError(Exception):
 
     kind names the failure for the api and the pool: provider_error by default,
     provider_misconfigured when the account is in a state the platform must not
-    speak into, such as memory switched on.
+    speak into, such as memory switched on, provider_blocked when a check or a
+    lost login stands between the account and the site (issue #31).
+
+    retry_safe is the provider's own proof that a turn it did send never arrived.
     """
 
-    def __init__(self, message: str, kind: str = "provider_error"):
+    def __init__(self, message: str, kind: str = "provider_error", retry_safe: bool = False):
         super().__init__(message)
         self.kind = kind
+        self.retry_safe = retry_safe
 
 
 @dataclass
@@ -55,10 +59,12 @@ class GenerationResult:
     thread_url: Optional[str] = None
     # How long the account should be left alone, when the provider said.
     hold_seconds: Optional[int] = None
+    # The turn never reached the provider, so the api may queue it again (issue #31).
+    retry_safe: bool = False
 
     @classmethod
-    def failure(cls, message: str, kind: Optional[str] = None) -> "GenerationResult":
-        return cls(success=False, error=message, error_kind=kind)
+    def failure(cls, message: str, kind: Optional[str] = None, retry_safe: bool = False) -> "GenerationResult":
+        return cls(success=False, error=message, error_kind=kind, retry_safe=retry_safe)
 
 
 class BaseProvider(ABC):
@@ -80,6 +86,9 @@ class BaseProvider(ABC):
         self.sessions_path.mkdir(parents=True, exist_ok=True)
         self._phase_hook = None
         self._stop_hook = None
+        # Set just before the key press that sends a turn, cleared by the pool before each turn: a failure
+        # while it is False never reached the provider (issue #31).
+        self.sent = False
 
     def bind(self, phase_hook=None, stop_hook=None):
         """Attach the current job's progress and cancellation channels."""

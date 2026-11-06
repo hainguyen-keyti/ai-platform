@@ -310,11 +310,12 @@ class GrokProvider(BaseProvider):
             if attempt + 1 < OPEN_ATTEMPTS:
                 self._phase("waiting for the provider")
                 time.sleep(OPEN_RETRY_SECONDS * (2 ** attempt))
+        cleared = (self.last_open or {}).get("cleared")
         raise ProviderError(
             "grok did not open {}: cleared={} landed={}".format(
-                (self.thread_id(thread_url) or "a new chat")[:8],
-                (self.last_open or {}).get("cleared"),
-                (self.last_open or {}).get("landed")))
+                (self.thread_id(thread_url) or "a new chat")[:8], cleared, (self.last_open or {}).get("landed")),
+            # A verification page that never cleared needs a person at the browser (2026-11-06).
+            kind="provider_blocked" if cleared is False else "provider_error")
 
     @staticmethod
     def _flat(text: str) -> str:
@@ -377,6 +378,7 @@ class GrokProvider(BaseProvider):
             page.keyboard.insert_text(prompt)
             page.wait_for_timeout(500)
             if wanted in self._composer_text(page, composer):
+                self.sent = True
                 page.keyboard.press("Enter")
                 return
             self._phase("retrying the composer")
@@ -582,7 +584,8 @@ class GrokProvider(BaseProvider):
                         self._keep_unheard(page, cid, started)
                         raise ProviderError(
                             "grok never received this turn: its thread lists no question of it {:.0f}s "
-                            "after the send, and nothing is being generated".format(time.time() - started))
+                            "after the send, and nothing is being generated".format(time.time() - started),
+                            retry_safe=True)
                 if turn and not announced:
                     self._phase("reply started")
                     announced = True

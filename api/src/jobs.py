@@ -443,8 +443,8 @@ def claim_next_job(providers=None, pacing=None, account=None):
             _note_worker(conn, serves, pacing, asking)
             _sweep_stranded(conn)
             _sweep_unserved(conn)
-            where = "j.status = 'pending' AND j.provider IN ({}) AND (c.account IS NULL OR c.account = ?)".format(
-                ", ".join("?" * len(serves)))
+            where = ("j.status = 'pending' AND j.provider IN ({}) AND (c.account IS NULL OR c.account = ?)"
+                     " AND (j.retry_at IS NULL OR j.retry_at <= datetime('now'))").format(", ".join("?" * len(serves)))
             params = list(serves) + [asking]
             row = None if _held(conn, asking) else one(
                 conn,
@@ -457,7 +457,7 @@ def claim_next_job(providers=None, pacing=None, account=None):
             if row:
                 row["attempts"] += 1
                 conn.execute(
-                    "UPDATE jobs SET status = 'running', attempts = ?, phase = 'claimed', account = ?,"
+                    "UPDATE jobs SET status = 'running', attempts = ?, phase = 'claimed', account = ?, retry_at = NULL,"
                     " started_at = COALESCE(started_at, datetime('now')),"
                     " lease_expires_at = datetime('now', ?) WHERE id = ?",
                     (row["attempts"], asking, lease, row["id"]),
@@ -527,7 +527,23 @@ def record_progress(job_id, attempt, phase):
     return {"phase": phase}
 
 
-def record_result(job_id, attempt, status, text, media, error, error_kind=None, thread_url=None, hold_seconds=None):
+def _requeue(conn, job, attempt, error):
+    """Inside the caller's transaction: put back a turn that never reached the provider, to be taken again after a
+    wait (issue #31). Its credit stays spent while it waits. A conversation with no thread yet is let go of its
+    account, so any account of the provider may take it; one with a thread stays where its thread is."""
+    conn.execute(
+        "UPDATE jobs SET status = 'pending', error = NULL, error_kind = NULL, lease_expires_at = NULL, phase = ?,"
+        " retry_at = datetime('now', ?) WHERE id = ? AND status = 'running' AND attempts = ?",
+        ("retrying after: {}".format(error or "a failure before the send")[:300],
+         "+{} seconds".format(settings.job_retry_seconds), job["id"], attempt),
+    )
+    if job["conversation_id"]:
+        conn.execute("UPDATE conversations SET account = NULL WHERE id = ? AND provider_thread_url IS NULL",
+                     (job["conversation_id"],))
+
+
+def record_result(job_id, attempt, status, text, media, error, error_kind=None, thread_url=None, hold_seconds=None,
+                  retry_safe=False):
     media_ids = []
     with db() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -581,6 +597,14 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
                 except ScriptError as exc:
                     status, error_kind, error = "failed", "bad_script", "the script does not fit: {}".format(exc)
 
+            # Measured 2026-10-27 to 11-05: no failed job was ever tried again, and about half failed before the turn
+            # reached the provider. Only the worker's word that it did not, and only while attempts are left.
+            if (status == "failed" and retry_safe and error_kind in ("provider_error", "provider_timeout")
+                    and job["attempts"] < settings.job_max_attempts):
+                _requeue(conn, job, attempt, error)
+                conn.execute("COMMIT")
+                return {"text": "", "media": [], "requeued": True}
+
             # The message comes first so its pictures can point at it.
             message_id = None
             if status == "done" and job["conversation_id"] and (text or media):
@@ -627,6 +651,10 @@ def record_result(job_id, attempt, status, text, media, error, error_kind=None, 
             # answers at once takes the next job at once, and would fail nearly every one (2026-11-01).
             if status == "failed" and error_kind in ("provider_misconfigured", "provider_limit"):
                 _hold(conn, job["account"] or job["provider"], job["provider"], error, hold_seconds)
+            # A check or a lost login fails every turn the same way until a person sees to it (issue #31).
+            elif status == "failed" and error_kind == "provider_blocked":
+                _hold(conn, job["account"] or job["provider"], job["provider"], error,
+                      hold_seconds or settings.provider_blocked_hold_seconds)
             conn.execute("COMMIT")
         except Exception:
             _rollback(conn)

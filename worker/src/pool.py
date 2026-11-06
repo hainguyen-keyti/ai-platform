@@ -25,6 +25,11 @@ def browser_gone(exc) -> bool:
     return "has been closed" in said or "target closed" in said
 
 
+def site_slow(exc) -> bool:
+    """Playwright's word that the site did not answer in time or could not be reached: the site's, not ours."""
+    return type(exc).__name__ == "TimeoutError" or "net::err_" in str(exc).lower()
+
+
 def build_provider(name: str, account: str = None):
     """The driver of a provider, on one of its accounts. A new provider is a BaseProvider and a line here."""
     if settings.provider_mode == "mock":
@@ -254,6 +259,13 @@ class BrowserPool:
         with self._locks[provider_name]:
             self._used_at[provider_name] = time.time()
             provider.bind(phase_hook, stop_hook)
+            if hasattr(provider, "sent"):
+                provider.sent = False
+
+            def unsent(also=False):
+                # A driver that keeps no mark is taken to have sent: trying again could send twice.
+                return also or getattr(provider, "sent", True) is False
+
             try:
                 if feature == "chat":
                     return provider.chat(
@@ -279,7 +291,9 @@ class BrowserPool:
                     success=False, error="cancelled while running", error_kind="cancelled",
                     thread_url=getattr(provider, "last_cancelled_thread", None))
             except ProviderError as exc:
-                return GenerationResult.failure(str(exc), kind=exc.kind)
+                # An account that needs its admin or is behind a check fails the same way again: the api holds it.
+                safe = exc.kind in ("provider_error", "provider_timeout") and unsent(exc.retry_safe)
+                return GenerationResult.failure(str(exc), kind=exc.kind, retry_safe=safe)
             except Exception as exc:
                 if browser_gone(exc):
                     # The page or browser died under the turn: drop it, so the next turn opens the
@@ -291,7 +305,12 @@ class BrowserPool:
                         pass
                     return GenerationResult.failure(
                         "the {} browser closed under the turn ({}: {})".format(
-                            provider_name, type(exc).__name__, exc), kind="provider_error")
+                            provider_name, type(exc).__name__, exc), kind="provider_error", retry_safe=unsent())
+                if site_slow(exc):
+                    # Measured 2026-10-31: page loads and uploads timing out seven times in a row on one account.
+                    # The site's timeout cools the account down, which a fault of our own must not.
+                    return GenerationResult.failure(
+                        "{}: {}".format(type(exc).__name__, exc), kind="provider_timeout", retry_safe=unsent())
                 return GenerationResult.failure(
                     "{}: {}".format(type(exc).__name__, exc), kind="worker_error")
             finally:

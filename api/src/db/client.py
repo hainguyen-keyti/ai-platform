@@ -49,6 +49,7 @@ def init_db():
             ("conversations", "account", "TEXT"),
             ("jobs", "account", "TEXT"),
             ("thread_tombstones", "account", "TEXT"),
+            ("jobs", "retry_at", "TEXT"),
         ):
             existing = {row["name"] for row in conn.execute("PRAGMA table_info({})".format(table))}
             if column not in existing:
