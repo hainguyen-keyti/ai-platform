@@ -24,6 +24,8 @@ SEND_BUTTON = 'button[data-testid="send-button"], button[aria-label="Send"]'
 # A relabelled button costs reads, and leaves a picture's end to the server's
 # record and its quiet time alone.
 STOP_BUTTON = '[data-testid="stop-button"], button[aria-label="Stop"]'
+# Measured 2026-11-07: after a turn from the home page, the page keeps the home view as a second,
+# zero-sized <main> whose Stop button never goes; only a visible one means a reply is being written.
 ASSISTANT_TURN = '[data-message-author-role="assistant"], [data-chatgpt-selection-message-id]'
 UPLOAD_INPUT = '#upload-files, input[type="file"][accept="image/*"]'
 # Measured 2026-10-30 on a new chat: UPLOAD_INPUT's first match is `multiple: false`; a second image
@@ -772,7 +774,7 @@ class ChatGPTProvider(BaseProvider):
                 continue
             # While the page shows the model still working, the server has
             # nothing new to say; ask it only when the page looks finished.
-            if page.locator(STOP_BUTTON).count():
+            if page.locator(STOP_BUTTON).filter(visible=True).count():
                 drawn = None
                 continue
             if time.time() < started + START_FLOOR:
@@ -908,7 +910,7 @@ class ChatGPTProvider(BaseProvider):
             self._check_stop()
             self._fail_on_banner(page, banner_before)
 
-            if page.locator(STOP_BUTTON).count():
+            if page.locator(STOP_BUTTON).filter(visible=True).count():
                 stable = 0
                 continue
             if time.time() < floor:
@@ -1052,7 +1054,7 @@ class ChatGPTProvider(BaseProvider):
     def _press_stop(self, page) -> bool:
         """Press the site's stop button if a reply is still being written; True once pressed."""
         try:
-            button = page.locator(STOP_BUTTON).first
+            button = page.locator(STOP_BUTTON).filter(visible=True).first
             if button.count():
                 button.click(timeout=5000)
                 return True

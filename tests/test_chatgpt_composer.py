@@ -90,13 +90,22 @@ class Box:
 
 
 class StopButton:
-    """The site's stop button: there while a reply is being written, pressing it ends the reply."""
+    """The site's stop button: there while a reply is being written, pressing it ends the reply.
 
-    def __init__(self, page):
-        self.page = page
+    Measured 2026-11-07 on a new account: after a turn from the home page, the page keeps the home
+    view as a second, zero-sized <main> holding a Stop button that never goes (`stale_stop`); only
+    the visible one says a reply is being written."""
+
+    def __init__(self, page, visible_only=False):
+        self.page, self.visible_only = page, visible_only
+
+    def filter(self, visible=None, **kwargs):
+        return StopButton(self.page, visible_only=bool(visible))
 
     def count(self):
-        return 1 if self.page.writing else 0
+        if self.page.writing:
+            return 1
+        return 1 if self.page.stale_stop and not self.visible_only else 0
 
     @property
     def first(self):
@@ -223,6 +232,8 @@ class Keyboard:
 
 
 class Page:
+    stale_stop = False
+
     # composer_on_load: the composer mounts only from that load on (a slow first load).
     # token_after: how many session reads answer empty before the token (a fresh browser's first reads).
     def __init__(self, clock, has=(), token="token", url="https://chatgpt.com/", composer_on_load=None,
@@ -861,6 +872,18 @@ def main():
         said = str(exc)
     record("a job taken away during the wait is not sent again", said == "cancelled" and len(page.sent) == 1,
            "{!r} sent {}".format(said[:60], len(page.sent)))
+
+    # Measured 2026-11-07, chatgpt-a3: a hidden Stop button left in the page's second <main> held every
+    # reply wait to its 300s deadline although the answer was there at 19s.
+    for threaded, way in ((True, "read from the server"), (False, "watched on the page")):
+        page = DrawingPage(clock, words_after=27, words_text="pong", threaded=threaded)
+        page.stale_stop = True
+        started = clock.now
+        got = provider_on(page).chat("Reply with exactly: pong", None, None)
+        took = clock.now - started
+        record("a hidden Stop button left on the page does not hold a reply {}".format(way),
+               got.success and "pong" in (got.text or "") and took < 120,
+               "success {} text {!r} after {:.0f}s: {!r}".format(got.success, (got.text or "")[:20], took, got.error))
 
     # Measured 2026-11-01: a Free account's answer once its pictures are spent.
     def limit_on(words):
