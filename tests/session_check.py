@@ -55,12 +55,23 @@ def http(method, url, body=None, token=None):
         return 0, None
 
 
+def provider_memory(accounts, provider):
+    """How the worker read the memory of this provider's accounts: off only when every account it has read
+    says off. The api does not say which account took the turn; the one that did has been read, and an
+    account read as anything else is reason enough to fail."""
+    readings = [entry.get("memory") for name, entry in (accounts or {}).items()
+                if (entry.get("provider") or name) == provider and entry.get("memory") is not None]
+    if not readings:
+        return None
+    return next((reading for reading in readings if reading != "off"), "off")
+
+
 def account_reading(provider):
-    """What the worker itself says: the mode it runs in and how it read this provider's account."""
+    """What the worker itself says: the mode it runs in and how it read this provider's accounts."""
     status, health = http("GET", WORKER + "/health")
     if status != 200 or not health:
         return None, None
-    return health.get("mode"), ((health.get("providers") or {}).get(provider) or {}).get("memory")
+    return health.get("mode"), provider_memory(health.get("providers"), provider)
 
 
 def answered(status, text, mode, memory, mock):
@@ -99,13 +110,34 @@ VERDICTS = (
 )
 
 
+# The worker's health, by account, and the reading owed for chatgpt (2026-11-07: three accounts, the turn on
+# chatgpt-a3, and the default account never asked, so its reading alone said None).
+def _health(**readings):
+    return {name: {"provider": name.split("-")[0], "memory": memory} for name, memory in readings.items()}
+
+
+READINGS = (
+    (_health(chatgpt=None, **{"chatgpt-a3": "off"}), "off"),
+    (_health(chatgpt="off", **{"chatgpt-a2": "off", "chatgpt-a3": None}), "off"),
+    (_health(chatgpt="off", **{"chatgpt-a2": "on"}), "on"),
+    (_health(chatgpt="unknown", **{"chatgpt-a2": "off"}), "unknown"),
+    (_health(chatgpt=None, **{"chatgpt-a2": None}), None),
+    (_health(chatgpt=None, grok="off"), None),
+    ({}, None),
+)
+
+
 def self_test():
     """The verdict against its own table: no stack, no turn."""
     wrong = [row for row in VERDICTS if bool(answered(*row[:5])) is not row[5]]
     for row in wrong:
         print("[FAIL] status {!r}, reply {!r}, mode {!r}, memory {!r}, mock {}: owed {}".format(*row))
-    print("{}/{} PASSED".format(len(VERDICTS) - len(wrong), len(VERDICTS)))
-    return 1 if wrong else 0
+    misread = [(health, owed) for health, owed in READINGS if provider_memory(health, "chatgpt") != owed]
+    for health, owed in misread:
+        print("[FAIL] readings {} gave {!r}, owed {!r}".format(health, provider_memory(health, "chatgpt"), owed))
+    total, bad = len(VERDICTS) + len(READINGS), len(wrong) + len(misread)
+    print("{}/{} PASSED".format(total - bad, total))
+    return 1 if bad else 0
 
 
 def ask(provider, token, made, mock):

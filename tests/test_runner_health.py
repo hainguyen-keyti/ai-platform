@@ -60,11 +60,26 @@ class Client:
 
 
 class Pool:
+    """What an idle runner's loop asks of its pool. Measured 2026-11-07: without stands_aside the
+    runner thread died at its first look, and the running-runner check failed on that, not on stop."""
+
     def hold_seconds(self, provider=None):
         return 0
 
     def cooling_down(self, provider):
         return False
+
+    def stands_aside(self, account):
+        return False
+
+    def close_idle(self, account):
+        return None
+
+    def can_clean_library(self, account):
+        return False
+
+    def pacing_report(self, account):
+        return {}
 
 
 def main():

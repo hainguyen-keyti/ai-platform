@@ -105,6 +105,8 @@ CHECKS = (
     "the nightly Library cleanup keeps its runner alive and touches only what is ours",
     "a failed turn says whether it reached the provider",
     "a turn that never reached the provider is queued again, an account behind a check is held",
+    "the Gemini driver holds to what was measured of its pages",
+    "a runner that has ended still answers what /health asks",
     "an api key is shown once, listed without its secret, stored as a hash, and revoked",
     "an api key works only on /v1/images, and a login token not there",
     "a person keeps at most ten live api keys",
@@ -1444,7 +1446,9 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             ("a busy runner keeps saying it is alive", "test_runner_liveness.py", 4),
             ("the nightly Library cleanup keeps its runner alive and touches only what is ours", "test_library_cleanup.py", 22),
             ("a failed turn says whether it reached the provider", "test_safe_retry.py", 21),
-            ("a turn that never reached the provider is queued again, an account behind a check is held", "test_safe_retry_api.py", 10)):
+            ("a turn that never reached the provider is queued again, an account behind a check is held", "test_safe_retry_api.py", 10),
+            ("the Gemini driver holds to what was measured of its pages", "test_gemini_driver.py", 157),
+            ("a runner that has ended still answers what /health asks", "test_runner_health.py", 4)):
         suite = subprocess.run([python, str(ROOT / "tests" / script)], capture_output=True, text=True, cwd=str(ROOT))
         lines = [l for l in ((suite.stdout or "") + (suite.stderr or "")).splitlines() if l.strip()]
         summary = next((l for l in reversed(lines) if "PASSED" in l), "")
