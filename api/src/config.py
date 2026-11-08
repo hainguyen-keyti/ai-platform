@@ -44,6 +44,11 @@ class Settings:
         self.provider_blocked_hold_seconds = int(os.environ.get("PROVIDER_BLOCKED_HOLD_SECONDS", "1800"))
         # A turn that never reached the provider waits this long before it is taken again (issue #31).
         self.job_retry_seconds = int(os.environ.get("JOB_RETRY_SECONDS", "60"))
+        # Accounts a new picture conversation goes to first, such as a Plus one (2026-11-08: sessions begun on a
+        # Free account met its limit after five pictures and waited 23 hours beside an idle Plus account).
+        # Another account takes one only while none of these can. Empty: whichever account asks first.
+        self.preferred_image_accounts = [
+            name.strip() for name in os.environ.get("PREFERRED_IMAGE_ACCOUNTS", "").split(",") if name.strip()]
 
 
 settings = Settings()

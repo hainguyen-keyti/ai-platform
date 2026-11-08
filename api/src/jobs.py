@@ -267,6 +267,19 @@ def _all_held(conn, provider):
     return any(_held(conn, name) for name in seen + [provider]) and all(_held(conn, name) for name in seen)
 
 
+def _preferred_can_take(conn, provider, asking):
+    """Whether a preferred picture account of this provider, other than the one asking, could take a new
+    conversation now: a worker asks with it, it is not held, and its picture budget is not spent."""
+    seen = set(_accounts_seen(conn, provider))
+    for name in settings.preferred_image_accounts:
+        if name == asking or name not in seen or _held(conn, name):
+            continue
+        spent = one(conn, "SELECT 1 FROM provider_accounts WHERE account = ? AND budget_free_at > datetime('now')", (name,))
+        if spent is None:
+            return True
+    return False
+
+
 def account_can_serve(conn, provider, account):
     """Whether a conversation on this account can run now. One on no account yet can, on any. One whose
     account nobody asks with can only be refused while another account is there to start a new one."""
@@ -446,6 +459,13 @@ def claim_next_job(providers=None, pacing=None, account=None):
             where = ("j.status = 'pending' AND j.provider IN ({}) AND (c.account IS NULL OR c.account = ?)"
                      " AND (j.retry_at IS NULL OR j.retry_at <= datetime('now'))").format(", ".join("?" * len(serves)))
             params = list(serves) + [asking]
+            # A picture conversation not on an account yet waits for a preferred account that can take it.
+            passed_over = [p for p in serves if asking not in settings.preferred_image_accounts
+                           and _preferred_can_take(conn, p, asking)]
+            if passed_over:
+                where += " AND NOT (j.feature = 'image' AND c.account IS NULL AND j.provider IN ({}))".format(
+                    ", ".join("?" * len(passed_over)))
+                params += passed_over
             row = None if _held(conn, asking) else one(
                 conn,
                 "SELECT j.id, j.provider, j.feature, j.payload, j.attempts, j.conversation_id,"
