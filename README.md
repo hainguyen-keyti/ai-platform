@@ -274,6 +274,7 @@ the old process: open a new session.
 | `cancel_image` | Cancels a request sent by mistake and gives its credit back |
 | `write_video_script` | Writes a script for `flow`, `minimax_h3` or `wan`, or a whole film with `production` |
 | `get_video_script` | Collects a script that is still running or already done |
+| `script_to_images` | Makes a script's first-frame pictures, one per scene, all in one session (not for `production`) |
 | `list_script_targets` | Says what each target takes |
 | `list_presets`, `generate` | List the ready recipes, and run one |
 | `list_sessions` | Lists your named sessions |
