@@ -127,6 +127,8 @@ class FakeV1:
                     state = {"id": parts[2], "target": held["target"], "session": held.get("session"), "script": None, "error": None}
                     if "badscript" in held["brief"]:
                         return self.answer(200, dict(state, status="failed", error="the script does not fit: scene 1 lasts 99s"))
+                    if "cancelledscript" in held["brief"]:
+                        return self.answer(200, dict(state, status="cancelled", error="cancelled by the user"))
                     if "slowscript" in held["brief"]:
                         return self.answer(200, dict(state, status="running"))
                     if held["reads"] < 2:
@@ -464,6 +466,12 @@ async def run(fake, work):
         record("scenes picks which are sent, and a given session wins over the script's",
                not result.is_error and len(sent) == 1 and "SCENE-TWO" in prompts_of(sent)[0] and sent[0].get("session") == b"lan-film",
                "{} {} {!r}".format(result.is_error, [(p[-30:], f.get("session")) for p, f in zip(prompts_of(sent), sent)], said(result)[:120]))
+        before = len(fake.posts)
+        result = await client.call_tool("script_to_images", {"script_id": three, "scenes": [3, 1], "save_dir": str(work / "scenes")},
+                                        read_timeout_seconds=120)
+        order = [[name in p for name in ("SCENE-ONE", "SCENE-THREE")] for p in prompts_of(scene_posts(before))]
+        record("picked scenes keep the script's order, whatever order they are named in",
+               not result.is_error and order == [[True, False], [False, True]], "{} {} {!r}".format(result.is_error, order, said(result)[:120]))
         reference = work / "scene-ref.png"
         reference.write_bytes(png(64, 64))
         before = len(fake.posts)
@@ -487,12 +495,15 @@ async def run(fake, work):
         result = await client.call_tool("write_video_script", {"brief": "a film", "target": "production", "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
         film = (result.structured_content or {}).get("request_id") or "x"
         failed = next((r for r, s in fake.scripts.items() if s["brief"] == "badscript"), "x")
+        await client.call_tool("write_video_script", {"brief": "cancelledscript", "target": "flow", "wait_seconds": 1}, read_timeout_seconds=60)
+        cancelled = next((r for r, s in fake.scripts.items() if s["brief"] == "cancelledscript"), "x")
         before = len(fake.posts)
         refusals = {name: await client.call_tool("script_to_images", {"script_id": rid}, read_timeout_seconds=60)
-                    for name, rid in (("production", film), ("running", waiting.get("request_id") or "x"), ("failed", failed), ("missing", "nosuchscript"))}
-        record("a production film, a script still running, one that failed and one that is not there are refused, sending nothing",
+                    for name, rid in (("production", film), ("running", waiting.get("request_id") or "x"), ("failed", failed),
+                                      ("cancelled", cancelled), ("missing", "nosuchscript"))}
+        record("a production film, a script still running, one that failed or was cancelled and one that is not there are refused, sending nothing",
                all(r.is_error for r in refusals.values()) and "production" in said(refusals["production"]) and "get_video_script" in said(refusals["running"])
-               and "99s" in said(refusals["failed"]) and not scene_posts(before),
+               and "99s" in said(refusals["failed"]) and "cancelled by the user" in said(refusals["cancelled"]) and not scene_posts(before),
                repr({name: (r.is_error, said(r)[:80]) for name, r in refusals.items()}))
 
         result = await client.call_tool("list_presets", {})
