@@ -146,6 +146,16 @@ class FakeV1:
                             "title": "Old", "target": held["target"], "total_seconds": 8, "characters": [],
                             "scenes": [{"number": 1, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "dialogue": "",
                                         "image_prompt": "a still", "video_prompt": "An old walk"}]}))
+                    if "scenesscript" in held["brief"] or "manyscript" in held["brief"]:
+                        many = "manyscript" in held["brief"]
+                        names = ["MANY-{}".format(n) for n in range(1, 22)] if many else ["SCENE-ONE", "SCENE-TWO", "SCENE-THREE"]
+                        return self.answer(200, dict(state, status="done", script={
+                            "title": "Ba cảnh", "target": held["target"], "total_seconds": 8 * len(names),
+                            "characters": [] if many else [{"name": "Lan", "description": "a red coat"}, {"name": "Minh", "description": "a grey hat"}],
+                            "direction": {"concept": "c", "hook": "h", "visual_style": "v", "palette": "p"},
+                            "scenes": [{"number": n, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "color": "teal", "lighting": "sun",
+                                        "sound": "wind", "dialogue": "", "image_prompt": "{} still".format(name), "video_prompt": "{} moves".format(name)}
+                                       for n, name in enumerate(names, 1)]}))
                     return self.answer(200, dict(state, status="done", script={
                         "title": "Về nhà", "target": held["target"], "total_seconds": 8, "characters": [{"name": "Lan", "description": "a red coat"}],
                         "direction": {"concept": "a coat that remembers", "hook": "she walks out of a painting", "visual_style": "35mm handheld", "palette": "teal and amber"},
@@ -269,7 +279,8 @@ async def run(fake, work):
         listed = {tool.name: tool for tool in (await client.list_tools()).tools}
         record("the server offers account_status, cancel_image, generate_image, generate_images, get_image and list_sessions",
                sorted(listed) == ["account_status", "cancel_image", "generate", "generate_image", "generate_images", "get_image",
-                                  "get_video_script", "list_presets", "list_script_targets", "list_sessions", "write_video_script"],
+                                  "get_video_script", "list_presets", "list_script_targets", "list_sessions", "script_to_images",
+                                  "write_video_script"],
                repr(sorted(listed)))
         schemas = {name: (tool.output_schema or {}).get("properties", {}) for name, tool in listed.items()}
         record("each tool publishes the shape of its answer as its output schema",
@@ -423,6 +434,66 @@ async def run(fake, work):
         record("get_video_script reads it again", not result.is_error and (result.structured_content or {}).get("status") == "running", said(result)[:90])
         result = await client.call_tool("list_script_targets", {})
         record("list_script_targets says what each video model takes", not result.is_error and (result.structured_content or {})["targets"][0]["name"] == "flow", said(result)[:90])
+
+        # Issue #32: a script's scenes as pictures in one session.
+        def scene_posts(before):
+            return [p["fields"] for p in fake.posts[before:] if p["path"] == "/v1/images"]
+
+        def prompts_of(fields):
+            return [f.get("prompt", b"").decode() for f in fields]
+
+        result = await client.call_tool("write_video_script", {"brief": "scenesscript", "target": "flow", "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+        three = (result.structured_content or {}).get("request_id") or "x"
+        before = len(fake.posts)
+        result = await client.call_tool("script_to_images", {"script_id": three, "save_dir": str(work / "scenes")}, read_timeout_seconds=120)
+        sent = scene_posts(before)
+        prompts = prompts_of(sent)
+        order = [[name in p for name in ("SCENE-ONE", "SCENE-TWO", "SCENE-THREE")] for p in prompts]
+        record("script_to_images sends each scene's first frame, in the script's order, all in one session named after the script",
+               not result.is_error and order == [[True, False, False], [False, True, False], [False, False, True]]
+               and all(f.get("session") == "script-{}".format(three[:8]).encode() for f in sent)
+               and [r["status"] for r in (result.structured_content or {}).get("requests") or []] == ["done"] * 3 and len(pictures(work / "scenes")) == 3,
+               "{} {} {!r}".format(result.is_error, [(p[-30:], f.get("session")) for p, f in zip(prompts, sent)], said(result)[:120]))
+        record("each scene's prompt carries every character's look before the scene",
+               len(prompts) == 3 and all(all(word in p for word in ("Lan", "a red coat", "Minh", "a grey hat"))
+                                         and p.index("a grey hat") < p.index("SCENE-") for p in prompts), repr([p[:160] for p in prompts]))
+        before = len(fake.posts)
+        result = await client.call_tool("script_to_images", {"script_id": three, "scenes": [2], "session": "lan-film", "save_dir": str(work / "scenes")},
+                                        read_timeout_seconds=120)
+        sent = scene_posts(before)
+        record("scenes picks which are sent, and a given session wins over the script's",
+               not result.is_error and len(sent) == 1 and "SCENE-TWO" in prompts_of(sent)[0] and sent[0].get("session") == b"lan-film",
+               "{} {} {!r}".format(result.is_error, [(p[-30:], f.get("session")) for p, f in zip(prompts_of(sent), sent)], said(result)[:120]))
+        reference = work / "scene-ref.png"
+        reference.write_bytes(png(64, 64))
+        before = len(fake.posts)
+        result = await client.call_tool("script_to_images", {"script_id": three, "scenes": [1], "reference_path": str(reference), "save_dir": str(work / "scenes")},
+                                        read_timeout_seconds=120)
+        posted = [p for p in fake.posts[before:] if p["path"] == "/v1/images"]
+        record("a reference picture goes with each scene",
+               not result.is_error and len(posted) == 1 and posted[0]["images"] == [reference.read_bytes()], "{} {!r}".format(result.is_error, said(result)[:120]))
+        result = await client.call_tool("write_video_script", {"brief": "manyscript", "target": "flow", "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+        many = (result.structured_content or {}).get("request_id") or "x"
+        before = len(fake.posts)
+        unpicked = await client.call_tool("script_to_images", {"script_id": many}, read_timeout_seconds=60)
+        unknown = await client.call_tool("script_to_images", {"script_id": many, "scenes": [22]}, read_timeout_seconds=60)
+        record("a script of more than 20 scenes must pick, and a scene it does not have is refused, sending nothing",
+               unpicked.is_error and "20" in said(unpicked) and "scenes" in said(unpicked) and unknown.is_error and "22" in said(unknown)
+               and not scene_posts(before), "{!r} {!r}".format(said(unpicked)[:120], said(unknown)[:120]))
+        result = await client.call_tool("script_to_images", {"script_id": many, "scenes": [21], "save_dir": str(work / "scenes")}, read_timeout_seconds=120)
+        sent = scene_posts(before)
+        record("a picked scene of a long script is sent", not result.is_error and len(sent) == 1 and "MANY-21 still" in prompts_of(sent)[0],
+               "{} {!r}".format(result.is_error, said(result)[:120]))
+        result = await client.call_tool("write_video_script", {"brief": "a film", "target": "production", "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+        film = (result.structured_content or {}).get("request_id") or "x"
+        failed = next((r for r, s in fake.scripts.items() if s["brief"] == "badscript"), "x")
+        before = len(fake.posts)
+        refusals = {name: await client.call_tool("script_to_images", {"script_id": rid}, read_timeout_seconds=60)
+                    for name, rid in (("production", film), ("running", waiting.get("request_id") or "x"), ("failed", failed), ("missing", "nosuchscript"))}
+        record("a production film, a script still running, one that failed and one that is not there are refused, sending nothing",
+               all(r.is_error for r in refusals.values()) and "production" in said(refusals["production"]) and "get_video_script" in said(refusals["running"])
+               and "99s" in said(refusals["failed"]) and not scene_posts(before),
+               repr({name: (r.is_error, said(r)[:80]) for name, r in refusals.items()}))
 
         result = await client.call_tool("list_presets", {})
         ids = [p["id"] for p in (result.structured_content or {}).get("presets") or []]

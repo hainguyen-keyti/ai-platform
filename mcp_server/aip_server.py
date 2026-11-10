@@ -87,7 +87,8 @@ mcp = MCPServer("aip-chatgpt-images", instructions=(
     "list_sessions says which there are. write_video_script writes a shot-by-shot script for an AI video "
     "model (flow, minimax_h3 or wan), each scene with its first-frame picture prompt and video prompt; with target "
     "production it writes a director's whole film instead, concept, screenplay, shot list and post-production, for no "
-    "particular tool, and the director-* presets ask for one. list_presets shows ready recipes, and generate runs one. account_status says the credits left before a set; "
+    "particular tool, and the director-* presets ask for one. script_to_images turns such a script's scenes into their "
+    "first-frame pictures, all in one session. list_presets shows ready recipes, and generate runs one. account_status says the credits left before a set; "
     "cancel_image cancels a request sent by mistake."))
 
 
@@ -791,6 +792,56 @@ async def list_script_targets() -> Annotated[CallToolResult, Targets]:
     targets = json.loads(raw)["targets"]
     message = "\n".join("- {}: {}, {} to {}s".format(t["name"], t["label"], t["min_seconds"], t["max_seconds"]) for t in targets)
     return answered(message, Targets(targets=targets, message=message), [])
+
+
+def scene_prompt(scene: dict, characters: List[dict]) -> str:
+    """A scene's first frame, after every character's look, so each scene draws them the same."""
+    if not characters:
+        return scene["image_prompt"]
+    looks = "; ".join("{}: {}".format(c["name"], c["description"]) for c in characters)
+    return "Characters, each with exactly this look: {}.\n\n{}".format(looks, scene["image_prompt"])
+
+
+@mcp.tool()
+async def script_to_images(script_id: str, ctx: Context, scenes: Optional[List[int]] = None, session: Optional[str] = None,
+                           reference_path: Optional[str] = None, reference_paths: Optional[List[str]] = None,
+                           save_dir: Optional[str] = None, wait_seconds: int = SET_WAIT_SECONDS,
+                           preview: bool = True) -> Annotated[CallToolResult, SetAnswer]:
+    """Make the first-frame pictures of a script write_video_script wrote (flow, minimax_h3 or wan; not a production
+    film), given its request id: one picture per scene, in the script's order, each prompt carrying every character's
+    look before the scene's image_prompt, all in one session, script-<the id's first 8 characters> unless session names
+    another. scenes picks scene numbers (all by default); a script of more than 20 scenes must pick, and a second call
+    with the same session carries on with the rest. Reference pictures go with every scene, as in generate_images,
+    which sends the set and answers as it does. One credit per scene sent; a refusal sends nothing."""
+    needs_key()
+    status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/scripts/{}".format(script_id))
+    if status != 200:
+        raise ToolError("script request {} could not be read ({}): {}".format(script_id, status, detail(raw)))
+    state = json.loads(raw)
+    if state.get("status") in LIVE:
+        raise ToolError("script request {} is still {}: collect it with get_video_script, then call this again".format(
+            script_id, state["status"]))
+    if state.get("status") != "done":
+        raise ToolError("script request {} {}: {}".format(script_id, state.get("status"), state.get("error") or "no reason given"))
+    script = state["script"]
+    if state.get("target") == "production":
+        raise ToolError("script request {} is a production film, whose shots have no first-frame prompt; "
+                        "write the script for flow, minimax_h3 or wan".format(script_id))
+    written = script["scenes"]
+    if scenes is None:
+        if len(written) > MAX_SET:
+            raise ToolError("this script has {} scenes and a set takes at most {}: pick them with scenes, such as scenes=[1, ..., {}], "
+                            "then the rest with the same session".format(len(written), MAX_SET, MAX_SET))
+        chosen = written
+    else:
+        numbers = {scene["number"] for scene in written}
+        unknown = [str(n) for n in scenes if n not in numbers]
+        if unknown:
+            raise ToolError("the script has no scene {}; it has scenes 1 to {}".format(", ".join(unknown), len(written)))
+        chosen = [scene for scene in written if scene["number"] in scenes]
+    prompts = [scene_prompt(scene, script.get("characters") or []) for scene in chosen]
+    return await generate_images(prompts, ctx, reference_path=reference_path, save_dir=save_dir, wait_seconds=wait_seconds,
+                                 preview=preview, reference_paths=reference_paths, session=session or "script-{}".format(script_id[:8]))
 
 
 def load_presets(folder: Path = PRESETS_DIR) -> dict:
