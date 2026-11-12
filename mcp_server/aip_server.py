@@ -63,6 +63,7 @@ MODES = ("image", "script")
 PREVIEW_SIDE, SLUG_LENGTH = 512, 40
 # The platform takes up to four reference pictures in one chatgpt request (issue #22).
 MAX_REFERENCES = 4
+MAX_PROMPT = 8000  # /v1/images refuses a longer prompt (api/src/routes/v1.py, Form max_length)
 LIVE = ("queued", "running")
 WSL = "microsoft" in platform.release().lower()
 CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
@@ -295,11 +296,11 @@ def preview(blob: bytes) -> ImageContent:
     return ImageContent(type="image", data=base64.b64encode(out.getvalue()).decode(), mime_type="image/jpeg")
 
 
-def save(state: dict, folder: Path, prompt: Optional[str], given: List[str], with_preview: bool):
-    """Download every picture of a done request into folder, each named by its prompt with its record
-    beside it: (the pictures, their previews, a line for each picture no preview was made from)."""
+def save(state: dict, folder: Path, prompt: Optional[str], given: List[str], with_preview: bool, name: Optional[str] = None):
+    """Download every picture of a done request into folder, each named by name or else its prompt, with its
+    record beside it: (the pictures, their previews, a line for each picture no preview was made from)."""
     folder.mkdir(parents=True, exist_ok=True)
-    stem = "{}-{}".format(slug(prompt or ""), state["id"][:8])
+    stem = "{}-{}".format(name or slug(prompt or ""), state["id"][:8])
     saved, shown, notes = [], [], []
     for number, picture in enumerate(state.get("images") or [], 1):
         status, blob = call("GET", picture["url"])
@@ -356,7 +357,7 @@ def answered(message: str, data: dict, shown: list) -> CallToolResult:
 async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Context],
                   with_preview: bool) -> CallToolResult:
     """Ask for the request until it ends or `wait` seconds pass; save what a done one made."""
-    prompt, given = SENT.get(request_id, (None, []))
+    prompt, given, name = SENT.get(request_id, (None, [], None))
     began = time.monotonic()
     state = None
     while True:
@@ -365,7 +366,7 @@ async def collect(request_id: str, folder: Path, wait: float, ctx: Optional[Cont
         state, answering = now or state, now is not None
         if answering and state.get("status") == "done":
             try:
-                saved, shown, notes = await anyio.to_thread.run_sync(save, state, folder, prompt, given, with_preview)
+                saved, shown, notes = await anyio.to_thread.run_sync(save, state, folder, prompt, given, with_preview, name)
             except Unreachable:
                 answering = False
             else:
@@ -425,7 +426,7 @@ async def generate_image(prompt: str, ctx: Context, reference_path: Optional[str
     if status != 202:
         raise ToolError("the platform refused the request ({}): {}".format(status, detail(raw)))
     request_id = json.loads(raw)["id"]
-    SENT[request_id] = (prompt, given)
+    SENT[request_id] = (prompt, given, None)
     folder = Path(local_path(save_dir)) if save_dir else SAVE_DIR
     return await collect(request_id, folder, max(1, min(int(wait_seconds), MAX_WAIT_SECONDS)), ctx, preview)
 
@@ -445,6 +446,14 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
     wait_seconds has passed (at most 3600) with each prompt's files and preview, its failure reason,
     or its request id for get_image when it is still running. One failed prompt fails only itself; a
     refusal when sending (no credit left, say) stops sending the rest. One credit per request sent."""
+    return await send_set(prompts, ctx, reference_path, save_dir, wait_seconds, preview, continue_from, reference_paths, session)
+
+
+async def send_set(prompts: List[str], ctx: Context, reference_path: Optional[str] = None, save_dir: Optional[str] = None,
+                   wait_seconds: int = SET_WAIT_SECONDS, preview: bool = True, continue_from: Optional[str] = None,
+                   reference_paths: Optional[List[str]] = None, session: Optional[str] = None,
+                   names: Optional[List[str]] = None) -> CallToolResult:
+    """generate_images, with names to save each prompt's files under in place of its prompt's slug."""
     needs_key()
     if not 1 <= len(prompts) <= MAX_SET:
         raise ToolError("send 1 to {} prompts; this set has {}".format(MAX_SET, len(prompts)))
@@ -456,7 +465,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
     folder = Path(local_path(save_dir)) if save_dir else SAVE_DIR
     items = [SetRequest(prompt=prompt, request_id=None, status="not sent", pictures=[], error=None)
              for prompt in prompts]
-    for item in items:
+    for number, item in enumerate(items):
         try:
             status, raw = await anyio.to_thread.run_sync(send, item["prompt"], references, continue_from, session)
         except Unreachable as exc:
@@ -467,7 +476,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
             item.update(status="refused", error="the platform refused it ({}): {}".format(status, detail(raw)))
             break
         item.update(request_id=json.loads(raw)["id"], status="queued")
-        SENT[item["request_id"]] = (item["prompt"], given)
+        SENT[item["request_id"]] = (item["prompt"], given, names[number] if names else None)
     if items[0]["status"] in ("refused", "unknown"):
         raise ToolError("the set's first prompt did not go, so none was sent: " + items[0]["error"])
 
@@ -487,7 +496,7 @@ async def generate_images(prompts: List[str], ctx: Context, reference_path: Opti
             if state.get("status") == "done":
                 try:
                     saved, more, notes[item["request_id"]] = await anyio.to_thread.run_sync(
-                        save, state, folder, item["prompt"], given, preview)
+                        save, state, folder, item["prompt"], given, preview, SENT[item["request_id"]][2])
                 except Unreachable:
                     continue
                 except ToolError as exc:
@@ -798,7 +807,7 @@ def scene_prompt(scene: dict, characters: List[dict]) -> str:
     """A scene's first frame, after every character's look, so each scene draws them the same."""
     if not characters:
         return scene["image_prompt"]
-    looks = "; ".join("{}: {}".format(c["name"], c["description"]) for c in characters)
+    looks = "; ".join("{}: {}".format(c["name"], c["description"].rstrip().rstrip(".")) for c in characters)
     return "Characters, each with exactly this look: {}.\n\n{}".format(looks, scene["image_prompt"])
 
 
@@ -812,7 +821,9 @@ async def script_to_images(script_id: str, ctx: Context, scenes: Optional[List[i
     look before the scene's image_prompt, all in one session, script-<the id's first 8 characters> unless session names
     another. scenes picks scene numbers (all by default); a script of more than 20 scenes must pick, and a second call
     with the same session carries on with the rest. Reference pictures go with every scene, as in generate_images,
-    which sends the set and answers as it does. One credit per scene sent; a refusal sends nothing."""
+    which sends the set and answers as it does; each scene's files are named <title>-scene-<number>. An empty scenes,
+    a scene named twice, or a scene whose prompt passes 8000 characters is refused. One credit per scene sent; a
+    refusal sends nothing."""
     needs_key()
     status, raw = await anyio.to_thread.run_sync(call, "GET", "/v1/scripts/{}".format(script_id))
     if status != 200:
@@ -834,14 +845,27 @@ async def script_to_images(script_id: str, ctx: Context, scenes: Optional[List[i
                             "then the rest with the same session".format(len(written), MAX_SET, MAX_SET))
         chosen = written
     else:
+        if not scenes:
+            raise ToolError("scenes is empty: leave it out for every scene, or name the scene numbers to make")
+        repeated = sorted({n for n in scenes if scenes.count(n) > 1})
+        if repeated:
+            raise ToolError("scene {} is named more than once; name each scene once, and call again for another picture "
+                            "of it".format(", ".join(str(n) for n in repeated)))
         numbers = {scene["number"] for scene in written}
         unknown = [str(n) for n in scenes if n not in numbers]
         if unknown:
             raise ToolError("the script has no scene {}; it has scenes 1 to {}".format(", ".join(unknown), len(written)))
         chosen = [scene for scene in written if scene["number"] in scenes]
     prompts = [scene_prompt(scene, script.get("characters") or []) for scene in chosen]
-    return await generate_images(prompts, ctx, reference_path=reference_path, save_dir=save_dir, wait_seconds=wait_seconds,
-                                 preview=preview, reference_paths=reference_paths, session=session or "script-{}".format(script_id[:8]))
+    too_long = ["scene {} ({} characters)".format(scene["number"], len(prompt))
+                for scene, prompt in zip(chosen, prompts) if len(prompt) > MAX_PROMPT]
+    if too_long:
+        raise ToolError("a prompt takes at most {} characters, with every character's look in it: {}; shorten the looks or "
+                        "the image_prompt, so nothing was sent".format(MAX_PROMPT, ", ".join(too_long)))
+    names = ["{}-scene-{:02d}".format(slug(script.get("title") or ""), scene["number"]) for scene in chosen]
+    return await send_set(prompts, ctx, reference_path=reference_path, save_dir=save_dir, wait_seconds=wait_seconds,
+                          preview=preview, reference_paths=reference_paths, session=session or "script-{}".format(script_id[:8]),
+                          names=names)
 
 
 def load_presets(folder: Path = PRESETS_DIR) -> dict:
