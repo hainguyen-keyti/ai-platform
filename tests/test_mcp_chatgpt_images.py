@@ -148,14 +148,18 @@ class FakeV1:
                             "title": "Old", "target": held["target"], "total_seconds": 8, "characters": [],
                             "scenes": [{"number": 1, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "dialogue": "",
                                         "image_prompt": "a still", "video_prompt": "An old walk"}]}))
-                    if any(word in held["brief"] for word in ("scenesscript", "manyscript", "longscript", "slowscenes")):
+                    if any(word in held["brief"] for word in ("scenesscript", "manyscript", "longscript", "lookscript", "slowscenes")):
                         many = "manyscript" in held["brief"]
                         names = (["MANY-{}".format(n) for n in range(1, 22)] if many else ["LONG-ONE", "LONG-TWO " + "x" * 8000]
-                                 if "longscript" in held["brief"] else ["SLOWSCENE slow"] if "slowscenes" in held["brief"]
+                                 if "longscript" in held["brief"] else ["LOOK-ONE", "LOOK-TWO " + "x" * 7900]
+                                 if "lookscript" in held["brief"] else ["SLOWSCENE slow"] if "slowscenes" in held["brief"]
                                  else ["SCENE-ONE", "SCENE-TWO", "SCENE-THREE"])
+                        looks = ([{"name": "Lan", "description": "a red coat."}, {"name": "Minh", "description": "a grey hat."}]
+                                 if "scenesscript" in held["brief"] else [{"name": "Lan", "description": "y" * 200}]
+                                 if "lookscript" in held["brief"] else [])
                         return self.answer(200, dict(state, status="done", script={
                             "title": "Chậm" if "slowscenes" in held["brief"] else "Ba cảnh", "target": held["target"], "total_seconds": 8 * len(names),
-                            "characters": [] if many or "scenesscript" not in held["brief"] else [{"name": "Lan", "description": "a red coat."}, {"name": "Minh", "description": "a grey hat."}],
+                            "characters": looks,
                             "direction": {"concept": "c", "hook": "h", "visual_style": "v", "palette": "p"},
                             "scenes": [{"number": n, "duration_seconds": 8, "description": "a shot", "camera": "dolly in", "color": "teal", "lighting": "sun",
                                         "sound": "wind", "dialogue": "", "image_prompt": "{} still".format(name), "video_prompt": "{} moves".format(name)}
@@ -463,10 +467,12 @@ async def run(fake, work):
                                          and p.index("a grey hat") < p.index("SCENE-") for p in prompts), repr([p[:160] for p in prompts]))
         record("a look ending with a full stop is joined without a doubled mark",
                len(prompts) == 3 and not any(mark in p for p in prompts for mark in (".;", "..")), repr([p[:80] for p in prompts]))
-        names = sorted(p.name for p in pictures(work / "scenes"))
-        record("each scene's picture is named by the script's title and the scene's number",
-               len(names) == 3 and all(name.startswith("ba-canh-scene-0{}-".format(n)) and name.endswith("-1.png")
-                                       for n, name in enumerate(names, 1)), names)
+        named = {p.name: kept_record(p.with_suffix(".json")).get("prompt") or "" for p in pictures(work / "scenes")}
+        record("each scene's picture is named by the script's title and its own scene's number",
+               len(named) == 3 and all(any(name.startswith("ba-canh-scene-0{}-".format(n)) and name.endswith("-1.png") and word in prompt
+                                           for name, prompt in named.items())
+                                       for n, word in enumerate(("SCENE-ONE", "SCENE-TWO", "SCENE-THREE"), 1)),
+               {name: prompt[-20:] for name, prompt in named.items()})
         before = len(fake.posts)
         result = await client.call_tool("script_to_images", {"script_id": three, "scenes": [2], "session": "lan-film", "save_dir": str(work / "scenes")},
                                         read_timeout_seconds=120)
@@ -513,6 +519,13 @@ async def run(fake, work):
         result = await client.call_tool("script_to_images", {"script_id": long_one, "save_dir": str(work / "long")}, read_timeout_seconds=60)
         record("a scene whose prompt passes 8000 characters refuses the whole script before any is sent",
                result.is_error and "scene 2" in said(result) and "8015" in said(result) and "8000" in said(result) and not scene_posts(before),
+               "{} {!r} posts {}".format(result.is_error, said(result)[:160], len(scene_posts(before))))
+        result = await client.call_tool("write_video_script", {"brief": "lookscript", "target": "flow", "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
+        look_one = (result.structured_content or {}).get("request_id") or "x"
+        before = len(fake.posts)
+        result = await client.call_tool("script_to_images", {"script_id": look_one, "save_dir": str(work / "long")}, read_timeout_seconds=60)
+        record("an image_prompt under 8000 characters that the looks carry past it is refused too, sending nothing",
+               result.is_error and "scene 2" in said(result) and "8000" in said(result) and not scene_posts(before),
                "{} {!r} posts {}".format(result.is_error, said(result)[:160], len(scene_posts(before))))
         result = await client.call_tool("write_video_script", {"brief": "slowscenes", "target": "flow", "save_dir": str(work / "scripts")}, read_timeout_seconds=60)
         slow_one = (result.structured_content or {}).get("request_id") or "x"
