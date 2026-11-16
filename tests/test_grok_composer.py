@@ -10,6 +10,7 @@ its three tries into the textarea it had found at the open, and the turn failed 
 the composer, nothing sent. Prints N/N PASSED.
 """
 
+import json
 import shutil
 import sys
 import tempfile
@@ -177,12 +178,29 @@ class ComposerPage:
     selector beside the composer reads (None: no selector on the page), `models` the rows its menu
     offers, and `choice_ignored` a page whose row takes the press and changes nothing."""
 
-    def __init__(self, clock, mounts_at=0.0, none=False, model="Auto", models=MODELS, choice_ignored=False):
+    def __init__(self, clock, mounts_at=0.0, none=False, model="Auto", models=MODELS, choice_ignored=False,
+                 body="What's on the agenda today?", no_picture=False):
         self.clock, self.start, self.mounts_at, self.none = clock, clock.now, mounts_at, none
         self.text, self.sent, self.focused = {}, [], None
         self.model, self.models, self.choice_ignored = model, models, choice_ignored
         self.menu_open, self.menu_opened, self.sent_with = False, 0, []
         self.keyboard = Keyboard(self)
+        # What a person would see: the address, the tab's title, the page's words, a picture of it.
+        self.url, self.body, self.no_picture, self.loads = "https://grok.com/", body, no_picture, 0
+
+    def goto(self, url, **kwargs):
+        self.loads += 1
+
+    def title(self):
+        return "Grok"
+
+    def inner_text(self, selector, **kwargs):
+        return self.body
+
+    def screenshot(self, path=None, **kwargs):
+        if self.no_picture:
+            raise Gone("screenshot")
+        Path(path).write_bytes(b"\x89PNG fake")
 
     def mounted(self):
         return self.clock.now - self.start >= self.mounts_at
@@ -216,6 +234,27 @@ def send_on(page, composer):
         return "sent", page.sent
     except ProviderError as exc:
         return "refused: {}".format(str(exc)[:50]), page.sent
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def kept_after(page, act):
+    """(what happened, the records kept, the pictures kept) for one call on a driver of its own, whose
+    diagnostics folder is read before it is thrown away. `act` takes the driver."""
+    scratch = Path(tempfile.mkdtemp(prefix="grok-kept-"))
+    try:
+        driver = grok.GrokProvider(scratch / "media", scratch / "sessions")
+        driver._ensure_page = lambda: page
+        try:
+            act(driver)
+            what = "no error"
+        except ProviderError as exc:
+            what = "{}: {}".format(exc.kind, str(exc)[:60])
+        folder = scratch / "diagnostics"
+        records = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(folder.glob("grok-*.json"))] \
+            if folder.exists() else []
+        pictures = [p.name for p in sorted(folder.glob("grok-*.png"))] if folder.exists() else []
+        return what, records, pictures
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
@@ -275,6 +314,36 @@ def main():
     what, sent = send_on(page, EDITORS[0])
     record("any model but Auto is changed to Auto before the send",
            what == "sent" and page.sent_with == ["Auto"], "{}, sent with {}".format(what, page.sent_with))
+
+    # 2026-11-16: jobs of 11-05, 11-08 and 11-10 failed as "grok did not open" and left nothing of
+    # what the page showed; the cause (Cloudflare's check) was only seen by opening the page by hand.
+    check = "grok.com\nPerforming security verification\nThis page is displayed while the website verifies you are not a bot."
+    page = ComposerPage(clock, none=True, body=check)
+    what, records, pictures = kept_after(page, lambda driver: driver._open())
+    record("an open stuck behind the check fails as blocked and keeps the page's words and a picture",
+           what.startswith("provider_blocked") and len(records) == 1 and len(pictures) == 1
+           and "security verification" in (records[0].get("body_head") or "")
+           and records[0].get("url") == "https://grok.com/" and "did not open" in (records[0].get("error") or ""),
+           "{}, {} record(s) {}, {} picture(s)".format(what, len(records), sorted(records[0]) if records else [], len(pictures)))
+
+    page = ComposerPage(clock, model=None)
+    what, records, pictures = kept_after(page, lambda driver: driver._send(page, EDITORS[0], PROMPT))
+    record("a send refused for the model keeps a record that says why, and a picture",
+           what.startswith("provider_error") and page.sent == [] and len(records) == 1 and len(pictures) == 1
+           and "model selector" in (records[0].get("error") or ""),
+           "{}, sent {}, {} record(s), {} picture(s)".format(what, page.sent, len(records), len(pictures)))
+
+    page = ComposerPage(clock, model=None, no_picture=True)
+    what, records, pictures = kept_after(page, lambda driver: driver._send(page, EDITORS[0], PROMPT))
+    record("a picture that cannot be taken changes nothing: the same refusal, the record still kept",
+           what.startswith("provider_error: grok's model selector") and len(records) == 1 and pictures == [],
+           "{}, {} record(s), {} picture(s)".format(what, len(records), len(pictures)))
+
+    page = ComposerPage(clock)
+    what, records, pictures = kept_after(page, lambda driver: driver._send(page, EDITORS[0], PROMPT))
+    record("a turn that is sent keeps nothing",
+           what == "no error" and page.sent == [PROMPT] and records == [] and pictures == [],
+           "{}, {} record(s), {} picture(s)".format(what, len(records), len(pictures)))
 
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))

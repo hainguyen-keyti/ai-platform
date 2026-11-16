@@ -205,6 +205,29 @@ class GrokProvider(BaseProvider):
         except Exception:
             pass
 
+    def _keep_failure(self, page, step, error):
+        """What the page showed when an open or a send failed (2026-11-16: three "did not open" jobs left
+        nothing, and Cloudflare's check was only found by opening the page by hand): a record and a
+        picture beside it. The turn has already failed; this cannot fail it worse."""
+        folder = self.media_path.parent / "diagnostics"
+        stem = "grok-{}-{}-{}-{}".format(step, self.account, int(time.time()), uuid.uuid4().hex[:6])
+        record = {"account": self.account, "step": step, "at": round(time.time(), 1), "error": str(error)[:300],
+                  "kind": getattr(error, "kind", None), "last_open": self.last_open}
+        try:
+            record["url"] = page.url
+            record["title"] = page.title()
+            body = page.inner_text("body", timeout=3000) or ""
+            record["body_head"], record["body_tail"] = body[:600], body[-400:]
+            record["model"] = self._model(page)
+        except Exception as exc:
+            record["unread"] = type(exc).__name__
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / (stem + ".json")).write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
+            page.screenshot(path=str(folder / (stem + ".png")))
+        except Exception:
+            pass
+
     @staticmethod
     def thread_id(url: Optional[str]) -> Optional[str]:
         if not url or "/c/" not in url:
@@ -323,11 +346,13 @@ class GrokProvider(BaseProvider):
                 self._phase("waiting for the provider")
                 time.sleep(OPEN_RETRY_SECONDS * (2 ** attempt))
         cleared = (self.last_open or {}).get("cleared")
-        raise ProviderError(
+        failure = ProviderError(
             "grok did not open {}: cleared={} landed={}".format(
                 (self.thread_id(thread_url) or "a new chat")[:8], cleared, (self.last_open or {}).get("landed")),
             # A verification page that never cleared needs a person at the browser (2026-11-06).
             kind="provider_blocked" if cleared is False else "provider_error")
+        self._keep_failure(page, "open", failure)
+        raise failure
 
     @staticmethod
     def _flat(text: str) -> str:
@@ -389,6 +414,14 @@ class GrokProvider(BaseProvider):
                 now or chosen, MODEL), kind="provider_misconfigured")
 
     def _send(self, page, composer, prompt: str):
+        """The send, and what the page showed when it was refused."""
+        try:
+            self._type_and_send(page, composer, prompt)
+        except ProviderError as exc:
+            self._keep_failure(page, "send", exc)
+            raise
+
+    def _type_and_send(self, page, composer, prompt: str):
         """Type the turn and prove it landed before pressing Enter.
 
         Measured 2026-09-24: a click that hits an overlay leaves the keystrokes
@@ -621,7 +654,9 @@ class GrokProvider(BaseProvider):
                     if cid:
                         self.last_cancelled_thread = "{}c/{}".format(HOME, cid)
                     elif time.time() - started > THREAD_WAIT:
-                        raise ProviderError("grok never opened a thread for this turn")
+                        failure = ProviderError("grok never opened a thread for this turn")
+                        self._keep_failure(page, "nothread", failure)
+                        raise failure
                     continue
                 turn, state, status = self._server_turn(page, cid, baseline_ids)
                 if status in (401, 403):
