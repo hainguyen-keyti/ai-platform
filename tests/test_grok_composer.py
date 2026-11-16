@@ -34,6 +34,11 @@ PROMPT = "tạo ảnh cô gái genz việt nam, làm kol thời trang đi"
 MODEL_BUTTON = 'button[aria-haspopup="menu"][aria-label^="Model"]'
 MODEL_ITEM = '[role=menu] [role^=menuitem]'
 MODELS = ("Auto", "Fast", "Expert", "Build", "Heavy", "Bot")
+# The model every turn goes out on is the driver's to name (DECISIONS 2026-11-16); the cases below
+# hold for whichever it names: WANTED, another ordinary model, and a menu that does not offer WANTED.
+WANTED = grok.MODEL
+OTHER = next(name for name in MODELS if name not in (WANTED, "Bot"))
+WITHOUT = tuple(name for name in MODELS if name != WANTED)
 
 results = []
 
@@ -184,7 +189,7 @@ class ComposerPage:
     is a page that reads `model` that many times and `repaints_to` from then on: a label painted
     first with a default and then with the account's saved choice (the tier 2 review, 2026-11-16)."""
 
-    def __init__(self, clock, mounts_at=0.0, none=False, model="Auto", models=MODELS, choice_ignored=False,
+    def __init__(self, clock, mounts_at=0.0, none=False, model=WANTED, models=MODELS, choice_ignored=False,
                  body="What's on the agenda today?", no_picture=False, repaints_after=None, repaints_to="Bot"):
         self.label_reads, self.repaints_after, self.repaints_to = 0, repaints_after, repaints_to
         self.clock, self.start, self.mounts_at, self.none = clock, clock.now, mounts_at, none
@@ -297,13 +302,13 @@ def main():
     page = ComposerPage(clock, model="Bot")
     what, sent = send_on(page, EDITORS[0])
     record("with Bot chosen, the driver chooses Auto and only then sends",
-           what == "sent" and sent == [PROMPT] and page.sent_with == ["Auto"],
+           what == "sent" and sent == [PROMPT] and page.sent_with == [WANTED],
            "{}, sent {} with {}".format(what, len(sent), page.sent_with))
 
-    page = ComposerPage(clock, model="Auto")
+    page = ComposerPage(clock, model=WANTED)
     what, sent = send_on(page, EDITORS[0])
     record("with Auto chosen already, the turn is sent and the menu is never opened",
-           what == "sent" and page.sent_with == ["Auto"] and page.menu_opened == 0,
+           what == "sent" and page.sent_with == [WANTED] and page.menu_opened == 0,
            "{}, sent with {}, menu opened {} time(s)".format(what, page.sent_with, page.menu_opened))
 
     page = ComposerPage(clock, model=None)
@@ -312,7 +317,7 @@ def main():
            what.startswith("refused") and sent == [] and send_on.marked_sent is False,
            "{}, sent {}, marked sent {}".format(what, sent, send_on.marked_sent))
 
-    page = ComposerPage(clock, model="Bot", models=("Fast", "Expert", "Bot"))
+    page = ComposerPage(clock, model="Bot", models=WITHOUT)
     what, sent = send_on(page, EDITORS[0])
     record("Bot chosen and no Auto in the menu: refused, nothing sent, the menu closed again",
            what.startswith("refused") and sent == [] and not page.menu_open,
@@ -325,7 +330,7 @@ def main():
            "{}, sent {}, the selector reads {}, marked sent {}".format(what, sent, page.model, send_on.marked_sent))
 
     # The review's doubt: a label that reads Auto when the guard looks and Bot by the time of Enter.
-    page = ComposerPage(clock, model="Auto", repaints_after=1)
+    page = ComposerPage(clock, model=WANTED, repaints_after=1)
     what, sent = send_on(page, EDITORS[0])
     record("a selector that turns to Bot after the guard's look refuses at the send: nothing sent, the box emptied",
            what.startswith("refused") and sent == [] and send_on.marked_sent is False
@@ -333,15 +338,15 @@ def main():
            "{}, sent {}, marked sent {}, the box holds {!r}".format(
                what, sent, send_on.marked_sent, page.text.get(EDITORS[0], "")[:20]))
 
-    page = ComposerPage(clock, model="Auto")
+    page = ComposerPage(clock, model=WANTED)
     what, sent = send_on(page, EDITORS[0])
     record("a turn that goes out is marked sent",
            what == "sent" and send_on.marked_sent is True, "{}, marked sent {}".format(what, send_on.marked_sent))
 
-    page = ComposerPage(clock, model="Expert")
+    page = ComposerPage(clock, model=OTHER)
     what, sent = send_on(page, EDITORS[0])
     record("any model but Auto is changed to Auto before the send",
-           what == "sent" and page.sent_with == ["Auto"], "{}, sent with {}".format(what, page.sent_with))
+           what == "sent" and page.sent_with == [WANTED], "{}, sent with {}".format(what, page.sent_with))
 
     # 2026-11-16: jobs of 11-05, 11-08 and 11-10 failed as "grok did not open" and left nothing of
     # what the page showed; the cause (Cloudflare's check) was only seen by opening the page by hand.
