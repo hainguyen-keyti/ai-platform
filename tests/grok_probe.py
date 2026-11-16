@@ -197,6 +197,50 @@ def newest(page, tag):
     say(tag, "server's newest conversations ({}): {}".format(got["status"], rows))
 
 
+MODEL_BUTTON = 'button[aria-haspopup="menu"][aria-label^="Model"]'
+MENU_ITEMS = """
+() => [...document.querySelectorAll('[role=menu] [role^=menuitem], [role=listbox] [role=option]')].map(e => ({
+    role: e.getAttribute('role'), first: (e.innerText || '').trim().split('\\n')[0].slice(0, 30),
+    checked: e.getAttribute('aria-checked'), state: e.getAttribute('data-state'),
+    disabled: e.getAttribute('aria-disabled') || e.getAttribute('data-disabled')}))
+"""
+
+
+def model_label(page):
+    button = page.locator(MODEL_BUTTON)
+    return button.first.get_attribute("aria-label") if button.count() else None
+
+
+def probe_model(account):
+    """Choose a model in the selector beside the composer (the second argument, Auto when none) and see
+    whether the choice holds across a load. Changes which model the account's next chat uses; no turn."""
+    wanted = ([a for a in sys.argv[2:] if a.isalpha()] or ["Auto"])[0]
+    page, _, cohort = open_page(account)
+    say("model", "the selector reads {!r}; buttons matching {}: {}".format(
+        model_label(page), MODEL_BUTTON, page.locator(MODEL_BUTTON).count()))
+    page.locator(MODEL_BUTTON).first.click(timeout=8000)
+    page.wait_for_timeout(1200)
+    items = page.evaluate(MENU_ITEMS)
+    for item in items:
+        say("model", "menu item: {}".format(item))
+    choice = page.locator('[role=menu] [role^=menuitem]').filter(has_text=re.compile(r"^\s*" + wanted + r"\b"))
+    say("model", "items whose words begin with {!r}: {}".format(wanted, choice.count()))
+    if not choice.count():
+        page.keyboard.press("Escape")
+        return
+    choice.first.click(timeout=5000)
+    page.wait_for_timeout(1500)
+    say("model", "after choosing, the selector reads {!r}; a menu is still open: {}; the page is at {}".format(
+        model_label(page), bool(page.locator('[role=menu]').count()), page.url[:60]))
+    page.goto(HOME, wait_until="domcontentloaded", timeout=90000)
+    for _ in range(40):
+        page.wait_for_timeout(1000)
+        if page.locator(MODEL_BUTTON).count():
+            break
+    page.wait_for_timeout(2000)
+    say("model", "after a fresh load the selector reads {!r}".format(model_label(page)))
+
+
 def probe_composer(account):
     """The page around the composer, measured without a turn: what is editable, what the controls
     beside it say, what the selector offers, where the links go, and whether text typed into the
@@ -324,6 +368,7 @@ def probe_turn(account):
         say("turn", "no composer, stopping")
         return
     quota(page, "quota before")
+    say("turn", "the model selector reads {!r}".format(model_label(page)))
     newest(page, "before")
     del seen["answers"][:]
     send(page, cohort, "Reply with the single word: pong")
@@ -387,6 +432,16 @@ def probe_thread(account):
     say("thread", "assistant text after stripping render tags: {!r}".format(text[:160]))
     say("thread", "media: {}".format(assistant_media(last) or "none"))
     say("thread", "keys on the turn: {}".format(sorted(last)[:14]))
+    # The thread's own page, as a follow-up turn opens it: is the model selector there, and what does it read?
+    page.goto("{}c/{}".format(HOME, cid), wait_until="domcontentloaded", timeout=90000)
+    seen_at, t0 = None, time.time()
+    while time.time() - t0 < EDITOR_WAIT and seen_at is None:
+        page.wait_for_timeout(1000)
+        if any(page.locator(s).count() and page.locator(s).first.is_visible() for s in EDITORS):
+            seen_at = round(time.time() - t0, 1)
+    page.wait_for_timeout(2000)
+    say("thread", "on the thread's page: editor after {}s, landed {}, the selector reads {!r} ({} button(s))".format(
+        seen_at, page.url[:60], model_label(page), page.locator(MODEL_BUTTON).count()))
 
 
 def probe_cleanup(account):
@@ -411,7 +466,8 @@ def probe_cleanup(account):
     say("cleanup", "read after delete -> {}".format(read["status"]))
 
 
-PROBES = {"open": lambda b: open_page(b), "composer": probe_composer, "turn": probe_turn, "image": probe_image,
+PROBES = {"open": lambda b: open_page(b), "composer": probe_composer, "model": probe_model,
+          "turn": probe_turn, "image": probe_image,
           "thread": probe_thread, "cleanup": probe_cleanup}
 
 
