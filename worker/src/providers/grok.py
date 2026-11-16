@@ -65,6 +65,8 @@ ASSET_URL = re.compile(r"https://assets\.grok\.com/users/([^/]+)/")
 # holds across loads. With Bot chosen a sent turn went to /bot/<id>, the account's one bot chat,
 # which every platform user's turn would share, and no thread was made. Every turn goes out on MODEL
 # (DECISIONS 2026-11-16).
+# Expert, not Auto: measured 2026-11-16 on the same brief, two flow scripts on Auto came back over
+# the target's word limit (199 and 197 words for 180) and two on Expert fit, in about 60s each.
 MODEL = "Expert"
 MODEL_BUTTON = 'button[aria-haspopup="menu"][aria-label^="Model"]'
 MODEL_ITEM = '[role=menu] [role^=menuitem]'

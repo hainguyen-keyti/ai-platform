@@ -301,13 +301,13 @@ def main():
     # 2026-11-16: the model the turn is sent with. Bot sends it into the account's one bot chat.
     page = ComposerPage(clock, model="Bot")
     what, sent = send_on(page, EDITORS[0])
-    record("with Bot chosen, the driver chooses Auto and only then sends",
+    record("with Bot chosen, the driver chooses its own model and only then sends",
            what == "sent" and sent == [PROMPT] and page.sent_with == [WANTED],
            "{}, sent {} with {}".format(what, len(sent), page.sent_with))
 
     page = ComposerPage(clock, model=WANTED)
     what, sent = send_on(page, EDITORS[0])
-    record("with Auto chosen already, the turn is sent and the menu is never opened",
+    record("with the driver's model chosen already, the turn is sent and the menu is never opened",
            what == "sent" and page.sent_with == [WANTED] and page.menu_opened == 0,
            "{}, sent with {}, menu opened {} time(s)".format(what, page.sent_with, page.menu_opened))
 
@@ -319,13 +319,13 @@ def main():
 
     page = ComposerPage(clock, model="Bot", models=WITHOUT)
     what, sent = send_on(page, EDITORS[0])
-    record("Bot chosen and no Auto in the menu: refused, nothing sent, the menu closed again",
+    record("Bot chosen and the driver's model not in the menu: refused, nothing sent, the menu closed again",
            what.startswith("refused") and sent == [] and not page.menu_open,
            "{}, sent {}, menu open {}".format(what, sent, page.menu_open))
 
     page = ComposerPage(clock, model="Bot", choice_ignored=True)
     what, sent = send_on(page, EDITORS[0])
-    record("a choice of Auto the page does not take refuses the turn, nothing sent, not marked sent",
+    record("a choice the page does not take refuses the turn, nothing sent, not marked sent",
            what.startswith("refused") and sent == [] and page.model == "Bot" and send_on.marked_sent is False,
            "{}, sent {}, the selector reads {}, marked sent {}".format(what, sent, page.model, send_on.marked_sent))
 
@@ -345,7 +345,7 @@ def main():
 
     page = ComposerPage(clock, model=OTHER)
     what, sent = send_on(page, EDITORS[0])
-    record("any model but Auto is changed to Auto before the send",
+    record("any other model is changed to the driver's before the send",
            what == "sent" and page.sent_with == [WANTED], "{}, sent with {}".format(what, page.sent_with))
 
     # 2026-11-16: jobs of 11-05, 11-08 and 11-10 failed as "grok did not open" and left nothing of
