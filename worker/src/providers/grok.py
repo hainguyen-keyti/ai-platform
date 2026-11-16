@@ -65,7 +65,7 @@ ASSET_URL = re.compile(r"https://assets\.grok\.com/users/([^/]+)/")
 # holds across loads. With Bot chosen a sent turn went to /bot/<id>, the account's one bot chat,
 # which every platform user's turn would share, and no thread was made. Every turn goes out on MODEL
 # (DECISIONS 2026-11-16).
-MODEL = "Auto"
+MODEL = "Expert"
 MODEL_BUTTON = 'button[aria-haspopup="menu"][aria-label^="Model"]'
 MODEL_ITEM = '[role=menu] [role^=menuitem]'
 MODEL_ROW = re.compile(r"^\s*" + MODEL + r"\b")
