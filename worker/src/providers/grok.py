@@ -59,6 +59,18 @@ DELETE_THREAD = "/rest/app-chat/conversations/soft/{}"
 GROK_RENDER = re.compile(r"<grok:render[^>]*>.*?</grok:render>|<grok:render[^>]*/?>", re.S)
 ASSET_URL = re.compile(r"https://assets\.grok\.com/users/([^/]+)/")
 
+# Measured 2026-11-16 (tests/grok_probe.py composer, model, turn, thread): beside the composer, on a
+# new chat and on a thread's page, one button labelled "Model: <name>" opens a menu of rows (Auto,
+# Fast, Expert, Build, Heavy, Bot); a row pressed closes the menu, the label follows and the choice
+# holds across loads. With Bot chosen a sent turn went to /bot/<id>, the account's one bot chat,
+# which every platform user's turn would share, and no thread was made. Every turn goes out on MODEL
+# (DECISIONS 2026-11-16).
+MODEL = "Auto"
+MODEL_BUTTON = 'button[aria-haspopup="menu"][aria-label^="Model"]'
+MODEL_ITEM = '[role=menu] [role^=menuitem]'
+MODEL_ROW = re.compile(r"^\s*" + MODEL + r"\b")
+MODEL_WAIT = 10
+
 SIGNED_OUT = "the grok session is signed out; run scripts/login_provider.py grok"
 MEMORY_ON = ("the shared Grok account has memory switched on, so this turn was not sent; ask the "
              "account owner to turn it off (Settings, Data Controls, Personalize Grok with your "
@@ -336,6 +348,46 @@ class GrokProvider(BaseProvider):
         except Exception:
             pass
 
+    def _model(self, page) -> Optional[str]:
+        """What the selector beside the composer reads, None while it cannot be read."""
+        try:
+            button = page.locator(MODEL_BUTTON)
+            label = button.first.get_attribute("aria-label") if button.count() else None
+        except Exception:
+            return None
+        return label.split(":", 1)[1].strip() if label and ":" in label else None
+
+    def _ensure_model(self, page):
+        """The turn goes out on MODEL or not at all: nothing is typed while the selector reads
+        anything else, Bot above all, or cannot be read."""
+        deadline = time.time() + MODEL_WAIT
+        chosen = self._model(page)
+        while chosen is None and time.time() < deadline:
+            page.wait_for_timeout(500)
+            chosen = self._model(page)
+        if chosen is None:
+            raise ProviderError("grok's model selector could not be read, so nothing was sent")
+        if chosen == MODEL:
+            return
+        try:
+            page.locator(MODEL_BUTTON).first.click(timeout=8000)
+            page.wait_for_timeout(1000)
+            row = page.locator(MODEL_ITEM).filter(has_text=MODEL_ROW)
+            if row.count():
+                row.first.click(timeout=5000)
+                page.wait_for_timeout(1500)
+            else:
+                page.keyboard.press("Escape")
+        except ProviderError:
+            raise
+        except Exception:
+            # A press that failed leaves the selector as it was, which the read below tells.
+            pass
+        now = self._model(page)
+        if now != MODEL:
+            raise ProviderError("grok's model is {} and could not be set to {}, so nothing was sent".format(
+                now or chosen, MODEL), kind="provider_misconfigured")
+
     def _send(self, page, composer, prompt: str):
         """Type the turn and prove it landed before pressing Enter.
 
@@ -344,6 +396,8 @@ class GrokProvider(BaseProvider):
         an assistant row that never fills. Reading the composer back is what
         tells the difference between a send and a silent miss.
         """
+        self._dismiss_overlays(page)
+        self._ensure_model(page)
         # A ProseMirror renders each line as its own block, so the composer's
         # innerText never equals the prompt character for character: both sides
         # are flattened before they are compared, and a retry starts from an

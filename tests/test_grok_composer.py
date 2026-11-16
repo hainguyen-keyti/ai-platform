@@ -25,6 +25,14 @@ PLACEHOLDER = 'textarea[aria-label="Ask Grok anything"]'
 EDITORS = ('[data-testid="chat-input"] .ProseMirror[contenteditable="true"]',
            '.ProseMirror[contenteditable="true"]')
 PROMPT = "tạo ảnh cô gái genz việt nam, làm kol thời trang đi"
+# Measured 2026-11-16 (tests/grok_probe.py composer, model, turn, thread): beside the composer, on a
+# new chat and on a thread's page alike, one button whose aria-label is "Model: <name>" opens a menu
+# of menuitemcheckbox rows (Auto, Fast, Expert, Build, Heavy, Bot); a row pressed closes the menu and
+# the label follows, and the choice holds across loads. With Bot chosen a sent turn went to /bot/<id>,
+# the account's one bot chat, and no thread was made.
+MODEL_BUTTON = 'button[aria-haspopup="menu"][aria-label^="Model"]'
+MODEL_ITEM = '[role=menu] [role^=menuitem]'
+MODELS = ("Auto", "Fast", "Expert", "Build", "Heavy", "Bot")
 
 results = []
 
@@ -59,11 +67,15 @@ class Keyboard:
             self.page.text[box] = self.page.text.get(box, "") + text
 
     def press(self, key):
+        if key == "Escape":
+            self.page.menu_open = False
+            return
         box = self.page.focused
         if not box or not self.page.present(box):
             return
         if key == "Enter":
             self.page.sent.append(self.page.text.get(box, ""))
+            self.page.sent_with.append(self.page.model)
             self.page.text[box] = ""
         elif key == "Backspace":
             self.page.text[box] = ""
@@ -103,14 +115,73 @@ class Box:
         return self.page.text.get(self.selector, "")
 
 
+class ModelButton:
+    """The selector beside the composer: its label says the model, a click opens its menu."""
+
+    def __init__(self, page):
+        self.page = page
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 1 if self.page.model is not None else 0
+
+    def get_attribute(self, name, **kwargs):
+        if self.page.model is None:
+            raise Gone(MODEL_BUTTON)
+        return "Model: {}".format(self.page.model) if name == "aria-label" else None
+
+    def click(self, timeout=None):
+        if self.page.model is None:
+            raise Gone(MODEL_BUTTON)
+        self.page.menu_opened += 1
+        self.page.menu_open = True
+
+
+class ModelItems:
+    """The open menu's rows, narrowed by the words a row begins with."""
+
+    def __init__(self, page, wanted=None):
+        self.page, self.wanted = page, wanted
+
+    def filter(self, has_text=None):
+        return ModelItems(self.page, has_text)
+
+    def _rows(self):
+        if not self.page.menu_open:
+            return []
+        return [name for name in self.page.models if self.wanted is None or self.wanted.search(name)]
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return len(self._rows())
+
+    def click(self, timeout=None):
+        rows = self._rows()
+        if not rows:
+            raise Gone(MODEL_ITEM)
+        self.page.menu_open = False
+        if not self.page.choice_ignored:
+            self.page.model = rows[0]
+
+
 class ComposerPage:
     """The placeholder textarea is there until `mounts_at` (seconds on the clock from the start), the
     editor from then on; `editor_from_start` has the editor and no placeholder all along, `none` has
-    no composer at all. A selector the page does not know is never there."""
+    no composer at all. A selector the page does not know is never there. `model` is what the
+    selector beside the composer reads (None: no selector on the page), `models` the rows its menu
+    offers, and `choice_ignored` a page whose row takes the press and changes nothing."""
 
-    def __init__(self, clock, mounts_at=0.0, none=False):
+    def __init__(self, clock, mounts_at=0.0, none=False, model="Auto", models=MODELS, choice_ignored=False):
         self.clock, self.start, self.mounts_at, self.none = clock, clock.now, mounts_at, none
         self.text, self.sent, self.focused = {}, [], None
+        self.model, self.models, self.choice_ignored = model, models, choice_ignored
+        self.menu_open, self.menu_opened, self.sent_with = False, 0, []
         self.keyboard = Keyboard(self)
 
     def mounted(self):
@@ -126,6 +197,10 @@ class ComposerPage:
         return False
 
     def locator(self, selector):
+        if selector == MODEL_BUTTON:
+            return ModelButton(self)
+        if selector == MODEL_ITEM:
+            return ModelItems(self)
         return Box(self, selector)
 
     def wait_for_timeout(self, ms):
@@ -165,6 +240,41 @@ def main():
     what, sent = send_on(page, EDITORS[0])
     record("a page with no composer at all refuses the turn, nothing sent",
            what.startswith("refused") and sent == [], "{}, sent {}".format(what, sent))
+
+    # 2026-11-16: the model the turn is sent with. Bot sends it into the account's one bot chat.
+    page = ComposerPage(clock, model="Bot")
+    what, sent = send_on(page, EDITORS[0])
+    record("with Bot chosen, the driver chooses Auto and only then sends",
+           what == "sent" and sent == [PROMPT] and page.sent_with == ["Auto"],
+           "{}, sent {} with {}".format(what, len(sent), page.sent_with))
+
+    page = ComposerPage(clock, model="Auto")
+    what, sent = send_on(page, EDITORS[0])
+    record("with Auto chosen already, the turn is sent and the menu is never opened",
+           what == "sent" and page.sent_with == ["Auto"] and page.menu_opened == 0,
+           "{}, sent with {}, menu opened {} time(s)".format(what, page.sent_with, page.menu_opened))
+
+    page = ComposerPage(clock, model=None)
+    what, sent = send_on(page, EDITORS[0])
+    record("a page with no model selector to read refuses the turn, nothing sent",
+           what.startswith("refused") and sent == [], "{}, sent {}".format(what, sent))
+
+    page = ComposerPage(clock, model="Bot", models=("Fast", "Expert", "Bot"))
+    what, sent = send_on(page, EDITORS[0])
+    record("Bot chosen and no Auto in the menu: refused, nothing sent, the menu closed again",
+           what.startswith("refused") and sent == [] and not page.menu_open,
+           "{}, sent {}, menu open {}".format(what, sent, page.menu_open))
+
+    page = ComposerPage(clock, model="Bot", choice_ignored=True)
+    what, sent = send_on(page, EDITORS[0])
+    record("a choice of Auto the page does not take refuses the turn, nothing sent",
+           what.startswith("refused") and sent == [] and page.model == "Bot",
+           "{}, sent {}, the selector reads {}".format(what, sent, page.model))
+
+    page = ComposerPage(clock, model="Expert")
+    what, sent = send_on(page, EDITORS[0])
+    record("any model but Auto is changed to Auto before the send",
+           what == "sent" and page.sent_with == ["Auto"], "{}, sent with {}".format(what, page.sent_with))
 
     passed = sum(1 for ok in results if ok)
     print("{}/{} PASSED".format(passed, len(results)))

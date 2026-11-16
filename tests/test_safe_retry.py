@@ -191,6 +191,8 @@ def provider_sends():
                 provider._dismiss_overlays = lambda page: None
                 provider._composer = lambda page, seconds: "composer"
                 provider._composer_text = lambda page, composer: page.text
+                # This page has no model selector; the guard has its own suite (test_grok_composer.py).
+                provider._ensure_model = lambda page: None
             try:
                 if cls is GrokProvider:
                     provider._send(page, "composer", "a red square")
