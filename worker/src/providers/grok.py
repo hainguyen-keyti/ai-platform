@@ -70,6 +70,7 @@ MODEL_BUTTON = 'button[aria-haspopup="menu"][aria-label^="Model"]'
 MODEL_ITEM = '[role=menu] [role^=menuitem]'
 MODEL_ROW = re.compile(r"^\s*" + MODEL + r"\b")
 MODEL_WAIT = 10
+MENU_WAIT = 5
 
 SIGNED_OUT = "the grok session is signed out; run scripts/login_provider.py grok"
 MEMORY_ON = ("the shared Grok account has memory switched on, so this turn was not sent; ask the "
@@ -224,7 +225,7 @@ class GrokProvider(BaseProvider):
         try:
             folder.mkdir(parents=True, exist_ok=True)
             (folder / (stem + ".json")).write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
-            page.screenshot(path=str(folder / (stem + ".png")))
+            page.screenshot(path=str(folder / (stem + ".png")), timeout=10000)
         except Exception:
             pass
 
@@ -382,10 +383,11 @@ class GrokProvider(BaseProvider):
             return None
         return label.split(":", 1)[1].strip() if label and ":" in label else None
 
-    def _ensure_model(self, page):
+    def _ensure_model(self, page, change=True):
         """The turn goes out on MODEL or not at all: nothing is typed while the selector reads
-        anything else, Bot above all, or cannot be read."""
-        deadline = time.time() + MODEL_WAIT
+        anything else, Bot above all, or cannot be read. With `change` off it only looks, which is
+        what the last look before Enter does: a menu opened then would take the keys from the composer."""
+        deadline = time.time() + (MODEL_WAIT if change else 0)
         chosen = self._model(page)
         while chosen is None and time.time() < deadline:
             page.wait_for_timeout(500)
@@ -394,17 +396,20 @@ class GrokProvider(BaseProvider):
             raise ProviderError("grok's model selector could not be read, so nothing was sent")
         if chosen == MODEL:
             return
+        if not change:
+            raise ProviderError("grok's model read {} at the send, not {}, so nothing was sent".format(chosen, MODEL))
         try:
             page.locator(MODEL_BUTTON).first.click(timeout=8000)
-            page.wait_for_timeout(1000)
             row = page.locator(MODEL_ITEM).filter(has_text=MODEL_ROW)
+            # The menu is given time to paint its rows: a row not there yet is not a row missing.
+            opened = time.time()
+            while not row.count() and time.time() - opened < MENU_WAIT:
+                page.wait_for_timeout(500)
             if row.count():
                 row.first.click(timeout=5000)
                 page.wait_for_timeout(1500)
             else:
                 page.keyboard.press("Escape")
-        except ProviderError:
-            raise
         except Exception:
             # A press that failed leaves the selector as it was, which the read below tells.
             pass
@@ -465,6 +470,13 @@ class GrokProvider(BaseProvider):
             page.keyboard.insert_text(prompt)
             page.wait_for_timeout(500)
             if wanted in self._composer_text(page, composer):
+                # The selector is read once more at the last moment (the review, 2026-11-16): a label
+                # painted with a default and then with the account's saved choice would pass the first look.
+                try:
+                    self._ensure_model(page, change=False)
+                except ProviderError:
+                    self._clear_composer(page, composer)
+                    raise
                 self.sent = True
                 page.keyboard.press("Enter")
                 return

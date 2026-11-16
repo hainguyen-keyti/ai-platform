@@ -132,6 +132,10 @@ class ModelButton:
     def get_attribute(self, name, **kwargs):
         if self.page.model is None:
             raise Gone(MODEL_BUTTON)
+        self.page.label_reads += 1
+        if self.page.repaints_after is not None and self.page.label_reads > self.page.repaints_after:
+            # Once: the page paints its saved choice and then obeys the menu like any other.
+            self.page.model, self.page.repaints_after = self.page.repaints_to, None
         return "Model: {}".format(self.page.model) if name == "aria-label" else None
 
     def click(self, timeout=None):
@@ -176,10 +180,13 @@ class ComposerPage:
     editor from then on; `editor_from_start` has the editor and no placeholder all along, `none` has
     no composer at all. A selector the page does not know is never there. `model` is what the
     selector beside the composer reads (None: no selector on the page), `models` the rows its menu
-    offers, and `choice_ignored` a page whose row takes the press and changes nothing."""
+    offers, and `choice_ignored` a page whose row takes the press and changes nothing. `repaints_after`
+    is a page that reads `model` that many times and `repaints_to` from then on: a label painted
+    first with a default and then with the account's saved choice (the tier 2 review, 2026-11-16)."""
 
     def __init__(self, clock, mounts_at=0.0, none=False, model="Auto", models=MODELS, choice_ignored=False,
-                 body="What's on the agenda today?", no_picture=False):
+                 body="What's on the agenda today?", no_picture=False, repaints_after=None, repaints_to="Bot"):
+        self.label_reads, self.repaints_after, self.repaints_to = 0, repaints_after, repaints_to
         self.clock, self.start, self.mounts_at, self.none = clock, clock.now, mounts_at, none
         self.text, self.sent, self.focused = {}, [], None
         self.model, self.models, self.choice_ignored = model, models, choice_ignored
@@ -229,9 +236,15 @@ def send_on(page, composer):
     """(what happened, the turns the page sent) for one _send with the composer the open found."""
     scratch = Path(tempfile.mkdtemp(prefix="grok-composer-"))
     try:
-        driver = grok.GrokProvider(scratch, scratch)
-        driver._send(page, composer, PROMPT)
-        return "sent", page.sent
+        driver = grok.GrokProvider(scratch / "media", scratch / "sessions")
+        driver.sent = False
+        send_on.marked_sent = None
+        try:
+            driver._send(page, composer, PROMPT)
+            return "sent", page.sent
+        finally:
+            # What the safe-retry rule reads: True only once the turn may have reached the provider.
+            send_on.marked_sent = driver.sent
     except ProviderError as exc:
         return "refused: {}".format(str(exc)[:50]), page.sent
     finally:
@@ -295,8 +308,9 @@ def main():
 
     page = ComposerPage(clock, model=None)
     what, sent = send_on(page, EDITORS[0])
-    record("a page with no model selector to read refuses the turn, nothing sent",
-           what.startswith("refused") and sent == [], "{}, sent {}".format(what, sent))
+    record("a page with no model selector to read refuses the turn, nothing sent, not marked sent",
+           what.startswith("refused") and sent == [] and send_on.marked_sent is False,
+           "{}, sent {}, marked sent {}".format(what, sent, send_on.marked_sent))
 
     page = ComposerPage(clock, model="Bot", models=("Fast", "Expert", "Bot"))
     what, sent = send_on(page, EDITORS[0])
@@ -306,9 +320,23 @@ def main():
 
     page = ComposerPage(clock, model="Bot", choice_ignored=True)
     what, sent = send_on(page, EDITORS[0])
-    record("a choice of Auto the page does not take refuses the turn, nothing sent",
-           what.startswith("refused") and sent == [] and page.model == "Bot",
-           "{}, sent {}, the selector reads {}".format(what, sent, page.model))
+    record("a choice of Auto the page does not take refuses the turn, nothing sent, not marked sent",
+           what.startswith("refused") and sent == [] and page.model == "Bot" and send_on.marked_sent is False,
+           "{}, sent {}, the selector reads {}, marked sent {}".format(what, sent, page.model, send_on.marked_sent))
+
+    # The review's doubt: a label that reads Auto when the guard looks and Bot by the time of Enter.
+    page = ComposerPage(clock, model="Auto", repaints_after=1)
+    what, sent = send_on(page, EDITORS[0])
+    record("a selector that turns to Bot after the guard's look refuses at the send: nothing sent, the box emptied",
+           what.startswith("refused") and sent == [] and send_on.marked_sent is False
+           and not page.text.get(EDITORS[0], ""),
+           "{}, sent {}, marked sent {}, the box holds {!r}".format(
+               what, sent, send_on.marked_sent, page.text.get(EDITORS[0], "")[:20]))
+
+    page = ComposerPage(clock, model="Auto")
+    what, sent = send_on(page, EDITORS[0])
+    record("a turn that goes out is marked sent",
+           what == "sent" and send_on.marked_sent is True, "{}, marked sent {}".format(what, send_on.marked_sent))
 
     page = ComposerPage(clock, model="Expert")
     what, sent = send_on(page, EDITORS[0])
