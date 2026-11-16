@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Measure the Grok behaviours a provider would depend on, against the real site.
 
-    ~/cloakbrowser-env/bin/python tests/grok_probe.py [open|turn|image|cleanup|all]
+    ~/cloakbrowser-env/bin/python tests/grok_probe.py [open|composer|turn|image|cleanup|all]
 
 Each probe prints what it saw; nothing here asserts a wish. The account is on a
-free tier that allows very few turns per day, so `open` costs nothing and the
-others cost one turn each: run them by name, not `all`, unless the budget is
-known to be there. Opens the provider's own profile, storage/sessions/grok/, as
+free tier that allows very few turns per day, so `open` and `composer` cost
+nothing and the others cost one turn each: run them by name, not `all`, unless
+the budget is known to be there. Opens the provider's own profile, storage/sessions/grok/, as
 the worker does: take grok off the host worker first, the profile opens in one
 browser at a time.
 """
@@ -30,8 +30,46 @@ COMPOSER = ('[data-testid="chat-input"] .ProseMirror[contenteditable="true"]',
             '.ProseMirror[contenteditable="true"]',
             'textarea[aria-label="Ask Grok anything"]',
             '[data-testid="chat-input"] textarea')
+# Measured 2026-10-28 and again 2026-11-16: the textarea is a placeholder the page shows first (seen
+# at 11s) and replaces with the real editor; a click on it times out once it is gone.
+EDITORS = COMPOSER[:2]
+EDITOR_WAIT = 60
+# How long a sent turn is watched for a thread's address before the probe says there is none.
+NO_THREAD_SECONDS = 75
+DIAGNOSTICS = ROOT / "storage" / "diagnostics"
 STOPPING = ('button[data-testid="chat-stop"]', 'button[aria-label="Stop"]',
             '[data-streaming="true"]', '[data-is-streaming="true"]')
+
+# Every editable thing on the page, as the page has it: which one is the composer is read, not assumed.
+EDITABLES = """
+() => [...document.querySelectorAll('textarea, [contenteditable], input[type="text"]')].map(e => {
+    const r = e.getBoundingClientRect();
+    return {tag: e.tagName, ce: e.getAttribute('contenteditable'), label: e.getAttribute('aria-label'),
+            placeholder: e.getAttribute('placeholder') || e.getAttribute('data-placeholder'),
+            cls: (e.className || '').toString().slice(0, 50), testid: e.closest('[data-testid]')
+                ? e.closest('[data-testid]').getAttribute('data-testid') : null,
+            w: Math.round(r.width), h: Math.round(r.height), x: Math.round(r.x), y: Math.round(r.y)};
+})
+"""
+# The controls around the composer and the Private switch: their words and their state.
+CONTROLS = """
+() => [...document.querySelectorAll('button, [role=button], [role=switch], [role=combobox]')]
+    .map(e => ({text: (e.innerText || '').trim().slice(0, 30), label: e.getAttribute('aria-label'),
+                pressed: e.getAttribute('aria-pressed'), expanded: e.getAttribute('aria-expanded'),
+                haspopup: e.getAttribute('aria-haspopup'), y: Math.round(e.getBoundingClientRect().y),
+                x: Math.round(e.getBoundingClientRect().x)}))
+    .filter(c => /private|bot|model|grok|auto|fast|expert|send|submit/i.test((c.text || '') + ' ' + (c.label || '')))
+    .slice(0, 20)
+"""
+MENU = """
+() => [...document.querySelectorAll('[role=menu] [role^=menuitem], [role=listbox] [role=option]')]
+    .map(e => (e.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 80)).slice(0, 16)
+"""
+LINKS = """
+() => [...new Set([...document.querySelectorAll('a[href]')].map(a => a.getAttribute('href'))
+    .filter(h => h && !h.startsWith('http') && h !== '/' && !h.startsWith('#'))
+    .map(h => h.replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, '<id>')))].slice(0, 16)
+"""
 
 # Measured 2026-09-24: the server is the honest witness. /responses carries each
 # turn with partial=false once it is finished, and response-node carries
@@ -88,12 +126,17 @@ say = lambda tag, detail: print("[{}] {}".format(tag, detail), flush=True)
 
 def open_page(account, watch=False):
     page = account.new_page()
-    seen = {"ws": [], "posts": []}
+    seen = {"ws": [], "posts": [], "answers": []}
     if watch:
         page.on("websocket", lambda ws: seen["ws"].append(ws.url[:80]))
         page.on("request", lambda r: seen["posts"].append(
             (r.method, r.url.split("grok.com", 1)[-1][:60]))
             if r.method in ("POST", "PUT", "DELETE") and "/rest/" in r.url else None)
+        # What the server answered, not only what the page asked: a send the server refuses is a
+        # request too.
+        page.on("response", lambda r: seen["answers"].append(
+            (r.request.method, r.url.split("grok.com", 1)[-1].split("?")[0][:60], r.status))
+            if r.request.method in ("POST", "PUT", "DELETE") and "grok.com" in r.url else None)
 
     t0 = time.time()
     page.goto(HOME, wait_until="domcontentloaded", timeout=90000)
@@ -119,11 +162,82 @@ def open_page(account, watch=False):
         except Exception:
             continue
 
-    cohort = [s for s in COMPOSER if page.locator(s).count()]
+    # Measured 2026-11-16: looked at right after the challenge the page had painted nothing (a
+    # composer at 11s, its text at 33s), and "NONE" was this probe's haste. Wait for a real editor.
+    first_seen = {}
+    while time.time() - t0 < EDITOR_WAIT:
+        for sel in COMPOSER:
+            try:
+                if sel not in first_seen and page.locator(sel).count() and page.locator(sel).first.is_visible():
+                    first_seen[sel] = round(time.time() - t0, 1)
+            except Exception:
+                continue
+        if any(sel in first_seen for sel in EDITORS):
+            break
+        page.wait_for_timeout(1000)
+    say("open", "composer first seen, seconds after the load began: {}".format(first_seen or "nothing"))
+    page.wait_for_timeout(1500)
+    cohort = [s for s in COMPOSER if page.locator(s).count() and page.locator(s).first.is_visible()]
     threads = page.locator('a[href^="/c/"]').count()
     say("open", "composer cohort: {}".format(cohort or "NONE"))
     say("open", "threads in sidebar: {} (0 would mean signed out)".format(threads))
+    listing = page.evaluate(FETCH, ["/rest/app-chat/conversations?pageSize=1", "GET", None])
+    say("open", "the account's conversation list answers {}".format(listing["status"]))
     return page, seen, (cohort[0] if cohort else None)
+
+
+def newest(page, tag):
+    """The server's newest conversations: whether a turn made a thread is the server's to say."""
+    got = page.evaluate(FETCH, ["/rest/app-chat/conversations?pageSize=4", "GET", None])
+    try:
+        rows = [((c.get("conversationId") or "")[:8], c.get("createTime"), c.get("temporary"), (c.get("title") or "")[:30])
+                for c in json.loads(got["body"]).get("conversations") or []]
+    except ValueError:
+        rows = got["body"][:120]
+    say(tag, "server's newest conversations ({}): {}".format(got["status"], rows))
+
+
+def probe_composer(account):
+    """The page around the composer, measured without a turn: what is editable, what the controls
+    beside it say, what the selector offers, where the links go, and whether text typed into the
+    editor is read back from it. The text is removed again; nothing is sent."""
+    page, _, cohort = open_page(account)
+    for item in page.evaluate(EDITABLES):
+        say("composer", "editable: {}".format(item))
+    for item in page.evaluate(CONTROLS):
+        say("composer", "control: {}".format(item))
+    say("composer", "link shapes: {}".format(page.evaluate(LINKS)))
+    say("composer", "body, last 300 chars: {!r}".format((page.inner_text("body") or "")[-300:]))
+    # The selector beside the composer ("Bot" on 2026-11-16): opened, read, closed with Escape.
+    try:
+        picker = page.locator('button[aria-haspopup="menu"]').filter(has_text=re.compile(r"^(Bot|Auto|Fast|Expert|Grok)", re.I))
+        say("composer", "selector buttons matching: {}".format(picker.count()))
+        if picker.count():
+            picker.first.click(timeout=5000)
+            page.wait_for_timeout(1200)
+            say("composer", "selector offers: {}".format(page.evaluate(MENU) or "nothing read"))
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(500)
+    except Exception as exc:
+        say("composer", "selector not opened, {}: {}".format(type(exc).__name__, str(exc)[:120]))
+    if not cohort:
+        say("composer", "no composer, nothing typed")
+        return
+    box = page.locator(cohort).first
+    try:
+        box.click(timeout=8000)
+        how = "clicked"
+    except Exception as exc:
+        box.evaluate("(el) => el.focus()")
+        how = "click raised {}, focused instead".format(type(exc).__name__)
+    page.keyboard.insert_text("probe text, not sent")
+    page.wait_for_timeout(500)
+    say("composer", "{} {}; read back {!r}".format(how, cohort, (box.inner_text() or "")[:60]))
+    page.keyboard.press("ControlOrMeta+a")
+    page.keyboard.press("Backspace")
+    page.wait_for_timeout(400)
+    say("composer", "after clearing, the editor holds {!r}".format((box.inner_text() or "").strip()[:40]))
+    page.screenshot(path=str(DIAGNOSTICS / "grok-probe-composer.png"))
 
 
 def quota(page, tag="quota"):
@@ -141,7 +255,11 @@ def send(page, cohort, prompt):
     # is one CDP call and cannot split a prompt into several turns.
     page.keyboard.insert_text(prompt)
     page.wait_for_timeout(400)
+    say("send", "the editor {} holds {!r} before Enter".format(cohort, (box.inner_text() or "")[:60]))
     page.keyboard.press("Enter")
+    page.wait_for_timeout(1500)
+    say("send", "1.5s after Enter the editor holds {!r}, the page is at {}".format(
+        (box.inner_text() or "").strip()[:60] if box.count() else "(editor gone)", page.url[:80]))
 
 
 def thread_id(url):
@@ -171,8 +289,15 @@ def await_reply(page, budget=180):
     """Settle on the server's word; the page only says when to ask."""
     t0 = time.time()
     reply, thread, cid = "", None, None
+    address = page.url
     while time.time() - t0 < budget:
         page.wait_for_timeout(3000)
+        if page.url != address:
+            address = page.url
+            say("turn", "the page moved after {:.0f}s to {}".format(time.time() - t0, address[:90]))
+        if not thread and "/c/" not in page.url and time.time() - t0 > NO_THREAD_SECONDS:
+            say("turn", "no /c/ address after {:.0f}s; giving up the wait".format(time.time() - t0))
+            break
         if not thread and "/c/" in page.url:
             thread = page.url
             cid = thread_id(thread)
@@ -199,6 +324,8 @@ def probe_turn(account):
         say("turn", "no composer, stopping")
         return
     quota(page, "quota before")
+    newest(page, "before")
+    del seen["answers"][:]
     send(page, cohort, "Reply with the single word: pong")
     reply, thread, took = await_reply(page)
     say("turn", "{:.0f}s reply={!r}".format(took, reply[:160]))
@@ -209,6 +336,12 @@ def probe_turn(account):
         if entry not in posts:
             posts.append(entry)
     say("turn", "rest posts during the turn: {}".format(posts or "none"))
+    say("turn", "answers to the page's writes since the send: {}".format(seen["answers"][:16] or "none"))
+    newest(page, "after")
+    if not thread:
+        say("turn", "link shapes: {}".format(page.evaluate(LINKS)))
+        say("turn", "body, last 400 chars: {!r}".format((page.inner_text("body") or "")[-400:]))
+        page.screenshot(path=str(DIAGNOSTICS / "grok-probe-turn-no-thread.png"))
 
     if thread:
         cid = thread_id(thread)
@@ -278,7 +411,7 @@ def probe_cleanup(account):
     say("cleanup", "read after delete -> {}".format(read["status"]))
 
 
-PROBES = {"open": lambda b: open_page(b), "turn": probe_turn, "image": probe_image,
+PROBES = {"open": lambda b: open_page(b), "composer": probe_composer, "turn": probe_turn, "image": probe_image,
           "thread": probe_thread, "cleanup": probe_cleanup}
 
 
