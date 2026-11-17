@@ -1795,6 +1795,58 @@ def main():
         except Exception as exc:
             record(videos_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
 
+        # Issue #37: a picture that could not load said "could not load image" and a file card showed the raw
+        # error, in English whatever the language. The gallery is answered with a picture and a file whose
+        # files are gone; each says so in the person's language, the raw text kept as its title.
+        gone_check = "a picture or a file that cannot load says so in the person's language (#37)"
+        try:
+            gone = [{"id": "look-img-gone", "type": "image", "filename": "gone.png", "provider": "chatgpt",
+                     "prompt": "a picture whose file is gone", "created_at": stamp},
+                    {"id": "look-file-gone", "type": "file", "filename": "gone.zip", "provider": "chatgpt",
+                     "prompt": "a file whose file is gone", "created_at": stamp,
+                     "metadata": {"name": "gone.zip", "size": 2048}}]
+            plain = {"access-control-allow-origin": "*", "content-type": "application/json"}
+
+            def answer_gone(route):
+                path = urlparse(route.request.url).path
+                if route.request.method == "OPTIONS":
+                    route.continue_()
+                elif path == "/media":
+                    route.fulfill(status=200, headers=plain, body=json.dumps({"items": gone, "total": len(gone)}))
+                elif path in ("/media/look-img-gone/file", "/media/look-file-gone/file"):
+                    route.fulfill(status=404, headers=plain, body=json.dumps({"detail": "file missing on disk"}))
+                else:
+                    route.continue_()
+
+            shown = {}
+            for lang, gallery in (("en", "gallery"), ("vi", "thư viện")):
+                context, view = look(1280, lang)
+                start = len(errors)
+                try:
+                    view.route("**/media*", answer_gone)
+                    view.route("**/media/look-*-gone/file", answer_gone)
+                    view.click("nav button:has-text('{}')".format(gallery), timeout=10000)
+                    view.wait_for_selector("[data-testid=file-download]", timeout=15000)
+                    view.click("[data-testid=file-download]")
+                    view.wait_for_selector("[data-testid=image-failed]", timeout=15000)
+                    view.wait_for_selector("[data-testid=file-failed]", timeout=15000)
+                    shown[lang] = view.evaluate(
+                        """() => ['image-failed', 'file-failed'].map((id) => {
+                            const el = document.querySelector(`[data-testid=${id}]`);
+                            return [el.textContent.trim(), el.getAttribute('title')];
+                        })""")
+                    shot(view, "18c-gallery-gone-{}".format(lang))
+                finally:
+                    # The gone files' 404s are this check's own doing.
+                    provoked.update(i for i in range(start, len(errors)) if "404" in errors[i].split(" @ ")[0])
+                    context.close()
+            said = {"en": "Not found: it may have just been deleted.", "vi": "Không tìm thấy: có thể nó vừa bị xoá."}
+            record(gone_check,
+                   len(shown) == 2 and all(text == said[lang] and title for lang, pair in shown.items()
+                                           for text, title in pair), repr(shown))
+        except Exception as exc:
+            record(gone_check, False, "{}: {}".format(type(exc).__name__, str(exc)[:200]))
+
         # The web plan of 2026-10-22 (the review of 2026-10-21). Each check has a context of its own,
         # this person's session, and the api answered in the browser where a state has to be held.
         stamp_w = "2026-10-22 10:00:00"

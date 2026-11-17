@@ -86,7 +86,11 @@ export async function mediaBlobUrl(id) {
     headers: { Authorization: `Bearer ${sent}` },
   })
   if (response.status === 401) throw expired(sent)
-  if (!response.ok) throw new Error('could not load image')
+  if (!response.ok) {
+    const failure = new Error(`could not load media ${id}: ${response.status}`)
+    failure.status = response.status
+    throw failure
+  }
   return URL.createObjectURL(await response.blob())
 }
 

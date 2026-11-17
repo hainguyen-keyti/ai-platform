@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { mediaBlobUrl } from '../lib/api.js'
-import { useStrings } from '../lib/strings.jsx'
+import { failureText, useStrings } from '../lib/strings.jsx'
 
 function readableSize(bytes) {
   if (!bytes) return null
@@ -28,7 +28,7 @@ export default function FileCard({ item }) {
       // Revoking straight away can cancel the transfer that just started.
       setTimeout(() => URL.revokeObjectURL(url), 60000)
     } catch (err) {
-      setError(err.message)
+      setError(err)
     } finally {
       setBusy(false)
     }
@@ -49,7 +49,7 @@ export default function FileCard({ item }) {
         className="mt-2 w-full rounded border py-1 text-xs hover:bg-slate-100 disabled:opacity-50">
         {busy ? t.preparing : t.download}
       </button>
-      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+      {error && <p data-testid="file-failed" className="mt-1 text-xs text-red-600" title={error.message}>{failureText(error, t)}</p>}
     </div>
   )
 }
