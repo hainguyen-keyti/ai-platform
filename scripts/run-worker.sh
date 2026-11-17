@@ -16,9 +16,10 @@ fi
 # the worker, not by this script), and every name the command line or the calling shell exported
 # wins over the file, an empty one too (`PROVIDER_MODE= ./scripts/run-worker.sh` falls to the
 # default below, real): `export -p` prints them quoted for the shell to read back, and they are
-# read back once the file is in.
+# read back once the file is in. Under bash a readonly one (an exported SHELLOPTS or BASHOPTS) comes
+# back as `declare -rx`, which eval cannot assign and need not: it is left out (issue #36).
 if [ -f .env ]; then
-  _given=$(export -p)
+  _given=$(export -p | sed '/^declare -[a-zA-Z]*r[a-zA-Z]* /d')
   set -a
   . ./.env
   set +a

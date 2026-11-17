@@ -79,14 +79,14 @@ def copy_repo(where):
     shutil.copytree(ROOT / "worker", where / "worker", ignore=shutil.ignore_patterns("__pycache__"))
 
 
-def start_worker(repo, extra_env):
+def start_worker(repo, extra_env, shell="sh"):
     """The script as a person starts it: a clean environment plus what the command line names."""
     port = free_port()
     env = {"PATH": os.environ["PATH"], "HOME": os.environ["HOME"], "CLOAKBROWSER_VENV": str(VENV),
            "CODE_SHA": "test", "WORKER_PORT": str(port), "PYTHONUNBUFFERED": "1"}
     env.update(extra_env)
     log = open(repo / "worker-{}.log".format(port), "w")
-    proc = subprocess.Popen(["sh", "./scripts/run-worker.sh"], cwd=str(repo), env=env, stdout=log,
+    proc = subprocess.Popen([shell, "./scripts/run-worker.sh"], cwd=str(repo), env=env, stdout=log,
                             stderr=subprocess.STDOUT, start_new_session=True)
     health = None
     deadline = time.time() + 120
@@ -113,10 +113,10 @@ def stop_worker(proc, log, port):
         return s.connect_ex(("127.0.0.1", port)) != 0
 
 
-def run(repo, api, extra_env):
+def run(repo, api, extra_env, shell="sh"):
     """Start a worker, give it a few polls, read what it took, stop it."""
     api.tokens.clear()
-    proc, log, port, health = start_worker(repo, extra_env)
+    proc, log, port, health = start_worker(repo, extra_env, shell)
     time.sleep(3 if health else 0)
     tokens = list(api.tokens)
     closed = stop_worker(proc, log, port)
@@ -178,10 +178,23 @@ def main():
                   got if got == "no health" else got["mode"], (health or {}).get("api_url") == cli["API_URL"],
                   len(tokens), bool(tokens) and set(tokens) == {CLI_TOKEN}))
 
-        leaked = [t for t in (FILE_TOKEN, CLI_TOKEN) if t in out_a or t in out_b]
+        # Issue #36: under bash an exported SHELLOPTS or BASHOPTS comes back from `export -p` readonly,
+        # and the script stopped at its eval.
+        outs, closed = [out_a, out_b], [closed_a, closed_b]
+        for name, value in (("SHELLOPTS", "braceexpand:hashall:interactive-comments"), ("BASHOPTS", "checkwinsize")):
+            health, tokens, closed_c, out_c = run(repo, cli_api, dict(cli, **{name: value}), shell="bash")
+            got = summary(health)
+            outs.append(out_c)
+            closed.append(closed_c)
+            check("under bash with {} exported the worker starts, the command line still winning (#36)".format(name),
+                  got != "no health" and got["providers"] == ["grok"] and got["min_gap"] == 1.0
+                  and bool(tokens) and set(tokens) == {CLI_TOKEN},
+                  "{}; {}".format(got, "" if health else (out_c.strip().splitlines() or ["no output"])[-1][:120]))
+
+        leaked = [t for t in (FILE_TOKEN, CLI_TOKEN) if any(t in out for out in outs)]
         check("every worker it started is gone, and no token is printed",
-              closed_a and closed_b and not leaked,
-              "ports closed {}, tokens in the script's output {}".format([closed_a, closed_b], len(leaked)))
+              all(closed) and not leaked,
+              "ports closed {}, tokens in the script's output {}".format(closed, len(leaked)))
     finally:
         file_api.close()
         cli_api.close()
