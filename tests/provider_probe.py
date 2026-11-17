@@ -14,6 +14,7 @@ never overlap a real turn, and the browser may refuse a second session.
 """
 
 import json
+import os
 import re
 import shutil
 import sys
@@ -155,7 +156,9 @@ def save_fixture(name, html):
 class Probe:
     def __init__(self):
         self.media = Path(tempfile.mkdtemp(prefix="probe-media-"))
-        self.provider = ChatGPTProvider(self.media, ROOT / "storage" / "sessions")
+        # The account to probe (a profile under storage/sessions); the provider's own by default.
+        account = os.environ.get("PROBE_ACCOUNT", "").strip() or None
+        self.provider = ChatGPTProvider(self.media, ROOT / "storage" / "sessions", account)
         self.provider.start()
         self.thread_id = None
         self.send_endpoint = None
@@ -1026,9 +1029,96 @@ def probe_attachment(p):
             cleared, survived_home, survived_thread, survived_home_from_thread, survived_same_thread))
 
 
+class _Unsent(Exception):
+    """Raised in place of the send: the probe never lets a turn out."""
+
+
+def probe_cancelled_attach(p):
+    """Issue #39: a turn taken away after its picture is attached and before the send leaves the chip in
+    the shared composer. Is it there when the next turn opens, and does that turn's _drop_attachments take
+    it before anything is typed? Runs the driver's own _turn: the first with a 1 KB picture and a send
+    that raises JobCancelled (the cancel at the last moment), the next with a send that only counts the
+    chips and raises; nothing is ever sent. A new chat, then PROBE_THREAD_URL's thread when it is given."""
+    from src.providers.base import JobCancelled
+
+    provider, page = p.provider, p.page()
+    tiny_png(p.media / "attachment-probe.png")
+    real_drop, real_send = provider._drop_attachments, provider._send
+
+    def chips(where):
+        counted = {"previews": page.locator(ATTACHMENT_PREVIEW).count(),
+                   "removes": page.locator(ATTACHMENT_REMOVE).count()}
+        say("cancelled-attach: " + where, counted)
+        return counted["previews"] + counted["removes"]
+
+    def cancelled_send(page_, prompt):
+        chips("the cancelled turn, attached, at its send")
+        raise JobCancelled()
+
+    def counted_drop(page_):
+        before = chips("the next turn, opened, before _drop_attachments")
+        try:
+            real_drop(page_)
+            refused = None
+        except Exception as exc:
+            refused = "{}: {}".format(type(exc).__name__, str(exc)[:100])
+        after = chips("the next turn, after _drop_attachments")
+        say("cancelled-attach: _drop_attachments", "refused: {}".format(refused) if refused else "went on")
+        counted_drop.seen.append((before, after, refused))
+        if refused:
+            raise _Unsent()
+
+    def unsent(page_, prompt):
+        chips("the next turn, at its send")
+        raise _Unsent()
+
+    provider._drop_attachments = counted_drop
+    results = {}
+    try:
+        thread = os.environ.get("PROBE_THREAD_URL", "").strip() or None
+        cases = [("a new chat", None, None)]
+        if thread:
+            cases += [("the thread, next turn on the same thread", thread, thread),
+                      ("the thread, next turn in a new chat", thread, None),
+                      ("the thread again, after a new chat between", thread, thread)]
+        else:
+            say("cancelled-attach: thread", "skipped: PROBE_THREAD_URL not set")
+        for name, cancelled_on, next_on in cases:
+            counted_drop.seen = []
+            if name != "the thread again, after a new chat between":
+                provider._send = cancelled_send
+                try:
+                    provider._turn("probe: never sent", "attachment-probe.png", cancelled_on)
+                    say("cancelled-attach: " + name, "the cancelled turn did not stop at its send")
+                except JobCancelled:
+                    chips("{}: the page right after the cancel".format(name))
+                except _Unsent:
+                    say("cancelled-attach: " + name, "the cancelled turn's own open refused: {}".format(counted_drop.seen))
+            provider._send = unsent
+            counted_drop.seen = []
+            try:
+                provider._turn("probe: never sent", None, next_on)
+            except _Unsent:
+                pass
+            results[name] = counted_drop.seen[-1] if counted_drop.seen else None
+            say("cancelled-attach: " + name, "chips before the drop, after it, refused: {}".format(results[name]))
+    finally:
+        provider._drop_attachments, provider._send = real_drop, real_send
+        # Leave the thread's draft clean whatever happened above.
+        if os.environ.get("PROBE_THREAD_URL", "").strip():
+            page = provider._open(os.environ["PROBE_THREAD_URL"].strip())
+            try:
+                real_drop(page)
+            except Exception as exc:
+                say("cancelled-attach: cleanup", "{}: {}".format(type(exc).__name__, str(exc)[:100]))
+            chips("cleanup: the thread at the end")
+    say("cancelled-attach: summary", results)
+
+
 PROBES = (
     ("composer", probe_composer),
     ("attachment", probe_attachment),
+    ("cancelled-attach", probe_cancelled_attach),
     ("turn-dom", probe_turn_dom),
     ("fixtures", probe_fixtures),
     ("send", probe_send),
@@ -1039,7 +1129,7 @@ PROBES = (
     ("memory-toggle", probe_memory_toggle),
 )
 # Changes an account setting for a few seconds, or uploads a file; run these by name, on purpose.
-NOT_IN_ALL = {"memory-toggle", "composer", "attachment"}
+NOT_IN_ALL = {"memory-toggle", "composer", "attachment", "cancelled-attach"}
 
 
 def main():
