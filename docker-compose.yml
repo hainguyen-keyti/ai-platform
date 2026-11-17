@@ -31,7 +31,10 @@ services:
       PREFERRED_IMAGE_ACCOUNTS: ${PREFERRED_IMAGE_ACCOUNTS:-}
     volumes:
       - ./api/src:/app/src
-      - ${STORAGE_DIR:-./storage}/db:/data/db
+      # The database lives in a named volume, one per compose project, never on the bind-mounted drive:
+      # on the Windows machine heavy I/O there stalled SQLite past its 15s busy timeout (issue #40).
+      # `docker compose down -v` deletes it: never run that on the real stack.
+      - db:/data/db
       - ${STORAGE_DIR:-./storage}/media:/data/media
     restart: unless-stopped
 
@@ -52,3 +55,6 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+
+volumes:
+  db:

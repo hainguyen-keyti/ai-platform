@@ -1,8 +1,8 @@
 #!/bin/sh
 # The full gate in one command: the quick gate, the web build, then ui_smoke against a
 # compose stack and a mock worker OF ITS OWN. The gate's stack is a second compose project
-# (`aip-gate`) on GATE_API_PORT and GATE_WEB_PORT, with its database and media in storage/gate/,
-# emptied at each run; its mock worker (MOCK_DELAY_SECONDS=4, which ui_smoke's typing check needs)
+# (`aip-gate`) on GATE_API_PORT and GATE_WEB_PORT, with its media in storage/gate/ and its database
+# in its own volume (`aip-gate_db`), both emptied at each run; its mock worker (MOCK_DELAY_SECONDS=4, which ui_smoke's typing check needs)
 # serves that api only, on WORKER_PORT. The real stack, its database and a real worker serving it
 # are never touched, so the gate can run while people use the platform: on 2026-10-30 the old gate,
 # which brought up the real stack and a mock worker on it, answered a real /v1 request with a mock
@@ -49,7 +49,7 @@ trap cleanup EXIT INT TERM
 echo "== the gate's own stack (api :$GATE_API_PORT, web :$GATE_WEB_PORT, $GATE_STORAGE)"
 gate_compose down -v >/dev/null 2>&1 || true
 rm -rf "$GATE_STORAGE"
-mkdir -p "$GATE_STORAGE/db" "$GATE_STORAGE/media"
+mkdir -p "$GATE_STORAGE/media"
 gate_compose up -d
 # Measured 2026-10-30 in WSL with the repo on /mnt/d: after this `up`, a process started from this
 # shell can no longer resolve its working directory (Python's os.getcwd() raises FileNotFoundError,

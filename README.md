@@ -143,6 +143,15 @@ curl http://localhost:3000/health
 
 It should print `{"status":"ok"}`.
 
+The database lives in the Docker volume `ai-platform_db`, not in `storage/` (on a drive shared with
+Windows, heavy file activity there stalled SQLite for up to a minute). `docker compose down -v` deletes
+it. To take a copy, let SQLite write one inside the container and copy it out:
+
+```bash
+docker compose exec -T api python -c "import sqlite3; sqlite3.connect('/data/db/app.db').backup(sqlite3.connect('/tmp/app-copy.db'))"
+docker compose cp api:/tmp/app-copy.db ./app-copy.db
+```
+
 ### 5. Create your account
 
 Open http://localhost:5173 and register with your invite code. **The first account on an empty database
@@ -421,7 +430,8 @@ python3 acceptance.py          # quick gate, about 5 minutes
 ```
 
 The full gate also builds the web and walks it in a browser, on a stack of its own (API on :3100, web on
-:5273, worker on :8100, data in `storage/gate/`), so it never touches your real data:
+:5273, worker on :8100, media in `storage/gate/`, database in the volume `aip-gate_db`), so it never
+touches your real data:
 
 ```bash
 (cd web && npm ci)             # first time only; needs Node.js 22 or newer
