@@ -25,6 +25,9 @@ MAX_REQUEST_BYTES = MAX_PICTURE_BYTES + 256 * 1024
 # A body a little over the limit is read to its end and dropped, so its sender can read the 413
 # (answered unread, uvicorn closes on a sender still writing); one declared far over it is refused unread.
 MAX_DRAIN_BYTES = 16 * 1024 * 1024
+# Every other route takes JSON: the largest real body measured 2026-11-17 was 20 KB (issue #34).
+MAX_JSON_BYTES = 1024 * 1024
+MAX_JSON_DRAIN_BYTES = 2 * 1024 * 1024
 # A small file can claim a huge picture, which the shared browser would then try to decode.
 MAX_SIDE, MAX_PIXELS = 16384, 50_000_000
 STATUSES = {"pending": "queued"}
@@ -36,8 +39,9 @@ JPEG_STEPS = 4096
 
 
 class RequestLimit:
-    """Caps a request to /v1/images before anything keeps it, with or without a key: whether its length
-    is declared or not, a body over the limit is refused with 413 and none of it is kept."""
+    """Caps every request before anything reads or keeps it, with or without a login or key: /v1/images
+    at 10 MB, every other route at 1 MB. A body declared over the cap is refused with 413 unread; one
+    not declared is read at most to the drain limit, so its sender can read the 413."""
 
     def __init__(self, app):
         self.app = app
@@ -46,26 +50,33 @@ class RequestLimit:
         path, root = scope.get("path", ""), scope.get("root_path", "")
         if root and path.startswith(root):
             path = path[len(root):]
-        if scope["type"] != "http" or path != "/v1/images":
+        if scope["type"] != "http":
             return await self.app(scope, receive, send)
+        # (cap, a declared length refused unread above, how far an undeclared body is drained)
+        if path == "/v1/images":
+            cap, unread_above, drain = MAX_REQUEST_BYTES, MAX_DRAIN_BYTES, MAX_DRAIN_BYTES
+            refusal = "the request is over 10 MB"
+        else:
+            cap, unread_above, drain = MAX_JSON_BYTES, MAX_JSON_BYTES, MAX_JSON_DRAIN_BYTES
+            refusal = "the request is over 1 MB"
         declared = dict(scope.get("headers") or []).get(b"content-length", b"")
         length = int(declared) if declared.isdigit() else None
         seen = 0
 
         async def limited():
             nonlocal seen
-            if length is not None and length > MAX_DRAIN_BYTES:
-                raise HTTPException(status_code=413, detail="the request is over 10 MB")
+            if length is not None and length > unread_above:
+                raise HTTPException(status_code=413, detail=refusal)
             message = await receive()
             if message["type"] == "http.request":
                 seen += len(message.get("body", b""))
-                if seen > MAX_REQUEST_BYTES or (length or 0) > MAX_REQUEST_BYTES:
+                if seen > cap or (length or 0) > cap:
                     more = message.get("more_body", False)
-                    while more and seen <= MAX_DRAIN_BYTES:
+                    while more and seen <= drain:
                         message = await receive()
                         seen += len(message.get("body", b""))
                         more = message.get("more_body", False)
-                    raise HTTPException(status_code=413, detail="the request is over 10 MB")
+                    raise HTTPException(status_code=413, detail=refusal)
             return message
 
         await self.app(scope, limited, send)

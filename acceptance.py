@@ -115,6 +115,7 @@ CHECKS = (
     "a /v1 request with a prompt and a picture hands the worker exactly that picture",
     "a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused "
     "uncharged, nothing kept",
+    "a JSON route refuses a body over 1 MB before reading it or checking the login (#34)",
     "a /v1 request refused for quota keeps no picture",
     "a /v1 request names its provider, chatgpt when it names none, and an unknown one is refused uncharged",
     "a reference picture sent to a provider that takes none is refused uncharged, nothing kept",
@@ -404,6 +405,35 @@ def http_form(url, fields, files=None, token=None, timeout=60):
             return exc.code, raw
     except Exception as exc:
         return 0, "{}: {}".format(type(exc).__name__, exc)
+
+
+def http_oversized(url, path, declared=None, chunked_bytes=0, token=None, timeout=10):
+    """POST a JSON body over the api's cap on a raw socket: with `declared` the headers claim that
+    length and only 64 KB follow; with `chunked_bytes` that many bytes go chunked. The status read,
+    or 0 when none came back within `timeout` (the api waiting for a body it should have refused)."""
+    host, port = url.split("//", 1)[1].split(":")
+    head = ["POST {} HTTP/1.1".format(path), "Host: {}:{}".format(host, port),
+            "Content-Type: application/json", "Connection: close"]
+    if token:
+        head.append("Authorization: Bearer " + token)
+    head.append("Content-Length: {}".format(declared) if declared else "Transfer-Encoding: chunked")
+    try:
+        with socket.create_connection((host, int(port)), timeout=timeout) as s:
+            s.sendall(("\r\n".join(head) + "\r\n\r\n").encode())
+            try:
+                if declared:
+                    s.sendall(b"{" + b" " * (64 * 1024))
+                else:
+                    piece = b" " * (64 * 1024)
+                    for _ in range(chunked_bytes // len(piece)):
+                        s.sendall("{:x}\r\n".format(len(piece)).encode() + piece + b"\r\n")
+                    s.sendall(b"0\r\n\r\n")
+            except OSError:
+                pass  # the api answered and closed while the body was still going out
+            first = s.makefile("rb").readline().decode(errors="replace").split()
+            return int(first[1]) if len(first) > 1 and first[1].isdigit() else 0
+    except OSError:
+        return 0
 
 
 def tiny_png(rgb):
@@ -761,6 +791,23 @@ def v1_checks(api, c, token, btoken, media_dir, db_path, job_timeout, real, rest
         c["a /v1 request without a prompt, with a file not png jpeg or webp, or over 10 MB is refused "
           "uncharged, nothing kept"].failed("{}; credits {} -> {}; files added {}".format(
               answered, quota_before, quota_after, sorted(files_after - files_before)[:3]))
+
+    # Issue #34: a 200 MB body to /chat took the api to 580 MB before the login was checked.
+    oversized = {
+        "200 MB declared to /chat, no login": http_oversized(api, "/chat", declared=200 * 1024 * 1024),
+        "200 MB declared to /auth/login": http_oversized(api, "/auth/login", declared=200 * 1024 * 1024),
+        "2 MB chunked to /chat, no login": http_oversized(api, "/chat", chunked_bytes=2 * 1024 * 1024),
+        "2 MB chunked to /chat, logged in": http_oversized(api, "/chat", chunked_bytes=2 * 1024 * 1024,
+                                                           token=token),
+        "a worker result declared 2 MB": http_oversized(api, "/internal/jobs/none/result",
+                                                        declared=2 * 1024 * 1024),
+    }
+    if set(oversized.values()) == {413}:
+        c["a JSON route refuses a body over 1 MB before reading it or checking the login (#34)"].passed(
+            "{}".format(oversized))
+    else:
+        c["a JSON route refuses a body over 1 MB before reading it or checking the login (#34)"].failed(
+            "{} (0: no answer in 10s, the api waiting for the body)".format(oversized))
 
     # No credit: refused, and the picture sent with it is not kept.
     me_b = http("GET", api + "/auth/me", token=btoken)[1] or {}
