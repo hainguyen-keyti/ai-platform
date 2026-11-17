@@ -109,6 +109,7 @@ CHECKS = (
     "a runner that has ended still answers what /health asks",
     "a new picture conversation goes to the preferred account while it can take it",
     "an api key that fails after SQLite rolled back raises the real error (#33)",
+    "a failed turn's kept page is removed after 14 days, a folder put there by hand stays (#35)",
     "an api key is shown once, listed without its secret, stored as a hash, and revoked",
     "an api key works only on /v1/images, and a login token not there",
     "a person keeps at most ten live api keys",
@@ -1499,7 +1500,8 @@ def run_checks(api, media_dir, real, invite_code, worker_token, worker_health, w
             ("the Gemini driver holds to what was measured of its pages", "test_gemini_driver.py", 157),
             ("a runner that has ended still answers what /health asks", "test_runner_health.py", 4),
             ("a new picture conversation goes to the preferred account while it can take it", "test_preferred_accounts.py", 5),
-            ("an api key that fails after SQLite rolled back raises the real error (#33)", "test_api_key_rollback.py", 2)):
+            ("an api key that fails after SQLite rolled back raises the real error (#33)", "test_api_key_rollback.py", 2),
+            ("a failed turn's kept page is removed after 14 days, a folder put there by hand stays (#35)", "test_prune_kept.py", 8)):
         suite = subprocess.run([python, str(ROOT / "tests" / script)], capture_output=True, text=True, cwd=str(ROOT))
         lines = [l for l in ((suite.stdout or "") + (suite.stderr or "")).splitlines() if l.strip()]
         summary = next((l for l in reversed(lines) if "PASSED" in l), "")

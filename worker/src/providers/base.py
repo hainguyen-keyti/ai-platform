@@ -1,8 +1,20 @@
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional
+
+# A failed turn's kept page can show other conversations of the shared account (issue #35).
+KEPT_DAYS = 14
+
+
+def prune_kept(folder: Path) -> None:
+    """Remove the files directly in a kept-pages folder older than KEPT_DAYS; folders put there by hand stay."""
+    cutoff = time.time() - KEPT_DAYS * 86400
+    for path in folder.iterdir():
+        if path.is_file() and path.stat().st_mtime < cutoff:
+            path.unlink(missing_ok=True)
 
 
 class FeatureType(str, Enum):

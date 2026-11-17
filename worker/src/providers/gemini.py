@@ -8,7 +8,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from src.providers.base import (BaseProvider, FeatureType, GenerationResult, JobCancelled,
-                                MediaArtifact, ProviderError)
+                                MediaArtifact, ProviderError, prune_kept)
 from src.providers.session import NO_SESSION, open_session, profile_of, saved
 
 # Everything below was measured on a real account on 2026-09-25 and 2026-09-27.
@@ -307,6 +307,7 @@ class GeminiProvider(BaseProvider):
             pass
         try:
             self.failures_path.mkdir(parents=True, exist_ok=True)
+            prune_kept(self.failures_path)
             (self.failures_path / (name + ".json")).write_text(json.dumps(record, indent=1), encoding="utf-8")
             page.screenshot(path=str(self.failures_path / (name + ".png")))
         except Exception:
@@ -485,6 +486,7 @@ class GeminiProvider(BaseProvider):
             # The random tail keeps two failures of one thread in the same second apart.
             name = "gemini-{}-{}-{}".format(stamp, self._thread_id(page) or "new", uuid.uuid4().hex[:6])
             self.failures_path.mkdir(parents=True, exist_ok=True)
+            prune_kept(self.failures_path)
             facts = page.evaluate(PAGE_FACTS)
             page.screenshot(path=str(self.failures_path / (name + ".png")))
             (self.failures_path / (name + ".txt")).write_text(

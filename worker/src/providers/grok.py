@@ -6,7 +6,7 @@ import uuid
 from typing import Optional
 
 from src.providers.base import (BaseProvider, FeatureType, GenerationResult, JobCancelled,
-                                MediaArtifact, ProviderError)
+                                MediaArtifact, ProviderError, prune_kept)
 from src.providers.session import NO_SESSION, open_session, profile_of, saved
 
 HOME = "https://grok.com/"
@@ -203,6 +203,7 @@ class GrokProvider(BaseProvider):
         except Exception as exc:
             record["unread"] = type(exc).__name__
         try:
+            prune_kept(folder)
             (folder / (stem + ".json")).write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
             page.screenshot(path=str(folder / (stem + ".png")))
         except Exception:
@@ -226,6 +227,7 @@ class GrokProvider(BaseProvider):
             record["unread"] = type(exc).__name__
         try:
             folder.mkdir(parents=True, exist_ok=True)
+            prune_kept(folder)
             (folder / (stem + ".json")).write_text(json.dumps(record, indent=1, ensure_ascii=False), encoding="utf-8")
             page.screenshot(path=str(folder / (stem + ".png")), timeout=10000)
         except Exception:

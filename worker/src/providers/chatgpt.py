@@ -10,7 +10,7 @@ from typing import Optional
 from urllib.parse import unquote
 
 from src.providers.base import (MEMORY_ON_ERROR, BaseProvider, FeatureType, GenerationResult,
-                                JobCancelled, MediaArtifact, ProviderError)
+                                JobCancelled, MediaArtifact, ProviderError, prune_kept)
 from src.providers.session import NO_SESSION, open_session, profile_of, saved
 
 HOME = "https://chatgpt.com/"
@@ -447,6 +447,7 @@ class ChatGPTProvider(BaseProvider):
         except Exception as exc:
             record["unread"] = type(exc).__name__
         try:
+            prune_kept(folder)
             (folder / (stem + ".json")).write_text(json.dumps(record, indent=1), encoding="utf-8")
             page.screenshot(path=str(folder / (stem + ".png")))
         except Exception:
@@ -474,6 +475,7 @@ class ChatGPTProvider(BaseProvider):
         folder = self.media_path.parent / "diagnostics"
         try:
             folder.mkdir(parents=True, exist_ok=True)
+            prune_kept(folder)
             name = "chatgpt-open-{}-{}.png".format(int(time.time()), uuid.uuid4().hex[:6])
             page.screenshot(path=str(folder / name))
         except Exception:
