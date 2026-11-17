@@ -438,21 +438,7 @@ touches your real data:
 ./scripts/full-gate.sh         # about 10 minutes
 ```
 
-On Windows, one layout check in the web test needs Windows fonts in WSL, or it fails on the wider
-default font:
-
-```bash
-mkdir -p ~/.local/share/fonts/windows
-cd /mnt/c/Windows/Fonts
-cp arial.ttf arialbd.ttf arialbi.ttf ariali.ttf \
-   calibri.ttf calibrib.ttf calibrii.ttf calibril.ttf calibrili.ttf calibriz.ttf \
-   consola.ttf consolab.ttf consolai.ttf consolaz.ttf \
-   cour.ttf courbd.ttf courbi.ttf couri.ttf framd.ttf framdit.ttf marlett.ttf msgothic.ttc \
-   segoeui.ttf segoeuib.ttf segoeuii.ttf segoeuil.ttf segoeuisl.ttf segoeuiz.ttf \
-   ~/.local/share/fonts/windows/
-cd -
-fc-cache -f
-```
+The web ships its own face (Inter), so the layout checks measure the same on every machine.
 
 Against your real accounts (these spend quota and can draw a bot check, so use them sparingly):
 
