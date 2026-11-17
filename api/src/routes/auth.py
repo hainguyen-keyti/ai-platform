@@ -116,7 +116,7 @@ def create_api_key(body: ApiKeyCreate, user: dict = Depends(current_user)):
             made = one(conn, "SELECT {} FROM api_keys WHERE id = ?".format(KEY_FIELDS), (key_id,))
             conn.execute("COMMIT")
         except Exception:
-            conn.execute("ROLLBACK")
+            _rollback(conn)
             raise
     return dict(made, key=key)
 
